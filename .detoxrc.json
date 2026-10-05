@@ -17,16 +17,45 @@
       "binaryPath": "ios/build/Build/Products/Release-iphonesimulator/BlueWallet.app",
       "build": "npx react-native codegen && xcodebuild -workspace ios/BlueWallet.xcworkspace -scheme BlueWallet -configuration Release -sdk iphonesimulator -derivedDataPath ios/build"
     },
-    "android.debug": {
+    "android.mainnet.debug": {
+      "name": "mainnet",
       "type": "android.apk",
-      "binaryPath": "android/app/build/outputs/apk/debug/app-debug.apk",
-      "build": "bash scripts/build-bhwi-android.sh && cd android && ./gradlew assembleDebug assembleDebugAndroidTest -DtestBuildType=debug"
+      "launchArgs": {
+        "detoxURLBlacklistRegex": [".*arkade\\.computer/v1/indexer/script/subscription.*", ".*groundcontrol-bluewallet\\.herokuapp\\.com.*", ".*api\\.kraken\\.com/0/public/Ticker.*"]
+      },
+      "binaryPath": "android/app/build/outputs/apk/mainnet/debug/app-mainnet-debug.apk",
+      "testBinaryPath": "android/app/build/outputs/apk/androidTest/mainnet/debug/app-mainnet-debug-androidTest.apk",
+      "build": "bash scripts/build-bhwi-android.sh && cd android && ./gradlew assembleMainnetDebug assembleMainnetDebugAndroidTest -DtestBuildType=debug"
     },
-    "android.release": {
+    "android.mainnet.release": {
+      "name": "mainnet",
       "type": "android.apk",
-      "testBinaryPath": "android/app/build/outputs/apk/androidTest/release/app-release-androidTest.apk",
-      "binaryPath": "android/app/build/outputs/apk/release/app-release.apk",
-      "build": "./tests/e2e/detox-build-release-apk.sh"
+      "launchArgs": {
+        "detoxURLBlacklistRegex": [".*arkade\\.computer/v1/indexer/script/subscription.*", ".*groundcontrol-bluewallet\\.herokuapp\\.com.*", ".*api\\.kraken\\.com/0/public/Ticker.*"]
+      },
+      "binaryPath": "android/app/build/outputs/apk/mainnet/release/app-mainnet-release.apk",
+      "testBinaryPath": "android/app/build/outputs/apk/androidTest/mainnet/release/app-mainnet-release-androidTest.apk",
+      "build": "bash tests/e2e/detox-build-release-apk.sh mainnet"
+    },
+    "android.testnet.debug": {
+      "name": "testnet",
+      "type": "android.apk",
+      "launchArgs": {
+        "detoxURLBlacklistRegex": [".*arkade\\.computer/v1/indexer/script/subscription.*", ".*groundcontrol-bluewallet\\.herokuapp\\.com.*", ".*api\\.kraken\\.com/0/public/Ticker.*"]
+      },
+      "binaryPath": "android/app/build/outputs/apk/bitcoinTestnet/debug/app-bitcoinTestnet-debug.apk",
+      "testBinaryPath": "android/app/build/outputs/apk/androidTest/bitcoinTestnet/debug/app-bitcoinTestnet-debug-androidTest.apk",
+      "build": "bash scripts/build-bhwi-android.sh && cd android && ./gradlew assembleBitcoinTestnetDebug assembleBitcoinTestnetDebugAndroidTest -DtestBuildType=debug"
+    },
+    "android.testnet.release": {
+      "name": "testnet",
+      "type": "android.apk",
+      "launchArgs": {
+        "detoxURLBlacklistRegex": [".*arkade\\.computer/v1/indexer/script/subscription.*", ".*groundcontrol-bluewallet\\.herokuapp\\.com.*", ".*api\\.kraken\\.com/0/public/Ticker.*"]
+      },
+      "binaryPath": "android/app/build/outputs/apk/bitcoinTestnet/release/app-bitcoinTestnet-release.apk",
+      "testBinaryPath": "android/app/build/outputs/apk/androidTest/bitcoinTestnet/release/app-bitcoinTestnet-release-androidTest.apk",
+      "build": "bash tests/e2e/detox-build-release-apk.sh testnet"
     }
   },
   "devices": {
@@ -41,6 +70,18 @@
       "device": {
         "avdName": "Pixel_API_29_AOSP"
       }
+    },
+    "attached": {
+      "type": "android.attached",
+      "device": {
+        "adbName": ".*"
+      }
+    },
+    "ownedEmulator": {
+      "type": "android.attached",
+      "device": {
+        "adbName": "^EXPLICIT_OWNED_EMULATOR_REQUIRED$"
+      }
     }
   },
   "configurations": {
@@ -52,31 +93,77 @@
       "device": "simulator",
       "app": "ios.release"
     },
-    "android.debug": {
+    "android.mainnet.debug": {
       "device": "emulator",
-      "app": "android.debug"
+      "app": "android.mainnet.debug"
     },
-    "android.debug.device": {
-      "device": {
-        "device": {
-          "adbName": ".*"
-        },
-        "type": "android.attached"
-      },
-      "app": "android.debug"
+    "android.mainnet.debug.device": {
+      "device": "attached",
+      "app": "android.mainnet.debug"
     },
-    "android.release.device": {
-      "device": {
-        "device": {
-          "adbName": ".*"
-        },
-        "type": "android.attached"
-      },
-      "app": "android.release"
-    },
-    "android.release": {
+    "android.mainnet.release": {
       "device": "emulator",
-      "app": "android.release"
+      "app": "android.mainnet.release"
+    },
+    "android.mainnet.release.device": {
+      "device": "attached",
+      "app": "android.mainnet.release"
+    },
+    "android.testnet.debug": {
+      "device": "ownedEmulator",
+      "apps": ["android.mainnet.debug", "android.testnet.debug"],
+      "behavior": {
+        "init": {
+          "reinstallApp": false
+        }
+      },
+      "testRunner": {
+        "args": {
+          "testMatch": ["**/bitcoin-profile-isolation.smoke.ts"]
+        }
+      }
+    },
+    "android.testnet.debug.device": {
+      "device": "ownedEmulator",
+      "apps": ["android.mainnet.debug", "android.testnet.debug"],
+      "behavior": {
+        "init": {
+          "reinstallApp": false
+        }
+      },
+      "testRunner": {
+        "args": {
+          "testMatch": ["**/bitcoin-profile-isolation.smoke.ts"]
+        }
+      }
+    },
+    "android.testnet.release": {
+      "device": "ownedEmulator",
+      "apps": ["android.mainnet.release", "android.testnet.release"],
+      "behavior": {
+        "init": {
+          "reinstallApp": false
+        }
+      },
+      "testRunner": {
+        "args": {
+          "testMatch": ["**/bitcoin-profile-isolation.smoke.ts"]
+        }
+      }
+    },
+    "android.testnet.release.device": {
+      "device": "ownedEmulator",
+      "apps": ["android.mainnet.release", "android.testnet.release"],
+      "behavior": {
+        "init": {
+          "reinstallApp": false
+        }
+      },
+      "testRunner": {
+        "args": {
+          "testMatch": ["**/bitcoin-profile-isolation.smoke.ts"]
+        }
+      }
     }
   }
 }

@@ -7,12 +7,25 @@ import * as NavigationService from '../../NavigationService';
 
 jest.mock('react-native', () => {
   const actual = jest.requireActual('react-native');
+  Object.defineProperty(actual, 'Platform', { value: actual.Platform, configurable: true });
   Object.defineProperty(actual.Platform, 'OS', {
     value: 'android',
     configurable: true,
   });
   return actual;
 });
+jest.mock('../../codegen/NativeSettingsModule', () => ({
+  __esModule: true,
+  default: { getConstants: () => ({ bitcoinNetwork: mockBitcoinNetwork }) },
+}));
+jest.mock('../../models/appScheme', () => ({
+  get appScheme() {
+    return mockAppScheme;
+  },
+}));
+
+let mockBitcoinNetwork = 'bitcoin';
+let mockAppScheme: string;
 jest.mock('react-native-quick-actions', () => ({
   clearShortcutItems: jest.fn(),
   setShortcutItems: jest.fn(),
@@ -58,31 +71,44 @@ beforeEach(() => {
   jest.requireMock('../../blue_modules/BlueElectrum').ensureConnected.mockResolvedValue(true);
 });
 
-it('emits an Android-owned wallet shortcut and admits only that URI on initial and live actions', async () => {
-  const { result } = renderHook(() => useDeviceQuickActions());
-  const ownedUrl = `bluewallet-bhwi://wallet/${mockWallet.getID()}`;
-  await waitFor(() => expect(shortcuts.setShortcutItems).toHaveBeenCalled());
-  expect(shortcuts.setShortcutItems.mock.calls[0][0][0].userInfo.url).toBe(ownedUrl);
+describe.each([
+  ['bitcoin', 'bluewallet-bhwi', 'bluewallet-bhwi-testnet'],
+  ['testnet', 'bluewallet-bhwi-testnet', 'bluewallet-bhwi'],
+])('Android %s wallet shortcuts', (bitcoinNetwork, scheme, foreignScheme) => {
+  beforeAll(() => {
+    mockBitcoinNetwork = bitcoinNetwork;
+    jest.isolateModules(() => {
+      mockAppScheme = jest.requireActual('../../models/appScheme').appScheme;
+    });
+    expect(mockAppScheme).toBe(scheme);
+  });
 
-  for (const scheme of ['bluewallet', 'bluewallet-bhwi-testnet']) {
-    const action = {
-      userInfo: { url: `${scheme}://wallet/${mockWallet.getID()}` },
-    };
-    await act(async () => result.current.popInitialAction(action));
-    act(() => DeviceEventEmitter.emit('quickActionShortcut', action));
-  }
-  expect(NavigationService.dispatch).not.toHaveBeenCalled();
+  it('emits owned shortcuts and rejects foreign initial and live actions', async () => {
+    const { result } = renderHook(() => useDeviceQuickActions());
+    const ownedUrl = `${scheme}://wallet/${mockWallet.getID()}`;
+    await waitFor(() => expect(shortcuts.setShortcutItems).toHaveBeenCalled());
+    expect(shortcuts.setShortcutItems.mock.calls[0][0][0].userInfo.url).toBe(ownedUrl);
 
-  const ownedAction = { userInfo: { url: ownedUrl } };
-  await act(async () => result.current.popInitialAction(ownedAction));
-  act(() => DeviceEventEmitter.emit('quickActionShortcut', ownedAction));
-  expect(NavigationService.dispatch).toHaveBeenCalledTimes(2);
-  expect(NavigationService.dispatch).toHaveBeenLastCalledWith(
-    expect.objectContaining({
-      payload: expect.objectContaining({
-        name: 'WalletTransactions',
-        params: { walletID: mockWallet.getID(), walletType: mockWallet.type },
+    for (const foreign of ['bluewallet', foreignScheme]) {
+      const action = {
+        userInfo: { url: `${foreign}://wallet/${mockWallet.getID()}` },
+      };
+      await act(async () => result.current.popInitialAction(action));
+      act(() => DeviceEventEmitter.emit('quickActionShortcut', action));
+    }
+    expect(NavigationService.dispatch).not.toHaveBeenCalled();
+
+    const ownedAction = { userInfo: { url: ownedUrl } };
+    await act(async () => result.current.popInitialAction(ownedAction));
+    act(() => DeviceEventEmitter.emit('quickActionShortcut', ownedAction));
+    expect(NavigationService.dispatch).toHaveBeenCalledTimes(2);
+    expect(NavigationService.dispatch).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          name: 'WalletTransactions',
+          params: { walletID: mockWallet.getID(), walletType: mockWallet.type },
+        }),
       }),
-    }),
-  );
+    );
+  });
 });

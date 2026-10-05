@@ -1,6 +1,4 @@
 <resources>
-    <string name="app_name">BlueWallet BHWI PoC</string>
-    <string name="app_settings_name">BlueWallet BHWI PoC Settings</string>
     <string name="loading">Loading...</string>
     <string name="last_updated">Last Updated</string>
     <string name="from">From</string>

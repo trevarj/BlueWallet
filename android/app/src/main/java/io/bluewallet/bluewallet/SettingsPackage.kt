@@ -18,7 +18,7 @@ class SettingsPackage : TurboReactPackage() {
             SettingsModule.NAME,
             false, // canOverrideExistingModule
             false, // needsEagerInit
-            false, // hasConstants
+            true,  // hasConstants
             false, // isCxxModule
             true   // isTurboModule
         )

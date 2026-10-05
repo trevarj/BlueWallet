@@ -74,3 +74,5 @@ React Navigation 7.x with native stack. Typed params in `navigation/DetailViewSt
 ## Testing
 
 Unit tests in `tests/unit/` use Jest with `assert`. Test setup mocks React Native modules (Clipboard, Push Notifications, Keychain, etc.). Integration tests require environment variables for test mnemonics (HD_MNEMONIC, HD_MNEMONIC_BIP84, etc.).
+
+Android smoke runs must select an explicitly owned serial (`adb -s`, Detox `--device-name`) before launching or installing. Never use wildcard attached-device selection or reset app data on a personal phone.

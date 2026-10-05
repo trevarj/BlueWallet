@@ -12,17 +12,21 @@ Reproducible builds for BlueWallet. Build the same APK twice and verify they're 
 ## Building the APK
 
 ```sh
-cd reproducible-builds && ./build-apk.sh
+cd reproducible-builds
+./build-apk.sh mainnet # default if omitted
+./build-apk.sh testnet # separate immutable Testnet3 profile
 ```
 
-The signed `Bluewallet-latest.apk` will be saved to `reproducible-builds/build/`. It installs as `io.bluewallet.bluewallet.bhwi` (BlueWallet BHWI PoC), not production BlueWallet, and supports only arm64-v8a/x86_64 on API 28+.
+Signed outputs are `reproducible-builds/build/mainnet/BlueWallet-mainnet.apk` and `reproducible-builds/build/testnet/BlueWallet-testnet.apk`. They install as `io.bluewallet.bluewallet.bhwi` (BHWI PoC) and `io.bluewallet.bluewallet.bhwi.testnet` (BHWI PoC Testnet3), not production BlueWallet, and support only arm64-v8a/x86_64 on API 28+. The wrapper passes `BITCOIN_BUILD_PROFILE` into Docker; only the selected profile's exported APK is replaced. BuildConfig and native SettingsModule supply the fixed chain value, never a Metro environment variable. Testnet wallet, network and service propagation is not included yet; these builds do not establish Testnet3 spending support.
+
+The external selector/output directory remains `testnet`; it maps to internal Gradle flavor `bitcoinTestnet` because AGP reserves names starting with `test`. Docker builds `assembleBitcoinTestnetRelease` and signs `app/build/outputs/apk/bitcoinTestnet/release/app-bitcoinTestnet-release-unsigned.apk` before exporting the logical-profile filename above. Mainnet uses `assembleMainnetRelease` and the unchanged `mainnet` paths.
 
 Docker installs checksum-pinned Nix 2.31.2 and builds the consumer through this project's `flake.lock` (Node 24, JDK 17, SDK/build tools 36, NDK 28.2.13676358). Before the Android build, `scripts/build-bhwi-android.sh` fetches the exact `bhwi-ffi.commit` revision and generates/publishes its versioned AAR in the producer's separate JDK 21/SDK 35 Nix shell. Host `.bhwi-build`, `.bhwi-maven` and direnv caches are excluded from the Docker context; no host AAR or global Maven cache supplies the hardware library.
 
-Set `KEYSTORE_FILE_HEX` and `KEYSTORE_PASSWORD` to sign with your own key. Without them, the existing disposable development key is used; the script verifies the APK signature before exporting it. Never install an unsigned release APK. For the direct Fastlane source-build path, enter `nix develop`, run `npm ci` and `BUNDLE_PATH=vendor/bundle bundle install`, then use `bash scripts/build-release-apk.sh` with those signing variables. The Ruby requirement accepts pinned 3.4.9 and CI's 3.4.10 without changing gem versions.
+Set `KEYSTORE_FILE_HEX` and `KEYSTORE_PASSWORD` to sign with your own key. Without them, the existing disposable development key is used; the script verifies the APK signature before exporting it. Never install an unsigned release APK. For the direct Fastlane source-build path, enter `nix develop --max-jobs 1 --cores 2`, run `npm ci` and `BUNDLE_PATH=vendor/bundle bundle install --jobs 2`, then use `bash scripts/build-release-apk.sh [mainnet|testnet]` with those signing variables. On Linux run these consumer commands inside `bluewallet-android` (with `nice -n 10 taskset -c 0,1`); the Docker/Ubuntu filesystem already supplies normal FHS paths. Fastlane defaults to mainnet and emits its exact signed `apk_output_path`, with the selected profile in the filename. The Ruby requirement accepts pinned 3.4.9 and CI's 3.4.10 without changing gem versions.
 
 > [!NOTE]
->  `build-apk.sh` clears the `build/` directory before each build. To compare two builds, copy the first APK elsewhere before running the script again.
+>  Each build replaces only `build/<profile>/BlueWallet-<profile>.apk`, preserving the other profile. Compare the same profile from the same source revision and inputs; copy the first APK elsewhere before rebuilding that profile.
 
 ## Comparing APKs
 

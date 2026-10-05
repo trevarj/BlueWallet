@@ -26,6 +26,9 @@ class SettingsModule(reactContext: ReactApplicationContext) : NativeSettingsModu
         const val NAME = "SettingsModule"
     }
 
+    override fun getTypedExportedConstants(): Map<String, Any> =
+        mapOf("bitcoinNetwork" to BuildConfig.BITCOIN_NETWORK)
+
     /**
      * Initialize device UID if not exists
      * Uses the same Android ID as react-native-device-info's getUniqueId()

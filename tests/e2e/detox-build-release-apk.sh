@@ -1,48 +1,53 @@
 #!/usr/bin/env bash
 # script thats used to build & sign release APK in preparation for Detox e2e testing.
-# Usage: USE_FASTLANE=1 ./tests/e2e/detox-build-release-apk.sh or ./tests/e2e/detox-build-release-apk.sh --fastlane
+# Usage: ./tests/e2e/detox-build-release-apk.sh [mainnet|testnet] [--fastlane]
 
 set -euo pipefail
 
-# ensure patched node_modules before building
+PROFILE=mainnet
+USE_FASTLANE=${USE_FASTLANE:-0}
+for argument in "$@"; do
+	case "$argument" in
+		mainnet|testnet) PROFILE=$argument ;;
+		--fastlane) USE_FASTLANE=1 ;;
+		*) echo "Usage: $0 [mainnet|testnet] [--fastlane]" >&2; exit 1 ;;
+	esac
+done
+case "$PROFILE" in
+	mainnet) FLAVOR=mainnet; VARIANT=Mainnet ;;
+	testnet) FLAVOR=bitcoinTestnet; VARIANT=BitcoinTestnet ;;
+esac
+ARCHITECTURES=${E2E_ANDROID_ARCHS:-x86_64}
+case "$ARCHITECTURES" in
+	arm64-v8a|x86_64|arm64-v8a,x86_64|x86_64,arm64-v8a) ;;
+	*) echo "E2E_ANDROID_ARCHS must contain only arm64-v8a and x86_64" >&2; exit 1 ;;
+esac
+export E2E_ANDROID_ARCHS=$ARCHITECTURES
+RELEASE_APK="android/app/build/outputs/apk/$FLAVOR/release/app-$FLAVOR-release.apk"
+TEST_APK="android/app/build/outputs/apk/androidTest/$FLAVOR/release/app-$FLAVOR-release-androidTest.apk"
+
+# Retain one key across profiles; never remove another profile's APKs or rotate its test signer.
+if [[ ! -f detox.keystore ]]; then
+	keytool -genkeypair -v -keystore detox.keystore -alias detox -keyalg RSA -keysize 2048 -validity 10000 -storepass 123456 -keypass 123456 -dname 'cn=Unknown, ou=Unknown, o=Unknown, c=Unknown'
+fi
 npm run patches
 
-USE_FASTLANE=${USE_FASTLANE:-0}
-if [[ "${1:-}" == "--fastlane" ]]; then
-	USE_FASTLANE=1
-fi
-
-# deleting old artifacts (portable across GNU/BSD find/xargs)
-find android -name '*.apk' -print0 | xargs -0 rm -f || true
-
-# creating fresh keystore for consistent signing between app and test APKs
-rm -f detox.keystore
-keytool -genkeypair -v -keystore detox.keystore -alias detox -keyalg RSA -keysize 2048 -validity 10000 -storepass 123456 -keypass 123456 -dname 'cn=Unknown, ou=Unknown, o=Unknown, c=Unknown'
-
 if [[ "$USE_FASTLANE" == "1" ]]; then
-	# Build signed release APK via Fastlane; assume env provides keystore inputs when needed
-	bundle exec fastlane android build_release_apk
-	# Build androidTest APK for Detox
-	(cd android && ./gradlew assembleAndroidTest -DtestBuildType=release)
-	# Pick the newest release APK produced by Fastlane
-	RELEASE_APK=$(find android/app/build/outputs/apk/release -name "*.apk" -print0 | xargs -0 ls -t | head -n 1)
-	TEST_APK=android/app/build/outputs/apk/androidTest/release/app-release-androidTest.apk
+	output_file=$(mktemp)
+	trap 'rm -f "$output_file"' EXIT
+	KEYSTORE_FILE_HEX=$(xxd -p detox.keystore | tr -d '\n') KEYSTORE_PASSWORD=123456 \
+		GITHUB_OUTPUT="$output_file" bundle exec fastlane android build_release_apk "profile:$PROFILE"
+	signed_apk=
+	while IFS='=' read -r key value; do
+		[[ "$key" != apk_output_path ]] || signed_apk=$value
+	done < "$output_file"
+	[[ -n "$signed_apk" && -f "$signed_apk" ]] || { echo "Fastlane did not emit an APK path" >&2; exit 1; }
+	cp "$signed_apk" "$RELEASE_APK"
+	(cd android && ./gradlew "assemble${VARIANT}ReleaseAndroidTest" -DtestBuildType=release "-PreactNativeArchitectures=$ARCHITECTURES")
 else
 	bash scripts/build-bhwi-android.sh
-	# Build release and androidTest APKs using Gradle (x86_64 by default for emulator speed).
-	# Override with E2E_ANDROID_ARCHS when building for real devices.
-	GRADLE_ARCH_ARGS=()
-	ARCHITECTURES=${E2E_ANDROID_ARCHS:-x86_64}
-	case "$ARCHITECTURES" in
-		arm64-v8a|x86_64|arm64-v8a,x86_64|x86_64,arm64-v8a) ;;
-		*) echo "E2E_ANDROID_ARCHS must contain only arm64-v8a and x86_64" >&2; exit 1 ;;
-	esac
-	GRADLE_ARCH_ARGS+=("-PreactNativeArchitectures=${ARCHITECTURES}")
-	(cd android && ./gradlew assembleRelease assembleReleaseAndroidTest -DtestBuildType=release "${GRADLE_ARCH_ARGS[@]}")
-	RELEASE_APK=./android/app/build/outputs/apk/release/app-release.apk
-	UNSIGNED_RELEASE_APK=./android/app/build/outputs/apk/release/app-release-unsigned.apk
-	mv "$UNSIGNED_RELEASE_APK" "$RELEASE_APK"
-	TEST_APK=./android/app/build/outputs/apk/androidTest/release/app-release-androidTest.apk
+	(cd android && ./gradlew "assemble${VARIANT}Release" "assemble${VARIANT}ReleaseAndroidTest" -DtestBuildType=release "-PreactNativeArchitectures=$ARCHITECTURES")
+	cp "android/app/build/outputs/apk/$FLAVOR/release/app-$FLAVOR-release-unsigned.apk" "$RELEASE_APK"
 fi
 
 # signing both APKs with the same keystore so they can be installed together (pick latest available apksigner)

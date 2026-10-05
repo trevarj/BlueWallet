@@ -46,7 +46,9 @@ Please make sure that your console is running the most stable versions of npm an
 
 * To run on Android:
 
-This branch installs **BlueWallet BHWI PoC** as `io.bluewallet.bluewallet.bhwi`, separately from production BlueWallet. Android requires API 28+ and arm64-v8a or x86_64; the Kotlin namespace and React Native component are unchanged. Remote push is unavailable for this Android identity; iOS and local notifications are unchanged.
+This branch has two isolated Android profiles: **BHWI PoC** (`mainnet`, `io.bluewallet.bluewallet.bhwi`) and **BHWI PoC Testnet3** (`testnet`, `io.bluewallet.bluewallet.bhwi.testnet`). Both require API 28+ and arm64-v8a or x86_64; the Kotlin namespace, React Native component and private `${applicationId}.provider` are unchanged. Remote push is unavailable for both Android identities; iOS and local notifications are unchanged.
+
+The external profile selector remains `testnet`, but its internal Gradle flavor is `bitcoinTestnet`: AGP reserves flavor names starting with `test`. Tasks/modes use `BitcoinTestnet`/`bitcoinTestnet`, and generated APK directories/basenames use `bitcoinTestnet`. Mainnet is unchanged. This internal name does not change the application ID, Testnet3 label, scheme or native `testnet` value.
 
 Install Nix with flakes enabled, then enter the pinned consumer shell (Node 24, JDK 17, SDK/build tools 36 and NDK 28.2.13676358). Android library modules use the same NDK pin rather than AGP's default version:
 
@@ -61,7 +63,7 @@ Bundler is pinned to 2.6.9 to match `Gemfile.lock`. The project records narrow n
 
 Build defaults favor desktop responsiveness over throughput: Gradle uses two workers, no parallel projects, a 3 GiB heap/768 MiB metaspace, and in-process Kotlin compilation. CMake, Cargo, Bundler, Make and Metro use two jobs; Node has a 2 GiB old-space limit and two-thread V8/libuv pools; nested JVMs see two processors. The producer applies the same limits, with Nix realization at one job/two cores; both ABIs and provenance checks remain. These limits do not hard-cap total RSS. On Linux, prefix the consumer command below with `nice -n 10 taskset -c CPU_A,CPU_B`, selecting two CPUs from your allowed affinity set.
 
-On Linux, run Android builds inside `bluewallet-android` from that shell, for example `nice -n 10 taskset -c CPU_A,CPU_B bluewallet-android -c 'bash android/gradlew -p android --no-daemon --max-workers=2 --no-parallel :app:assembleDebug'`. This private FHS environment supplies the shell/loader paths required by AGP Prefab and NDK tools without changing host system paths.
+On Linux, run Android builds inside `bluewallet-android` from that shell, for example `nice -n 10 taskset -c 0,1 bluewallet-android -c 'bash android/gradlew -p android --no-daemon --max-workers=2 --no-parallel :app:assembleMainnetDebug'` (use allowed CPUs if 0/1 are unavailable). Use `:app:assembleBitcoinTestnetDebug` for the other profile. This private FHS environment supplies the shell/loader paths required by AGP Prefab and NDK tools without changing host system paths. Ubuntu CI and Docker already have normal FHS paths and do not need this wrapper.
 
 The producer fetches the exact public source revision in `bhwi-ffi.commit` from canonical `https://github.com/wizardsardine/bhwi-ffi.git`, generates native bindings in its own JDK 21/SDK 35 Nix shell, and publishes `com.wizardsardine:bhwi-ffi-android:0.1.0-bluewallet.d420872fb11f6620d5d60a45ea6fdad1fe74a47b` to ignored `.bhwi-maven`. A temporary consumer-owned Gradle init script outside the clean source checkout overrides only the library's release publication version to `0.1.0-bluewallet.<full-source-SHA>`, leaving upstream files unchanged and avoiding a floating artifact coordinate. The temporary script and source checkout are removed on exit. Gradle resolves this group only there, never from a developer Maven cache or a remote fallback. The consumer producer records source/publication/lock/binding identity and verifies both published AAR ABIs against the generated native inputs; upstream no longer provides a `--provenance` command. Do not copy a sibling checkout's AAR. `.envrc` enables the same shell with direnv.
 
@@ -78,10 +80,50 @@ You will now need to either connect an Android device to your computer or run an
 Once you connected an Android device or launched an emulator, run this:
 
 ```
-bluewallet-android -c 'npm run android' # Linux; use npm run android directly on macOS
+nice -n 10 taskset -c 0,1 bluewallet-android -c 'npm run android' # Linux, mainnetDebug
+nice -n 10 taskset -c 0,1 bluewallet-android -c 'npm run android:testnet' # Linux, bitcoinTestnetDebug
+# On macOS, run npm run android / npm run android:testnet directly in the consumer shell.
 ```
 
-The above command builds and installs only the experimental app. Start Metro with `npm start` in another consumer-shell terminal. App-owned Android links and wallet shortcuts use `bluewallet-bhwi:`; iOS retains `bluewallet:`. Bitcoin, Lightning, file/content and legacy `blue:`/`lapp:` handlers remain shared protocols and may offer both installed apps. `android:relaunch`, `android:restart` and `android:uninstall` target only the PoC identity.
+The default command builds and installs mainnet; Testnet3 is an explicit build, not a runtime preference or Metro environment flag. Start Metro with `npm start` in another consumer-shell terminal. App-owned Android links and wallet shortcuts use `bluewallet-bhwi:` / `bluewallet-bhwi-testnet:` and reject the other profile's scheme; iOS retains `bluewallet:`. Bitcoin, Lightning, file/content and legacy `blue:`/`lapp:` handlers remain shared protocols and may offer both installed apps. `android:relaunch`, `android:restart` and `android:uninstall` target mainnet; their `android:testnet:*` counterparts target only Testnet3.
+
+The fixed native `SettingsModule.getConstants().bitcoinNetwork` is `bitcoin` or `testnet` in Debug and Release. `models/bitcoinNetwork.ts` validates it on Android and exports `bitcoinNetwork`, the bitcoinjs `network`, BIP44 `coinType` (0/1), and `genesisHash`; missing/invalid Android configuration throws. iOS/web remain mainnet without reading Android constants. **This slice supplies build identity and the immutable profile only: on-chain wallet/network/service propagation is not yet implemented. Do not use the Testnet3 build for spending or assume its existing wallets/services are testnet-aware.**
+
+Release tasks are `assembleMainnetRelease` / `assembleBitcoinTestnetRelease`, with unsigned APKs at `android/app/build/outputs/apk/<flavor>/release/app-<flavor>-release-unsigned.apk`, where `<flavor>` is `mainnet` or `bitcoinTestnet`. Never install unsigned releases. `bash scripts/build-release-apk.sh [mainnet|testnet]` defaults to mainnet and uses Fastlane's existing signing variables; Fastlane lanes accept `profile:testnet`, map it to the internal flavor, include the external profile in signed filenames, and emit the exact `apk_output_path`. Release CI builds both profiles separately. The source producer and source-qualified Maven coordinate are the same for both.
+
+Detox defaults (`e2e:debug-*`, `e2e:release-*`) explicitly select mainnet and retain the existing mainnet wallet vectors. `e2e:testnet:debug-build` / `e2e:testnet:release-build` build both profiles for a separate side-by-side profile-isolation smoke; their `*-test` and `*-test-device` counterparts run only that smoke, not wallet vectors. It checks app-owned routes and private settings persistence without spending. Run consumer builds through the Linux FHS environment above. `tests/e2e/detox-build-release-apk.sh [mainnet|testnet] [--fastlane]` maps the external profile to its Gradle flavor and signs the exact app and instrumentation APK with one retained `detox.keystore`, without removing the other profile's artifacts. Signed Detox paths are `outputs/apk/<flavor>/release/app-<flavor>-release.apk` and `outputs/apk/androidTest/<flavor>/release/app-<flavor>-release-androidTest.apk` under `android/app/build/`, where `<flavor>` is `mainnet` or `bitcoinTestnet`. `scripts/deeplink-to-emusim.sh [mainnet|testnet]` selects the Android identity/scheme while retaining iOS links; its existing payment examples remain mainnet fixtures.
+
+All four `e2e:testnet:*-test*` commands require `ANDROID_SERIAL=emulator-<port>` acknowledging an explicitly owned, already-running emulator **before Detox starts**. They select that exact serial via an anchored `--device-name`, force `--reuse`, and disable `behavior.init.reinstallApp` in every smoke configuration. Both the normal and `-device` smoke variants attach to the selected emulator, never launch/select an AVD by name or fall back to hardware. An optional `--device-name` must exactly equal `ANDROID_SERIAL`; wildcard/mismatched selectors, configuration overrides and unsupported CLI flags fail before allocation. Do not invoke these smoke configurations directly through Detox.
+
+Preinstall all four matching app/instrumentation APKs on that owned emulator. For Release, first build/sign both profiles with the retained `detox.keystore` using `e2e:release-build` and `e2e:testnet:release-build`; use their exact signed outputs, never unsigned or differently signed APKs. The following runs inside the pinned consumer shell on Linux:
+
+```bash
+export ANDROID_SERIAL=emulator-5560 # only an emulator you explicitly own
+nice -n 10 taskset -c 0,1 bluewallet-android -c '
+  set -e
+  adb -s "$ANDROID_SERIAL" install -r android/app/build/outputs/apk/mainnet/release/app-mainnet-release.apk
+  adb -s "$ANDROID_SERIAL" install -r android/app/build/outputs/apk/androidTest/mainnet/release/app-mainnet-release-androidTest.apk
+  adb -s "$ANDROID_SERIAL" install -r android/app/build/outputs/apk/bitcoinTestnet/release/app-bitcoinTestnet-release.apk
+  adb -s "$ANDROID_SERIAL" install -r android/app/build/outputs/apk/androidTest/bitcoinTestnet/release/app-bitcoinTestnet-release-androidTest.apk
+'
+nice -n 10 taskset -c 0,1 bluewallet-android -c 'npm run e2e:testnet:release-test-device -- --device-name "$ANDROID_SERIAL" --reuse'
+```
+
+For Debug, preinstall the corresponding four `debug/app-<flavor>-debug.apk` and `androidTest/<flavor>/debug/app-<flavor>-debug-androidTest.apk` outputs with the same `adb -s "$ANDROID_SERIAL" install -r` contract, run Metro, then use `e2e:testnet:debug-test-device`. Any target mismatch or install/signature error must stop the run; **never uninstall, clear data, or retry on another target**. CI explicitly launches its runner-owned emulator on port 5554, checks the action-provided `ANDROID_SERIAL=emulator-5554`, installs all four restored signed Release APKs with `install -r`, then uses the same guarded entrypoint.
+
+These no-device rejection checks must exit nonzero before Detox allocation (no ADB operation is needed):
+
+```bash
+nice -n 10 taskset -c 0,1 env -u ANDROID_SERIAL npm run e2e:testnet:release-test-device
+nice -n 10 taskset -c 0,1 env ANDROID_SERIAL=not-an-emulator npm run e2e:testnet:release-test-device
+nice -n 10 taskset -c 0,1 env ANDROID_SERIAL=emulator-5560 npm run e2e:testnet:release-test-device -- --device-name '.*'
+nice -n 10 taskset -c 0,1 env ANDROID_SERIAL=emulator-5560 npm run e2e:testnet:release-test-device -- --configuration android.mainnet.release.device
+```
+
+The in-test non-emulator `device.id` rejection remains independent defense in depth. The smoke never deletes/resets app data, snapshots both existing Clipboard settings before flipping mainnet, and restores the original mainnet setting in `finally`. Owned Electrum links are exercised on a ready app; their native confirmation is canceled before asserting the settings screen, without applying or saving a server.
+
+BrowserStack CI passes `profile:mainnet` / `profile:testnet` to `upload_to_browserstack_and_comment`, validated by the same Fastlane profile helper as builds. Its PR comment header is `### APK Successfully Uploaded to BrowserStack (<profile>)`: replacement deletes only previous comments starting with that profile-specific header. Thus a testnet upload preserves an existing mainnet result and replaces only testnet results (and vice versa), even when the two matrix jobs fetch comments at different times.
+
 
 * To run on iOS:
 

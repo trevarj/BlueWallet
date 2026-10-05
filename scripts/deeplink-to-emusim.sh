@@ -1,5 +1,12 @@
 #!/bin/bash
 
+profile=${1:-mainnet}
+case "$profile" in
+  mainnet) androidScheme=bluewallet-bhwi; androidAppId=io.bluewallet.bluewallet.bhwi ;;
+  testnet) androidScheme=bluewallet-bhwi-testnet; androidAppId=io.bluewallet.bluewallet.bhwi.testnet ;;
+  *) echo "Usage: $0 [mainnet|testnet]" >&2; exit 1 ;;
+esac
+
 deepLinks=(
   "bitcoin:12eQ9m4sgAwTSQoNXkRABKhCXCsjm2jdVG"
   "bitcoin:bc1qh6tf004ty7z7un2v5ntu4mkf630545gvhs45u7?amount=666&label=Yo"
@@ -203,11 +210,11 @@ JSON
       xcrun simctl openurl "$udid" "$selectedLink"
     fi
   else
-    selectedLink="${selectedLink/#bluewallet:/bluewallet-bhwi:}"
+    selectedLink="${selectedLink/#bluewallet:/$androidScheme:}"
     echo -e "\nSending deep link to Android emulator: $selectedLink\n"
     # Strip version info to get the emulator device ID
     emuId="${dev%% *}"
-    adb -s "$emuId" shell am start -a android.intent.action.VIEW -d "$selectedLink" -p io.bluewallet.bluewallet.bhwi
+    adb -s "$emuId" shell am start -a android.intent.action.VIEW -d "$selectedLink" -p "$androidAppId"
   fi
   break
 done

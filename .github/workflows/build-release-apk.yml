@@ -12,8 +12,18 @@ on:
 jobs:
   buildReleaseApk:
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [mainnet, testnet]
     env:
-      NIX_CONFIG: "experimental-features = nix-command flakes"
+      NIX_CONFIG: |
+        experimental-features = nix-command flakes
+        max-jobs = 1
+        cores = 2
+      NODE_OPTIONS: "--max-old-space-size=2048 --v8-pool-size=2"
+      JAVA_TOOL_OPTIONS: "-XX:ActiveProcessorCount=2"
+      BUNDLE_JOBS: "2"
 
     steps:
       - name: Checkout project
@@ -97,7 +107,7 @@ jobs:
 
       - name: Build and sign APK
         id: build_and_sign_apk
-        run: bundle exec fastlane android build_release_apk
+        run: bundle exec fastlane android build_release_apk profile:${{ matrix.profile }}
         env:
           BUILD_NUMBER: ${{ steps.build_number.outputs.build_number }}
           KEYSTORE_FILE_HEX: ${{ secrets.KEYSTORE_FILE_HEX }}
@@ -107,7 +117,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: android-build-logs
+          name: android-build-logs-${{ matrix.profile }}
           path: |
             fastlane/logs/**/*.log
             android/**/*.log
@@ -116,35 +126,21 @@ jobs:
             android/**/reports/**/*.log
           if-no-files-found: warn
 
-      - name: Determine APK Filename and Path
-        id: determine_apk_path
-        run: |
-          BUILD_NUMBER=${{ steps.build_number.outputs.build_number }}
-          VERSION_NAME=$(grep versionName android/app/build.gradle | awk '{print $2}' | tr -d '"')
-          BRANCH_NAME=${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}
-          BRANCH_NAME=$(echo "$BRANCH_NAME" | sed 's/[^a-zA-Z0-9_-]/_/g')
-
-          if [ -n "$BRANCH_NAME" ] && [ "$BRANCH_NAME" != "master" ]; then
-            EXPECTED_FILENAME="BlueWallet-${VERSION_NAME}-${BUILD_NUMBER}-${BRANCH_NAME}.apk"
-          else
-            EXPECTED_FILENAME="BlueWallet-${VERSION_NAME}-${BUILD_NUMBER}.apk"
-          fi
-      
-          APK_PATH="android/app/build/outputs/apk/release/${EXPECTED_FILENAME}"
-          echo "EXPECTED_FILENAME=${EXPECTED_FILENAME}" >> $GITHUB_ENV
-          echo "APK_PATH=${APK_PATH}" >> $GITHUB_ENV
-
       - name: Upload APK as artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: signed-apk
-          path: ${{ env.APK_PATH }}
+          name: signed-apk-${{ matrix.profile }}
+          path: ${{ steps.build_and_sign_apk.outputs.apk_output_path }}
           if-no-files-found: error
 
   browserstack:
     runs-on: macos-26
     needs: buildReleaseApk
     if: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'browserstack') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [mainnet, testnet]
 
     steps:
       - name: Checkout code
@@ -157,17 +153,20 @@ jobs:
           bundler-cache: true
 
       - name: Install dependencies with Bundler
-        run: bundle install --jobs 4 --retry 3
+        run: bundle install --jobs 2 --retry 3
 
       - name: Download APK artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: signed-apk
+          name: signed-apk-${{ matrix.profile }}
+          path: signed-apk-${{ matrix.profile }}
 
       - name: Set APK Path
         run: |
-          APK_PATH=$(find ${{ github.workspace }} -name '*.apk')
-          echo "APK_PATH=$APK_PATH" >> $GITHUB_ENV
+          shopt -s nullglob
+          apks=(signed-apk-${{ matrix.profile }}/*.apk)
+          [[ ${#apks[@]} -eq 1 ]] || { echo "Expected exactly one profile APK" >&2; exit 1; }
+          echo "APK_PATH=${apks[0]}" >> "$GITHUB_ENV"
 
       - name: Upload APK to BrowserStack and Post PR Comment
         env:
@@ -175,4 +174,4 @@ jobs:
           BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY }}
           GITHUB_PR_NUMBER: ${{ github.event.pull_request.number }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: bundle exec fastlane android upload_to_browserstack_and_comment
+        run: bundle exec fastlane android upload_to_browserstack_and_comment profile:${{ matrix.profile }}

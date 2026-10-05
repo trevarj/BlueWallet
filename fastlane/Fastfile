@@ -33,6 +33,16 @@ project_root = PROJECT_ROOT
 module AndroidHelpers
   module_function
 
+  def bitcoin_profile(value)
+    profile = (value || 'mainnet').to_s
+    UI.user_error!("profile must be mainnet or testnet") unless %w[mainnet testnet].include?(profile)
+    profile
+  end
+
+  def gradle_flavor(profile)
+    { 'mainnet' => 'mainnet', 'testnet' => 'bitcoinTestnet' }.fetch(profile)
+  end
+
   def require_env!(keys)
     missing = Array(keys).select { |key| ENV[key].nil? || ENV[key].empty? }
     UI.user_error!("Missing required env vars: #{missing.join(', ')}") unless missing.empty?
@@ -72,8 +82,8 @@ module AndroidHelpers
     sanitized.empty? ? 'master' : sanitized
   end
 
-  def apk_name(version_name, build_number, branch)
-    branch != 'master' ? "BlueWallet-#{version_name}-#{build_number}-#{branch}.apk" : "BlueWallet-#{version_name}-#{build_number}.apk"
+  def apk_name(version_name, build_number, branch, profile)
+    branch != 'master' ? "BlueWallet-#{profile}-#{version_name}-#{build_number}-#{branch}.apk" : "BlueWallet-#{profile}-#{version_name}-#{build_number}.apk"
   end
 
   def apksigner_path
@@ -87,25 +97,31 @@ module AndroidHelpers
     path
   end
 
-  def assemble_release!(log_path:)
+  def assemble_release!(log_path:, profile:)
     Actions.sh("bash scripts/build-bhwi-android.sh")
-    Actions.sh("cd android && ./gradlew assembleRelease --no-daemon --stacktrace --console=plain | tee #{log_path}") do |status|
-      UI.user_error!("Gradle assembleRelease failed") unless status.success?
+    flavor = gradle_flavor(profile)
+    task = "assemble#{flavor[0].upcase}#{flavor[1..]}Release"
+    architectures = ENV['E2E_ANDROID_ARCHS']
+    if architectures && !%w[arm64-v8a x86_64 arm64-v8a,x86_64 x86_64,arm64-v8a].include?(architectures)
+      UI.user_error!("E2E_ANDROID_ARCHS must contain only arm64-v8a and x86_64")
+    end
+    arch_arg = architectures ? "-PreactNativeArchitectures=#{architectures}" : ""
+    Actions.sh("bash -o pipefail -c 'cd android && ./gradlew #{task} #{arch_arg} --no-daemon --max-workers=2 --no-parallel --stacktrace --console=plain | tee #{log_path}'") do |status|
+      UI.user_error!("Gradle #{task} failed") unless status.success?
     end
   end
 
-  def resolve_apk_paths(version_name:, build_number:, branch_name:)
-    apk_dir = File.join(project_root, 'android', 'app', 'build', 'outputs', 'apk', 'release')
-    unsigned = File.join(apk_dir, 'app-release-unsigned.apk')
-    fallback = File.join(apk_dir, 'app-release.apk')
-    signed = File.join(apk_dir, apk_name(version_name, build_number, branch_name))
-    { unsigned: unsigned, fallback: fallback, signed: signed }
+  def resolve_apk_paths(version_name:, build_number:, branch_name:, profile:)
+    flavor = gradle_flavor(profile)
+    apk_dir = File.join(project_root, 'android', 'app', 'build', 'outputs', 'apk', flavor, 'release')
+    unsigned = File.join(apk_dir, "app-#{flavor}-release-unsigned.apk")
+    signed = File.join(apk_dir, apk_name(version_name, build_number, branch_name, profile))
+    { unsigned: unsigned, signed: signed }
   end
 
   def finalize_apk!(paths)
-    candidate = File.exist?(paths[:unsigned]) ? paths[:unsigned] : paths[:fallback]
-    UI.user_error!("Unsigned APK not found at path: #{paths[:unsigned]} or #{paths[:fallback]}") unless File.exist?(candidate)
-    FileUtils.mv(candidate, paths[:signed])
+    UI.user_error!("Unsigned APK not found at path: #{paths[:unsigned]}") unless File.exist?(paths[:unsigned])
+    FileUtils.mv(paths[:unsigned], paths[:signed])
     paths[:signed]
   end
 
@@ -240,6 +256,7 @@ platform :android do
   desc "Update version, build number, and sign APK"
   lane :update_version_build_and_sign_apk do |options|
     Dir.chdir(PROJECT_ROOT) do
+      profile = AndroidHelpers.bitcoin_profile(options[:profile])
       AndroidHelpers.ensure_temp_credentials!(auto: options[:auto_credentials])
       AndroidHelpers.require_env!(%w[BUILD_NUMBER KEYSTORE_PASSWORD KEYSTORE_FILE_HEX])
 
@@ -249,10 +266,10 @@ platform :android do
       build_gradle_path = File.join('android', 'app', 'build.gradle')
       version_name = AndroidHelpers.version_name_and_update_code!(build_gradle_path, ENV['BUILD_NUMBER'])
       branch = AndroidHelpers.branch_name
-      apk_paths = AndroidHelpers.resolve_apk_paths(version_name: version_name, build_number: ENV['BUILD_NUMBER'], branch_name: branch)
+      apk_paths = AndroidHelpers.resolve_apk_paths(version_name: version_name, build_number: ENV['BUILD_NUMBER'], branch_name: branch, profile: profile)
 
       UI.message("Building APK...")
-      AndroidHelpers.assemble_release!(log_path: AndroidHelpers.gradle_log_path)
+      AndroidHelpers.assemble_release!(log_path: AndroidHelpers.gradle_log_path, profile: profile)
       UI.message("APK build completed.")
 
       signed_apk_path = AndroidHelpers.finalize_apk!(apk_paths)
@@ -261,6 +278,7 @@ platform :android do
       UI.message("Signing APK with apksigner...")
       AndroidHelpers.sign_apk!(signed_apk_path, keystore_paths[:file], ENV['KEYSTORE_PASSWORD'])
       UI.message("APK signed successfully: #{signed_apk_path}")
+      AndroidHelpers.write_github_output(apk_output_path: File.expand_path(signed_apk_path), bitcoin_profile: profile)
 
       FileUtils.rm_f(keystore_paths[:file])
     end
@@ -269,6 +287,7 @@ platform :android do
   desc "Build and sign release APK"
   lane :build_release_apk do |options|
     Dir.chdir(PROJECT_ROOT) do
+      profile = AndroidHelpers.bitcoin_profile(options[:profile])
       # Allow caller to pass a build_number; otherwise fall back to env or timestamp
       build_number = options[:build_number] || ENV['BUILD_NUMBER'] || Time.now.to_i.to_s
       ENV['BUILD_NUMBER'] = build_number
@@ -284,9 +303,9 @@ platform :android do
       branch = AndroidHelpers.branch_name
 
       UI.message("Building release APK...")
-      AndroidHelpers.assemble_release!(log_path: AndroidHelpers.gradle_log_path)
+      AndroidHelpers.assemble_release!(log_path: AndroidHelpers.gradle_log_path, profile: profile)
 
-      apk_paths = AndroidHelpers.resolve_apk_paths(version_name: version_name, build_number: build_number, branch_name: branch)
+      apk_paths = AndroidHelpers.resolve_apk_paths(version_name: version_name, build_number: build_number, branch_name: branch, profile: profile)
       signed_apk_path = AndroidHelpers.finalize_apk!(apk_paths)
 
       UI.message("Signing APK with apksigner...")
@@ -302,6 +321,7 @@ platform :android do
 
       AndroidHelpers.write_github_output(
         apk_output_path: apk_absolute_path,
+        bitcoin_profile: profile,
         apk_version_name: version_name,
         apk_version_code: build_number,
       )
@@ -309,8 +329,9 @@ platform :android do
   end
 
   desc "Upload APK to BrowserStack and post result as PR comment"
-  lane :upload_to_browserstack_and_comment do
+  lane :upload_to_browserstack_and_comment do |options|
     Dir.chdir(PROJECT_ROOT) do
+      profile = AndroidHelpers.bitcoin_profile(options[:profile])
       apk_path = ENV['APK_PATH']
       if apk_path.nil? || apk_path.empty?
         UI.message("No APK path provided, searching for APK...")
@@ -333,7 +354,7 @@ platform :android do
       browserstack_hashed_id = app_url.gsub('bs://', '')
       pr_number = ENV['GITHUB_PR_NUMBER']
 
-      comment_identifier = '### APK Successfully Uploaded to BrowserStack'
+      comment_identifier = "### APK Successfully Uploaded to BrowserStack (#{profile})"
 
       comment = <<~COMMENT
         #{comment_identifier}

@@ -5,6 +5,7 @@ import { HDSegwitBech32Wallet } from '../../class/wallets/hd-segwit-bech32-walle
 
 jest.mock('react-native', () => {
   const actual = jest.requireActual('react-native');
+  Object.defineProperty(actual, 'Platform', { value: actual.Platform, configurable: true });
   Object.defineProperty(actual.Platform, 'OS', {
     value: 'android',
     configurable: true,
@@ -12,6 +13,18 @@ jest.mock('react-native', () => {
   return actual;
 });
 
+jest.mock('../../codegen/NativeSettingsModule', () => ({
+  __esModule: true,
+  default: { getConstants: () => ({ bitcoinNetwork: mockBitcoinNetwork }) },
+}));
+jest.mock('../../models/appScheme', () => ({
+  get appScheme() {
+    return mockAppScheme;
+  },
+}));
+
+let mockBitcoinNetwork = 'bitcoin';
+let mockAppScheme: string;
 jest.mock('../../blue_modules/fs', () => ({
   readFileOutsideSandbox: jest.fn().mockResolvedValue('original PSBT'),
 }));
@@ -27,52 +40,67 @@ beforeEach(() => {
   jest.requireMock('../../blue_modules/BlueElectrum').ensureConnected.mockResolvedValue(true);
 });
 
-describe('Android BHWI app-owned links', () => {
-  it.each(['bluewallet-bhwi', 'BLUEWALLET-BHWI'])('unwraps the complete %s payment prefix', scheme => {
-    const complete = jest.fn();
-    DeeplinkSchemaMatch.navigationRouteFor({ url: `${scheme}:bitcoin:${address}?amount=0.01` }, complete);
-    expect(complete.mock.calls).toEqual([
-      [
-        [
-          'SendDetailsRoot',
-          {
-            screen: 'SendDetails',
-            params: { uri: `bitcoin:${address}?amount=0.01` },
-          },
-        ],
-      ],
-    ]);
+describe.each([
+  ['bitcoin', 'bluewallet-bhwi', 'bluewallet-bhwi-testnet'],
+  ['testnet', 'bluewallet-bhwi-testnet', 'bluewallet-bhwi'],
+])('Android %s app-owned links', (bitcoinNetwork, scheme, foreignScheme) => {
+  beforeAll(() => {
+    mockBitcoinNetwork = bitcoinNetwork;
+    jest.isolateModules(() => {
+      mockAppScheme = jest.requireActual('../../models/appScheme').appScheme;
+    });
+    expect(mockAppScheme).toBe(scheme);
   });
 
-  it.each(['bluewallet', 'bluewallet-bhwi-testnet'])('rejects foreign %s wrappers, settings, widgets and files', scheme => {
-    for (const suffix of [`bitcoin:${address}`, 'setelectrumserver?server=foreign', '//widget?action=openSend', '//import/tx.psbt']) {
-      const url = `${scheme}:${suffix}`;
+  it('unwraps the complete payment prefix, including uppercase schemes', () => {
+    for (const prefix of [scheme, scheme.toUpperCase()]) {
       const complete = jest.fn();
-      assert.strictEqual(DeeplinkSchemaMatch.hasSchema(url), false);
-      DeeplinkSchemaMatch.navigationRouteFor({ url }, complete);
-      assert.strictEqual(complete.mock.calls.length, 0);
+      DeeplinkSchemaMatch.navigationRouteFor({ url: `${prefix}:bitcoin:${address}?amount=0.01` }, complete);
+      expect(complete.mock.calls).toEqual([
+        [
+          [
+            'SendDetailsRoot',
+            {
+              screen: 'SendDetails',
+              params: { uri: `bitcoin:${address}?amount=0.01` },
+            },
+          ],
+        ],
+      ]);
     }
-    expect(readFileOutsideSandbox).not.toHaveBeenCalled();
-    assert.strictEqual(DeeplinkSchemaMatch.getServerFromSetElectrumServerAction(`${scheme}:setelectrumserver?server=foreign`), false);
-    assert.strictEqual(DeeplinkSchemaMatch.getUrlFromSetLndhubUrlAction(`${scheme}:setlndhuburl?url=foreign`), false);
+  });
+
+  it('rejects foreign wrappers, settings, widgets and files', () => {
+    for (const foreign of ['bluewallet', foreignScheme]) {
+      for (const suffix of [`bitcoin:${address}`, 'setelectrumserver?server=foreign', '//widget?action=openSend', '//import/tx.psbt']) {
+        const url = `${foreign}:${suffix}`;
+        const complete = jest.fn();
+        assert.strictEqual(DeeplinkSchemaMatch.hasSchema(url), false);
+        DeeplinkSchemaMatch.navigationRouteFor({ url }, complete);
+        assert.strictEqual(complete.mock.calls.length, 0);
+      }
+      expect(readFileOutsideSandbox).not.toHaveBeenCalled();
+      assert.strictEqual(DeeplinkSchemaMatch.getServerFromSetElectrumServerAction(`${foreign}:setelectrumserver?server=foreign`), false);
+      assert.strictEqual(DeeplinkSchemaMatch.getUrlFromSetLndhubUrlAction(`${foreign}:setlndhuburl?url=foreign`), false);
+    }
   });
 
   it('routes its settings and the exact widget wallet', () => {
     const complete = jest.fn();
     DeeplinkSchemaMatch.navigationRouteFor(
       {
-        url: 'bluewallet-bhwi:setelectrumserver?server=electrum1.bluewallet.io%3A443%3As',
+        url: `${scheme}:setelectrumserver?server=electrum1.bluewallet.io%3A443%3As`,
       },
       complete,
     );
     expect(complete.mock.calls[0][0]).toEqual(['ElectrumSettings', { server: 'electrum1.bluewallet.io:443:s' }]);
     assert.strictEqual(
-      DeeplinkSchemaMatch.getUrlFromSetLndhubUrlAction('bluewallet-bhwi:setlndhuburl?url=https%3A%2F%2Flndhub.example'),
+      DeeplinkSchemaMatch.getUrlFromSetLndhubUrlAction(`${scheme}:setlndhuburl?url=https%3A%2F%2Flndhub.example`),
       'https://lndhub.example',
     );
 
     const wallet = new HDSegwitBech32Wallet();
-    DeeplinkSchemaMatch.navigationRouteFor({ url: 'bluewallet-bhwi://widget?action=openReceive' }, complete, {
+    DeeplinkSchemaMatch.navigationRouteFor({ url: `${scheme}://widget?action=openReceive` }, complete, {
       wallets: [wallet],
       saveToDisk: jest.fn(),
       addWallet: jest.fn(),

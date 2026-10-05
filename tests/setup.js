@@ -43,6 +43,12 @@ if (typeof globalThis.fetch !== 'function') {
 
 jest.mock('@react-native-clipboard/clipboard', () => mockClipboard);
 
+// Existing wallet vectors always run as mainnet; profile tests override this native boundary explicitly.
+jest.mock('../codegen/NativeSettingsModule', () => ({
+  __esModule: true,
+  default: { getConstants: jest.fn(() => ({ bitcoinNetwork: 'bitcoin' })) },
+}));
+
 // Workaround for software-mansion/react-native-reanimated#8806.
 // Fixed upstream in reanimated 4.3.0; remove once we upgrade.
 // Path is held in a variable so tsc does not statically resolve into worklets'

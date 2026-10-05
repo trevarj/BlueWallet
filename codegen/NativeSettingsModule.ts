@@ -2,6 +2,7 @@ import { TurboModuleRegistry } from 'react-native';
 import type { TurboModule } from 'react-native';
 
 export interface Spec extends TurboModule {
+  getConstants(): { readonly bitcoinNetwork: string };
   initializeDeviceUID(): Promise<string>;
   getDeviceUID(): Promise<string | null>;
   getDeviceUIDCopy(): Promise<string>;
