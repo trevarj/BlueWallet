@@ -9,6 +9,7 @@ import Lnurl from '../class/lnurl';
 import { Chain } from '../models/bitcoinUnits';
 import ecc from './noble_ecc';
 import { uint8ArrayToHex } from './uint8array-extras';
+import { mainnetServicesEnabled } from '../models/bitcoinNetwork';
 
 bitcoin.initEccLib(ecc);
 
@@ -18,6 +19,7 @@ export const ClipboardPaymentKind = {
   Bitcoin: 'bitcoin',
   Lightning: 'lightning',
   Lnurl: 'lnurl',
+  Unsupported: 'unsupported',
 } as const;
 export type ClipboardPaymentKind = (typeof ClipboardPaymentKind)[keyof typeof ClipboardPaymentKind];
 
@@ -73,9 +75,15 @@ function isDecodedLnurl(text: string): boolean {
     return false;
   }
 }
+const isPaymentCodeIntent = (text: string): boolean =>
+  (text.startsWith('PM') && text.length > 20) || (text.toLowerCase().startsWith('sp1') && text.length > 20);
 
 function classifyNormalized(text: string): ClipboardPayment | null {
   const both = DeeplinkSchemaMatch.isBothBitcoinAndLightning(text);
+  if (!mainnetServicesEnabled && /(?:[?&])lightning=/i.test(text)) {
+    return { kind: ClipboardPaymentKind.Unsupported, payload: text };
+  }
+  if (!mainnetServicesEnabled && both) return { kind: ClipboardPaymentKind.Unsupported, payload: text };
   if (both) {
     const invoice = stripLightningScheme(both.lndInvoice);
     if (DeeplinkSchemaMatch.isBitcoinAddress(both.bitcoin) && isBolt11Invoice(invoice)) {
@@ -86,17 +94,29 @@ function classifyNormalized(text: string): ClipboardPayment | null {
     }
   }
 
-  if (DeeplinkSchemaMatch.isBitcoinAddress(text) || contacts.isPaymentCodeValid(text)) {
+  if (DeeplinkSchemaMatch.isBitcoinAddress(text)) {
+    return { kind: ClipboardPaymentKind.Bitcoin, payload: text };
+  }
+  if (!mainnetServicesEnabled && isPaymentCodeIntent(text)) {
+    return { kind: ClipboardPaymentKind.Unsupported, payload: text };
+  }
+  if (mainnetServicesEnabled && contacts.isPaymentCodeValid(text)) {
     return { kind: ClipboardPaymentKind.Bitcoin, payload: text };
   }
 
   const invoice = stripLightningScheme(text);
   if (isBolt11Invoice(invoice)) {
-    return { kind: ClipboardPaymentKind.Lightning, payload: text };
+    return {
+      kind: mainnetServicesEnabled ? ClipboardPaymentKind.Lightning : ClipboardPaymentKind.Unsupported,
+      payload: text,
+    };
   }
 
   if (DeeplinkSchemaMatch.isLnUrl(text) && isDecodedLnurl(text)) {
-    return { kind: ClipboardPaymentKind.Lnurl, payload: text };
+    return {
+      kind: mainnetServicesEnabled ? ClipboardPaymentKind.Lnurl : ClipboardPaymentKind.Unsupported,
+      payload: text,
+    };
   }
 
   return null;
@@ -149,7 +169,8 @@ export function evaluateClipboardOnForeground(
     return { offer: null, nextHash };
   }
   const classified = classifyClipboardPayment(current);
-  if (!classified || isClipboardPaymentFromOwnWallet(classified.payload, wallets)) {
+  if (!classified) return { offer: null, nextHash };
+  if (classified.kind !== ClipboardPaymentKind.Unsupported && isClipboardPaymentFromOwnWallet(classified.payload, wallets)) {
     return { offer: null, nextHash };
   }
   return { offer: classified, nextHash };

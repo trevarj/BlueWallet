@@ -16,6 +16,7 @@ import { useSettings } from '../hooks/context/useSettings';
 import ToolTipMenu from './TooltipMenu';
 import { useLocale } from '@react-navigation/native';
 import ActionSheet from '../screen/ActionSheet';
+import { mainnetServicesEnabled } from '../models/bitcoinNetwork';
 
 const HERO_BASE_BODY_MIN_HEIGHT = 120;
 const HERO_MIN_BODY_HEIGHT = Math.round(HERO_BASE_BODY_MIN_HEIGHT * 1.2);
@@ -45,12 +46,12 @@ const TransactionsNavigationHeader: React.FC<TransactionsNavigationHeaderProps> 
   const { colors } = useTheme();
   const { hideBalance } = wallet;
   const isLightningWallet = wallet.type === LightningCustodianWallet.type || wallet.type === LightningArkWallet.type;
-  const [allowOnchainAddress, setAllowOnchainAddress] = useState(isLightningWallet);
+  const [allowOnchainAddress, setAllowOnchainAddress] = useState(mainnetServicesEnabled && isLightningWallet);
   const { preferredFiatCurrency } = useSettings();
   const { direction } = useLocale();
 
   const verifyIfWalletAllowsOnchainAddress = useCallback(() => {
-    if (isLightningWallet) {
+    if (mainnetServicesEnabled && isLightningWallet) {
       wallet
         .allowOnchainAddress()
         .then((value: boolean) => setAllowOnchainAddress(value))
@@ -62,7 +63,7 @@ const TransactionsNavigationHeader: React.FC<TransactionsNavigationHeaderProps> 
   }, [isLightningWallet, wallet]);
 
   useEffect(() => {
-    setAllowOnchainAddress(isLightningWallet);
+    setAllowOnchainAddress(mainnetServicesEnabled && isLightningWallet);
   }, [isLightningWallet]);
 
   useEffect(() => {
@@ -89,7 +90,7 @@ const TransactionsNavigationHeader: React.FC<TransactionsNavigationHeaderProps> 
     if (newWalletPreferredUnit === BitcoinUnit.BTC) {
       newWalletPreferredUnit = BitcoinUnit.SATS;
     } else if (newWalletPreferredUnit === BitcoinUnit.SATS) {
-      newWalletPreferredUnit = BitcoinUnit.LOCAL_CURRENCY;
+      newWalletPreferredUnit = mainnetServicesEnabled ? BitcoinUnit.LOCAL_CURRENCY : BitcoinUnit.BTC;
     } else {
       newWalletPreferredUnit = BitcoinUnit.BTC;
     }
@@ -226,16 +227,18 @@ const TransactionsNavigationHeader: React.FC<TransactionsNavigationHeaderProps> 
               </TouchableOpacity>
             )}
           </View>
-          {(wallet.type === LightningCustodianWallet.type || wallet.type === LightningArkWallet.type) && allowOnchainAddress && (
-            <TouchableOpacity
-              style={styles.manageFundsButton}
-              accessibilityRole="button"
-              ref={manageFundsRef}
-              onPress={showManageFundsActionSheet}
-            >
-              <Text style={styles.manageFundsButtonText}>{loc.lnd.title}</Text>
-            </TouchableOpacity>
-          )}
+          {mainnetServicesEnabled &&
+            (wallet.type === LightningCustodianWallet.type || wallet.type === LightningArkWallet.type) &&
+            allowOnchainAddress && (
+              <TouchableOpacity
+                style={styles.manageFundsButton}
+                accessibilityRole="button"
+                ref={manageFundsRef}
+                onPress={showManageFundsActionSheet}
+              >
+                <Text style={styles.manageFundsButtonText}>{loc.lnd.title}</Text>
+              </TouchableOpacity>
+            )}
         </View>
         {wallet.type === MultisigHDWallet.type && (
           <TouchableOpacity style={styles.manageFundsButton} accessibilityRole="button" onPress={() => handleManageFundsPressed()}>

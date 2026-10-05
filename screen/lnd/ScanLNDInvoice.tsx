@@ -26,6 +26,7 @@ import { DecodedInvoice, TWallet } from '../../class/wallets/types';
 import { useKeyboard } from '../../hooks/useKeyboard';
 import { BlueLoading } from '../../components/BlueLoading';
 import { LightningArkWallet } from '../../class/wallets/lightning-ark-wallet';
+import { mainnetServicesEnabled } from '../../models/bitcoinNetwork';
 
 type RouteProps = RouteProp<LNDStackParamsList, 'ScanLNDInvoice'>;
 type NavigationProps = NativeStackNavigationProp<LNDStackParamsList, 'ScanLNDInvoice'>;
@@ -84,6 +85,7 @@ const ScanLNDInvoice = () => {
   }, [walletID]);
 
   useEffect(() => {
+    if (!mainnetServicesEnabled) return;
     // Reset readiness whenever the selected wallet changes (or is not an Ark
     // wallet) so a stale `true` from a previously-selected wallet never carries
     // over to one whose fees are not loaded yet.
@@ -104,6 +106,11 @@ const ScanLNDInvoice = () => {
 
   useFocusEffect(
     useCallback(() => {
+      if (!mainnetServicesEnabled) {
+        presentAlert({ message: loc._.mainnet_services_unavailable });
+        goBack();
+        return;
+      }
       if (!wallet) {
         triggerHapticFeedback(HapticFeedbackTypes.NotificationError);
         goBack();
@@ -117,6 +124,7 @@ const ScanLNDInvoice = () => {
   );
 
   useEffect(() => {
+    if (!mainnetServicesEnabled) return;
     if (wallet && uri) {
       if (Lnurl.isLnurl(uri)) return processLnurlPay(uri);
       if (Lnurl.isLightningAddress(uri)) return processLnurlPay(uri);
@@ -192,12 +200,14 @@ const ScanLNDInvoice = () => {
   useKeyboard({ onKeyboardDidShow: _keyboardDidShow, onKeyboardDidHide: _keyboardDidHide });
 
   const processInvoice = (data: string): void => {
+    if (!mainnetServicesEnabled) return presentAlert({ message: loc._.mainnet_services_unavailable });
     if (Lnurl.isLnurl(data)) return processLnurlPay(data);
     if (Lnurl.isLightningAddress(data)) return processLnurlPay(data);
     setParams({ uri: data });
   };
 
   const processLnurlPay = (data: string): void => {
+    if (!mainnetServicesEnabled) return presentAlert({ message: loc._.mainnet_services_unavailable });
     navigate('LnurlPay', {
       lnurl: data,
       walletID: walletID || wallet?.getID() || '',
@@ -205,6 +215,7 @@ const ScanLNDInvoice = () => {
   };
 
   const pay = async () => {
+    if (!mainnetServicesEnabled) return presentAlert({ message: loc._.mainnet_services_unavailable });
     if (!decoded || !wallet || !amount || !destination) {
       return null;
     }

@@ -28,6 +28,7 @@ import { getLNDHub } from '../helpers/lndHub';
 import { LightningArkWallet } from './wallets/lightning-ark-wallet.ts';
 import { hexToUint8Array, uint8ArrayToHex } from '../blue_modules/uint8array-extras';
 import { HDTaprootWallet } from './wallets/hd-taproot-wallet';
+import { mainnetServicesEnabled } from '../models/bitcoinNetwork';
 
 let usedBucketNum: boolean | number = false;
 let savingInProgress = 0; // its both a flag and a counter of attempts to write to disk
@@ -463,23 +464,25 @@ export class BlueApp {
             break;
           case LightningCustodianWallet.type: {
             unserializedWallet = LightningCustodianWallet.fromJson(key) as unknown as LightningCustodianWallet;
-            let lndhub: false | any = false;
-            try {
-              lndhub = await getLNDHub();
-            } catch (error) {
-              console.warn(error);
-            }
+            if (mainnetServicesEnabled) {
+              let lndhub: string | undefined;
+              try {
+                lndhub = await getLNDHub();
+              } catch (error) {
+                console.warn(error);
+              }
 
-            if (unserializedWallet.baseURI) {
-              unserializedWallet.setBaseURI(unserializedWallet.baseURI); // not really necessary, just for the sake of readability
-              console.log('using saved uri for for ln wallet:', unserializedWallet.baseURI);
-            } else if (lndhub) {
-              console.log('using wallet-wide settings ', lndhub, 'for ln wallet');
-              unserializedWallet.setBaseURI(lndhub);
-            } else {
-              console.log('wallet does not have a baseURI. Continuing init...');
+              if (unserializedWallet.baseURI) {
+                unserializedWallet.setBaseURI(unserializedWallet.baseURI);
+                console.log('using saved uri for for ln wallet:', unserializedWallet.baseURI);
+              } else if (lndhub) {
+                console.log('using wallet-wide settings ', lndhub, 'for ln wallet');
+                unserializedWallet.setBaseURI(lndhub);
+              } else {
+                console.log('wallet does not have a baseURI. Continuing init...');
+              }
+              await unserializedWallet.init();
             }
-            unserializedWallet.init();
             break;
           }
           case 'lightningLdk':
@@ -738,12 +741,14 @@ export class BlueApp {
       let c = 0;
       for (const wallet of this.wallets) {
         if (c++ === index) {
+          if (!mainnetServicesEnabled && wallet instanceof LightningCustodianWallet) continue;
           await wallet.fetchBalance();
         }
       }
     } else {
       await Promise.all(
         this.wallets.map(async wallet => {
+          if (!mainnetServicesEnabled && wallet instanceof LightningCustodianWallet) return;
           console.log('fetching balance for', wallet.getLabel());
           await wallet.fetchBalance();
         }),
@@ -767,6 +772,7 @@ export class BlueApp {
       let c = 0;
       for (const wallet of this.wallets) {
         if (c++ === index) {
+          if (!mainnetServicesEnabled && wallet instanceof LightningCustodianWallet) continue;
           await wallet.fetchTransactions();
 
           if ('fetchPendingTransactions' in wallet) {
@@ -778,6 +784,7 @@ export class BlueApp {
     } else {
       await Promise.all(
         this.wallets.map(async wallet => {
+          if (!mainnetServicesEnabled && wallet instanceof LightningCustodianWallet) return;
           await wallet.fetchTransactions();
           if ('fetchPendingTransactions' in wallet) {
             await wallet.fetchPendingTransactions();

@@ -24,6 +24,7 @@ import { useStorage } from '../../hooks/context/useStorage';
 import { DetailViewStackParamList } from '../../navigation/DetailViewStackParamList';
 import { BlueLoading } from '../../components/BlueLoading';
 import { uint8ArrayToHex } from '../../blue_modules/uint8array-extras';
+import { mainnetServicesEnabled } from '../../models/bitcoinNetwork';
 
 interface DataSection {
   title: string;
@@ -94,6 +95,7 @@ export default function PaymentCodesList() {
   }
 
   useEffect(() => {
+    if (!mainnetServicesEnabled) return;
     if (!walletID) return;
 
     const foundWallet = wallets.find(w => w.getID() === walletID) as unknown as AbstractHDElectrumWallet;
@@ -116,6 +118,10 @@ export default function PaymentCodesList() {
   };
 
   const onToolTipPress = async (id: any, pc: string) => {
+    if (!mainnetServicesEnabled) {
+      presentAlert({ message: loc._.mainnet_services_unavailable });
+      return;
+    }
     try {
       setIsLoading(true);
       await _onToolTipPress(id, pc);
@@ -243,6 +249,10 @@ export default function PaymentCodesList() {
   };
 
   const onAddContactPress = async () => {
+    if (!mainnetServicesEnabled) {
+      presentAlert({ message: loc._.mainnet_services_unavailable });
+      return;
+    }
     try {
       const newPc = await prompt(loc.bip47.add_contact, loc.bip47.provide_payment_code, { type: 'plain-text' });
       if (!newPc) return;
@@ -256,6 +266,10 @@ export default function PaymentCodesList() {
   };
 
   const _addContact = async (newPc: string) => {
+    if (!mainnetServicesEnabled) {
+      presentAlert({ message: loc._.mainnet_services_unavailable });
+      return;
+    }
     const foundWallet = wallets.find(w => w.getID() === walletID) as unknown as HDSegwitBech32Wallet;
     assert(foundWallet, 'Internal error: cant find walletID ' + walletID);
 
@@ -355,6 +369,13 @@ export default function PaymentCodesList() {
       setLoadingText('');
     }
   };
+  if (!mainnetServicesEnabled) {
+    return (
+      <SafeArea style={styles.container}>
+        <Text>{loc._.mainnet_services_unavailable}</Text>
+      </SafeArea>
+    );
+  }
 
   if (isLoading) {
     return (

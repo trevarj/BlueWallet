@@ -24,6 +24,7 @@ import { TWallet } from '../../class/wallets/types';
 import { pop } from '../../NavigationService';
 import { BlueSpacing20 } from '../../components/BlueSpacing';
 import { BlueLoading } from '../../components/BlueLoading';
+import { mainnetServicesEnabled } from '../../models/bitcoinNetwork';
 
 type RouteParams = {
   walletID: string;
@@ -63,6 +64,12 @@ const LnurlPay: React.FC = () => {
   });
 
   useEffect(() => {
+    if (!mainnetServicesEnabled) {
+      setIsLoading(false);
+      presentAlert({ message: loc._.mainnet_services_unavailable });
+      pop();
+      return;
+    }
     if (lnurl) {
       const ln = new Lnurl(lnurl, AsyncStorage);
       ln.callLnurlPayService()
@@ -107,6 +114,10 @@ const LnurlPay: React.FC = () => {
   };
 
   const pay = async () => {
+    if (!mainnetServicesEnabled) {
+      presentAlert({ message: loc._.mainnet_services_unavailable });
+      return;
+    }
     setPayButtonDisabled(true);
     if (!_LN || !amount) return;
 

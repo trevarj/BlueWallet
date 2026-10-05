@@ -2,6 +2,7 @@ import React, { createContext, useCallback, useEffect, useMemo, useRef, useState
 import { BlueApp as BlueAppClass, TCounterpartyMetadata, TTXMetadata, TAddressMetadata } from '../../class/blue-app';
 import { LegacyWallet } from '../../class/wallets/legacy-wallet';
 import { LightningArkWallet } from '../../class/wallets/lightning-ark-wallet';
+import { LightningCustodianWallet } from '../../class/wallets/lightning-custodian-wallet';
 import { WatchOnlyWallet } from '../../class/wallets/watch-only-wallet';
 import type { TWallet } from '../../class/wallets/types';
 import presentAlert from '../../components/Alert';
@@ -15,6 +16,7 @@ import { BitcoinUnit } from '../../models/bitcoinUnits';
 import { navigationRef } from '../../NavigationService';
 import { getScanWasBBQR } from '../../helpers/scan-qr.ts';
 import { setWalletIdMustUseBBQR } from '../../blue_modules/ur';
+import { mainnetServicesEnabled } from '../../models/bitcoinNetwork';
 
 const BlueApp = BlueAppClass.getInstance();
 
@@ -250,7 +252,7 @@ export const StorageProvider = ({ children }: { children: React.ReactNode }) => 
       addressMetadata.current = BlueApp.address_metadata ?? {};
       const loaded = BlueApp.getWallets();
       setWallets(loaded);
-      if (loaded.some(w => w.type === LightningArkWallet.type)) {
+      if (mainnetServicesEnabled && loaded.some(w => w.type === LightningArkWallet.type)) {
         registerArkBackgroundTask().catch(e => console.warn('[StorageProvider] Ark background task register failed:', e?.message ?? e));
       }
     }
@@ -352,6 +354,8 @@ export const StorageProvider = ({ children }: { children: React.ReactNode }) => 
   const fetchAndSaveWalletTransactions = useCallback(
     async (walletID: string) => {
       const index = wallets.findIndex(wallet => wallet.getID() === walletID);
+      const selectedWallet = wallets[index];
+      if (!mainnetServicesEnabled && selectedWallet instanceof LightningCustodianWallet) return;
       let noErr = true;
       try {
         if (Date.now() - (_lastTimeTriedToRefetchWallet[walletID] || 0) < 5000) {
@@ -389,6 +393,10 @@ export const StorageProvider = ({ children }: { children: React.ReactNode }) => 
 
   const addAndSaveWallet = useCallback(
     async (w: TWallet) => {
+      if (!mainnetServicesEnabled && w instanceof LightningCustodianWallet) {
+        presentAlert({ message: loc._.mainnet_services_unavailable });
+        return;
+      }
       if (wallets.some(i => i.getID() === w.getID())) {
         triggerHapticFeedback(HapticFeedbackTypes.NotificationError);
         presentAlert({ message: 'This wallet has been previously imported.' });
@@ -398,7 +406,7 @@ export const StorageProvider = ({ children }: { children: React.ReactNode }) => 
       if (w.getLabel() === emptyWalletLabel) w.setLabel(loc.wallets.import_imported + ' ' + w.typeReadable);
       w.setUserHasSavedExport(true);
       addWallet(w);
-      if (w instanceof LightningArkWallet) {
+      if (mainnetServicesEnabled && w instanceof LightningArkWallet) {
         registerArkBackgroundTask().catch(e => console.warn('[StorageProvider] Ark background task register failed:', e?.message ?? e));
       }
       if (getScanWasBBQR()) {

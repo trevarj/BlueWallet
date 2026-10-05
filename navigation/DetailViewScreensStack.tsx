@@ -31,6 +31,7 @@ import { useSettings } from '../hooks/context/useSettings';
 import { useStorage } from '../hooks/context/useStorage';
 import { WalletTransactionsStatus } from '../components/Context/StorageProvider';
 import WalletTransactions from '../screen/wallets/WalletTransactions';
+import { labelForNetwork } from '../models/bitcoinNetwork';
 import AddWalletButton from '../components/AddWalletButton';
 import Settings from '../screen/settings/Settings';
 import Currency from '../screen/settings/Currency';
@@ -486,7 +487,11 @@ const DetailViewStackScreensStack = () => {
           options={settingsScreenOptions(loc.plausibledeniability.title)}
         />
         <DetailViewStack.Screen name="Licensing" component={Licensing} options={settingsScreenOptions(loc.settings.license)} />
-        <DetailViewStack.Screen name="NetworkSettings" component={NetworkSettings} options={settingsScreenOptions(loc.settings.network)} />
+        <DetailViewStack.Screen
+          name="NetworkSettings"
+          component={NetworkSettings}
+          options={settingsScreenOptions(labelForNetwork(loc.settings.network))}
+        />
         <DetailViewStack.Screen
           name="SettingsBlockExplorer"
           component={SettingsBlockExplorer}
@@ -503,7 +508,7 @@ const DetailViewStackScreensStack = () => {
           name="ElectrumSettings"
           component={ElectrumSettings}
           options={navigationStyle(
-            getSettingsHeaderOptions(loc.settings.electrum_settings_server, theme),
+            getSettingsHeaderOptions(labelForNetwork(loc.settings.electrum_settings_server), theme),
             withRouteParamHeaderOptions({ headerRight: true }),
           )(theme)}
           initialParams={{ server: undefined }}
@@ -621,7 +626,7 @@ const styles = StyleSheet.create({
 
 const createReceiveDetailsOptions = (theme: ReturnType<typeof useTheme>) =>
   navigationStyle({
-    title: loc.receive.header,
+    title: labelForNetwork(loc.receive.header),
     closeButtonPosition: CloseButtonPosition.Right,
     headerShown: true,
     presentation: 'modal',

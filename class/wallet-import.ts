@@ -22,7 +22,7 @@ import { WatchOnlyWallet } from './wallets/watch-only-wallet';
 import bip39WalletFormatsElectrum from './bip39_wallet_formats.json'; // https://github.com/spesmilo/electrum/blob/master/electrum/bip39_wallet_formats.json
 import bip39WalletFormatsBlueWallet from './bip39_wallet_formats_bluewallet.json';
 import type { TWallet } from './wallets/types';
-import { bitcoinNetwork, coinType, mapStandardAccountPath, network } from '../models/bitcoinNetwork';
+import { assertMainnetServicesEnabled, bitcoinNetwork, coinType, mapStandardAccountPath, network } from '../models/bitcoinNetwork';
 import { convertExtendedKey, decodeExtendedKey } from './wallets/extended-key';
 
 // Canonicalize a user-typed derivation path: trim, iOS smart quotes and h/H hardened notation
@@ -133,6 +133,9 @@ const startImport = (
     // 7. check if its private key (legacy address) TODO
     // 8. check if its a json array from BC-UR with multiple accounts
     let text = importTextOrig.trim();
+    if (text.startsWith('blitzhub://') || text.startsWith('lndhub://') || text.startsWith('arkade://')) {
+      assertMainnetServicesEnabled();
+    }
     let password;
 
     // BIP38 password required

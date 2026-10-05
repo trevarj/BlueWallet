@@ -16,6 +16,11 @@ class MarketWidgetConfigureActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (!mainnetWidgetsEnabled) {
+            AppWidgetUtils.disableMainnetWidgets(this)
+            finish()
+            return
+        }
 
         // Set the result to CANCELED. This will be overridden if the user
         // configures the widget properly and clicks the Add button

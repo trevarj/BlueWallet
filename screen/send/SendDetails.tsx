@@ -57,7 +57,7 @@ import ActionSheet from '../ActionSheet';
 import { isCancel, pickTransaction } from '../../blue_modules/fs';
 import { Measure } from '../../class/measure';
 import { isWatchOnlySegwitBech32 } from '../../util/isWatchOnlySegwitBech32';
-import { network } from '../../models/bitcoinNetwork';
+import { mainnetServicesEnabled, network } from '../../models/bitcoinNetwork';
 
 const previewTaproot = bitcoin.address.fromBech32('bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0');
 const previewTaprootAddress = bitcoin.address.toBech32(previewTaproot.data, previewTaproot.version, network.bech32);
@@ -89,8 +89,10 @@ const SendDetails = () => {
   const selectedDataProcessor = useRef<ToolTipAction | undefined>(undefined);
   const setParams = navigation.setParams;
   const route = useRoute<RouteProps>();
-  const feeUnit = route.params?.feeUnit ?? BitcoinUnit.BTC;
-  const amountUnit = route.params?.amountUnit ?? BitcoinUnit.BTC;
+  const requestedFeeUnit = route.params?.feeUnit ?? BitcoinUnit.BTC;
+  const requestedAmountUnit = route.params?.amountUnit ?? BitcoinUnit.BTC;
+  const feeUnit = !mainnetServicesEnabled && requestedFeeUnit === BitcoinUnit.LOCAL_CURRENCY ? BitcoinUnit.BTC : requestedFeeUnit;
+  const amountUnit = !mainnetServicesEnabled && requestedAmountUnit === BitcoinUnit.LOCAL_CURRENCY ? BitcoinUnit.BTC : requestedAmountUnit;
   const frozenBalance = route.params?.frozenBalance ?? 0;
   const transactionMemo = route.params?.transactionMemo;
   const utxos = route.params?.utxos;
@@ -197,6 +199,11 @@ const SendDetails = () => {
     if (routeParams.uri) {
       try {
         const { address, amount, memo, payjoinUrl: pjUrl } = DeeplinkSchemaMatch.decodeBitcoinUri(routeParams.uri);
+        if (!mainnetServicesEnabled && pjUrl) {
+          setParams({ payjoinUrl: pjUrl });
+          presentAlert({ title: loc.errors.error, message: loc._.payjoin_unavailable });
+          return;
+        }
 
         setAddresses(addrs => {
           addrs[scrollIndex.current].unit = BitcoinUnit.BTC;
@@ -512,6 +519,11 @@ const SendDetails = () => {
       const cl = new ContactList();
 
       const dataWithoutSchema = data.replace('bitcoin:', '').replace('BITCOIN:', '');
+      if (!mainnetServicesEnabled && (/^PM/.test(dataWithoutSchema) || /^sp1/i.test(dataWithoutSchema))) {
+        setIsLoading(false);
+        presentAlert({ title: loc.errors.error, message: loc._.mainnet_services_unavailable });
+        return;
+      }
       if (wallet.isAddressValid(dataWithoutSchema) || cl.isPaymentCodeValid(dataWithoutSchema)) {
         setAddresses(addrs => {
           addrs[scrollIndex.current].address = dataWithoutSchema;
@@ -542,6 +554,12 @@ const SendDetails = () => {
         decoded.options.amount = 0;
         address = decoded.address;
         options = decoded.options;
+      }
+      if (!mainnetServicesEnabled && options.pj) {
+        setParams({ payjoinUrl: options.pj });
+        setIsLoading(false);
+        presentAlert({ title: loc.errors.error, message: loc._.payjoin_unavailable });
+        return;
       }
 
       console.log('options', options);
@@ -578,6 +596,10 @@ const SendDetails = () => {
   );
 
   const createTransaction = async () => {
+    if (!mainnetServicesEnabled && payjoinUrl) {
+      presentAlert({ title: loc.errors.error, message: loc._.payjoin_unavailable });
+      return;
+    }
     assert(wallet, 'Internal error: wallet is not set');
     Keyboard.dismiss();
     setIsLoading(true);
@@ -606,6 +628,13 @@ const SendDetails = () => {
           error = loc.send.provided_address_is_invoice;
           console.log('validation error');
         }
+      }
+      if (
+        !error &&
+        !mainnetServicesEnabled &&
+        (transaction.address.startsWith('PM') || transaction.address.toLowerCase().startsWith('sp1'))
+      ) {
+        error = loc._.mainnet_services_unavailable;
       }
 
       if (!error) {
@@ -674,6 +703,10 @@ const SendDetails = () => {
   }, [navigation]);
 
   const createPsbtTransaction = async () => {
+    if (!mainnetServicesEnabled && payjoinUrl) {
+      presentAlert({ title: loc.errors.error, message: loc._.payjoin_unavailable });
+      return;
+    }
     if (!wallet) return;
     const change = await getChangeAddressAsync();
     assert(change, 'Could not get change address');
@@ -1159,9 +1192,13 @@ const SendDetails = () => {
   }, [navigation, wallet]);
 
   const handleInsertContact = useCallback(() => {
+    if (!mainnetServicesEnabled) {
+      presentAlert({ title: loc.errors.error, message: loc._.mainnet_services_unavailable });
+      return;
+    }
     if (!wallet) return;
     navigation.navigate('PaymentCodeList', { walletID: wallet.getID() });
-  }, [navigation, wallet]);
+  }, [navigation, presentAlert, wallet]);
 
   const onReplaceableFeeSwitchValueChanged = useCallback(
     (value: boolean) => {

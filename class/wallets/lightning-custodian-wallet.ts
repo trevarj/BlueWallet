@@ -3,6 +3,7 @@ import { BitcoinUnit, Chain } from '../../models/bitcoinUnits';
 import { fetch } from '../../util/fetch';
 import { LegacyWallet } from './legacy-wallet';
 import { DecodedInvoice, LightningTransaction, Transaction } from './types';
+import { assertMainnetServicesEnabled, mainnetServicesEnabled } from '../../models/bitcoinNetwork';
 
 const _staticDecodedInvoiceCache: Record<string, DecodedInvoice> = {};
 
@@ -42,6 +43,7 @@ export class LightningCustodianWallet extends LegacyWallet {
   }
 
   getAddress(): string | false {
+    if (!mainnetServicesEnabled) return false;
     if (this.refill_addressess.length > 0) {
       return this.refill_addressess[0];
     } else {
@@ -58,6 +60,7 @@ export class LightningCustodianWallet extends LegacyWallet {
   }
 
   async init() {
+    assertMainnetServicesEnabled();
     // un-cache refill onchain addresses on cold start. should help for cases when certain lndhub
     // is turned off permanently, so users cant pull refill address from cache and send money to a black hole
     this.refill_addressess = [];
@@ -72,11 +75,13 @@ export class LightningCustodianWallet extends LegacyWallet {
   }
 
   generate(): Promise<void> {
+    assertMainnetServicesEnabled();
     // nop
     return Promise.resolve();
   }
 
   async createAccount(isTest: boolean = false) {
+    assertMainnetServicesEnabled();
     const response = await fetch(this.baseURI + '/create', {
       method: 'POST',
       body: JSON.stringify({ partnerid: 'bluewallet', accounttype: (isTest && 'test') || 'common' }),
@@ -99,6 +104,7 @@ export class LightningCustodianWallet extends LegacyWallet {
   }
 
   async payInvoice(invoice: string, freeAmount: number = 0) {
+    assertMainnetServicesEnabled();
     const response = await fetch(this.baseURI + '/payinvoice', {
       method: 'POST',
       body: JSON.stringify({ invoice, amount: freeAmount }),
@@ -127,6 +133,7 @@ export class LightningCustodianWallet extends LegacyWallet {
    * @return {Promise.<Array>}
    */
   async getUserInvoices(limit: number | false = false) {
+    assertMainnetServicesEnabled();
     let limitString = '';
     if (limit) limitString = '?limit=' + parseInt(limit as unknown as string, 10);
     const response = await fetch(this.baseURI + '/getuserinvoices' + limitString, {
@@ -184,6 +191,7 @@ export class LightningCustodianWallet extends LegacyWallet {
   }
 
   async addInvoice(amt: number, memo: string) {
+    assertMainnetServicesEnabled();
     const response = await fetch(this.baseURI + '/addinvoice', {
       method: 'POST',
       body: JSON.stringify({ amt: amt + '', memo }),
@@ -216,6 +224,7 @@ export class LightningCustodianWallet extends LegacyWallet {
    * @return {Promise.<void>}
    */
   async authorize() {
+    assertMainnetServicesEnabled();
     const [login, password] = this.secret.replace(/^(blitzhub|lndhub):\/\//, '').split(':');
     const response = await fetch(this.baseURI + '/auth?type=auth', {
       method: 'POST',
@@ -243,6 +252,7 @@ export class LightningCustodianWallet extends LegacyWallet {
   }
 
   async checkLogin() {
+    assertMainnetServicesEnabled();
     if (this.accessTokenExpired() && this.refreshTokenExpired()) {
       // all tokens expired, only option is to login with login and password
       return this.authorize();
@@ -265,6 +275,7 @@ export class LightningCustodianWallet extends LegacyWallet {
   }
 
   async refreshAcessToken() {
+    assertMainnetServicesEnabled();
     const response = await fetch(this.baseURI + '/auth?type=refresh_token', {
       method: 'POST',
       body: JSON.stringify({ refresh_token: this.refresh_token }),
@@ -291,6 +302,7 @@ export class LightningCustodianWallet extends LegacyWallet {
   }
 
   async fetchBtcAddress() {
+    assertMainnetServicesEnabled();
     const response = await fetch(this.baseURI + '/getbtc', {
       method: 'GET',
       headers: {
@@ -317,11 +329,13 @@ export class LightningCustodianWallet extends LegacyWallet {
   }
 
   async getAddressAsync() {
+    assertMainnetServicesEnabled();
     await this.fetchBtcAddress();
     return this.getAddress();
   }
 
   async allowOnchainAddress() {
+    if (!mainnetServicesEnabled) return false;
     if (this.getAddress() !== undefined && this.getAddress() !== null) {
       return true;
     } else {
@@ -373,6 +387,7 @@ export class LightningCustodianWallet extends LegacyWallet {
   }
 
   async fetchPendingTransactions() {
+    assertMainnetServicesEnabled();
     const response = await fetch(this.baseURI + '/getpending', {
       method: 'GET',
       headers: {
@@ -395,6 +410,7 @@ export class LightningCustodianWallet extends LegacyWallet {
   }
 
   async fetchTransactions() {
+    assertMainnetServicesEnabled();
     // TODO: iterate over all available pages
     const limit = 10;
     let queryRes = '';
@@ -433,6 +449,7 @@ export class LightningCustodianWallet extends LegacyWallet {
   }
 
   async fetchBalance(noRetry?: boolean): Promise<void> {
+    assertMainnetServicesEnabled();
     await this.checkLogin();
 
     const response = await fetch(this.baseURI + '/balance', {
@@ -533,6 +550,7 @@ export class LightningCustodianWallet extends LegacyWallet {
   }
 
   static async isValidNodeAddress(address: string): Promise<boolean> {
+    assertMainnetServicesEnabled();
     const normalizedAddress = new URL('/getinfo', address.replace(/([^:]\/)\/+/g, '$1'));
 
     const response = await fetch(normalizedAddress.toString(), {
@@ -576,6 +594,7 @@ export class LightningCustodianWallet extends LegacyWallet {
    * @return {Promise.<Object>}
    */
   async decodeInvoiceRemote(invoice: string) {
+    assertMainnetServicesEnabled();
     await this.checkLogin();
 
     const response = await fetch(this.baseURI + '/decodeinvoice?invoice=' + invoice, {
@@ -611,7 +630,8 @@ export class LightningCustodianWallet extends LegacyWallet {
     return false;
   }
 
-  authenticate(lnurl: any) {
+  authenticate(lnurl: { authenticate: (secret: string) => Promise<unknown> }) {
+    assertMainnetServicesEnabled();
     return lnurl.authenticate(this.secret);
   }
 

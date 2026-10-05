@@ -27,6 +27,7 @@ import useDeviceQuickActions from './useDeviceQuickActions';
 import useHandoffListener from './useHandoffListener';
 import useMenuElements from './useMenuElements';
 import useClipboardDetection from './useClipboardDetection';
+import { mainnetServicesEnabled } from '../models/bitcoinNetwork';
 
 /**
  * Hook that initializes all companion listeners and functionality without rendering a component
@@ -86,6 +87,10 @@ const useCompanionListeners = (skipIfNotInitialized = true) => {
         // rather than address/txid because the payload is locally generated;
         // see blue_modules/arkade-notifications.ts.
         if (+payload.type === 100) {
+          if (!mainnetServicesEnabled) {
+            if (wasTapped) presentAlert({ message: loc._.mainnet_services_unavailable });
+            continue;
+          }
           const arkWallet = wallets.find(w => w.getID() === payload.walletID);
           if (!arkWallet || !(arkWallet instanceof LightningArkWallet)) {
             if (wasTapped) {
@@ -164,6 +169,10 @@ const useCompanionListeners = (skipIfNotInitialized = true) => {
           console.log('processing push notification:', payload);
 
           if (+payload.type === 100) {
+            if (!mainnetServicesEnabled) {
+              if (wasTapped) presentAlert({ message: loc._.mainnet_services_unavailable });
+              continue;
+            }
             const arkWallet = wallets.find(w => w.getID() === payload.walletID);
             if (!arkWallet || !(arkWallet instanceof LightningArkWallet)) {
               if (wasTapped) {
@@ -332,7 +341,7 @@ const useCompanionListeners = (skipIfNotInitialized = true) => {
 
       const wasBackgroundOrInactive = /inactive|background/.test(previousState);
       if (wasBackgroundOrInactive) {
-        updateExchangeRate();
+        if (mainnetServicesEnabled) updateExchangeRate();
         const processed = await processPushNotifications();
         // Reconcile in-process Ark background task results before the
         // notification-handled early return: if the background task observed

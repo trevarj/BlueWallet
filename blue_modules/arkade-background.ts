@@ -33,6 +33,7 @@ import {
   type ArkSwapNotificationAction,
 } from './arkade-adapters/realm/notificationSuppressionRepository';
 import { notifyArkSwapActionable, resolveActionableAction } from './arkade-notifications';
+import { mainnetServicesEnabled } from '../models/bitcoinNetwork';
 
 const BlueApp = BlueAppClass.getInstance();
 
@@ -271,6 +272,10 @@ async function processWallet(wallet: LightningArkWallet): Promise<void> {
 }
 
 export async function runArkBackgroundTask(taskId: string): Promise<void> {
+  if (!mainnetServicesEnabled) {
+    BackgroundFetch.finish(taskId);
+    return;
+  }
   if (running) {
     BackgroundFetch.finish(taskId);
     return;
@@ -321,6 +326,7 @@ function availabilityFromStatus(status: number): ArkTaskState['availability'] {
 }
 
 export async function registerArkBackgroundTask(): Promise<void> {
+  if (!mainnetServicesEnabled) return;
   if (configured) {
     await BackgroundFetch.start();
     state.lastRegisteredAt = Date.now();
@@ -374,6 +380,7 @@ export async function stopArkBackgroundTask(): Promise<void> {
 }
 
 export function reconcileArkBackgroundTaskResults(triggerRefreshForWallet: (walletId: string) => void): void {
+  if (!mainnetServicesEnabled) return;
   if (state.lastSwapUpdateAt <= state.lastReconciledAt) return;
 
   const wallets = BlueApp.getWallets().filter((w): w is LightningArkWallet => w instanceof LightningArkWallet);

@@ -45,6 +45,7 @@ import { BitcoinUnit } from '../../models/bitcoinUnits';
 import { DetailViewStackParamList } from '../../navigation/DetailViewStackParamList';
 import { isOnChainTransaction, resolveTxDisplayState } from '../../blue_modules/transactionDisplayState';
 import { isWatchOnlySegwitBech32 } from '../../util/isWatchOnlySegwitBech32';
+import { mainnetServicesEnabled } from '../../models/bitcoinNetwork';
 
 dayjs.extend(relativeTime);
 
@@ -938,8 +939,9 @@ const TransactionStatus: React.FC = () => {
   const parsedConfirmations = Number(tx?.confirmations);
   const isOnChainTx = isOnChainTransaction(tx);
   const isPending = resolveTxDisplayState(tx) === 'pending';
-  const preferredBalanceUnit = wallet?.preferredBalanceUnit ?? BitcoinUnit.BTC;
-
+  const storedPreferredBalanceUnit = wallet?.preferredBalanceUnit ?? BitcoinUnit.BTC;
+  const preferredBalanceUnit =
+    !mainnetServicesEnabled && storedPreferredBalanceUnit === BitcoinUnit.LOCAL_CURRENCY ? BitcoinUnit.BTC : storedPreferredBalanceUnit;
   const showBlocksAccordion = isOnChainTx && !isPending && parsedConfirmations > 0;
 
   const onBlocksHeaderPress = useCallback(() => {
@@ -1089,13 +1091,13 @@ const TransactionStatus: React.FC = () => {
               <Text style={[styles.valueUnit, stylesHook.valueUnit]}>{` ${preferredBalanceUnit}`}</Text>
             )}
           </Text>
-          {txValue !== null && (
+          {mainnetServicesEnabled && txValue !== null ? (
             <Text style={[styles.localCurrency, stylesHook.localCurrency, scaledStyles.localCurrency]}>
               {preferredBalanceUnit === BitcoinUnit.LOCAL_CURRENCY
                 ? `${formatBalanceWithoutSuffix(Math.abs(txValue), BitcoinUnit.BTC, true)} ${BitcoinUnit.BTC}`
                 : satoshiToLocalCurrency(Math.abs(txValue))}
             </Text>
-          )}
+          ) : null}
         </View>
       </View>
 
@@ -1247,7 +1249,9 @@ const TransactionStatus: React.FC = () => {
             <CopyTextToClipboard
               text={
                 calculatedFee !== null && calculatedFee !== undefined
-                  ? `${formatBalanceWithoutSuffix(calculatedFee, BitcoinUnit.SATS, true)} sats / ${satoshiToLocalCurrency(calculatedFee)}`
+                  ? mainnetServicesEnabled
+                    ? `${formatBalanceWithoutSuffix(calculatedFee, BitcoinUnit.SATS, true)} sats / ${satoshiToLocalCurrency(calculatedFee)}`
+                    : `${formatBalanceWithoutSuffix(calculatedFee, BitcoinUnit.SATS, true)} sats`
                   : '-'
               }
               style={StyleSheet.flatten([styles.detailValue, stylesHook.detailValue])}

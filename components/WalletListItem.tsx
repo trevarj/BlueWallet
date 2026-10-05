@@ -7,6 +7,8 @@ import HighlightedText from './HighlightedText';
 import { TWallet } from '../class/wallets/types';
 import WalletGradient from '../class/wallet-gradient';
 import { formatBalance } from '../loc';
+import { mainnetServicesEnabled } from '../models/bitcoinNetwork';
+import { BitcoinUnit } from '../models/bitcoinUnits';
 
 type Props = {
   wallet: TWallet;
@@ -63,7 +65,11 @@ const WalletListItem: React.FC<Props> = ({
 
   const balance = useMemo(() => {
     if (wallet.hideBalance) return '';
-    return formatBalance(Number(wallet.getBalance()), wallet.getPreferredBalanceUnit(), true);
+    const unit =
+      !mainnetServicesEnabled && wallet.getPreferredBalanceUnit() === BitcoinUnit.LOCAL_CURRENCY
+        ? BitcoinUnit.BTC
+        : wallet.getPreferredBalanceUnit();
+    return formatBalance(Number(wallet.getBalance()), unit, true);
   }, [wallet]);
 
   const highlightStyle = useMemo(() => {

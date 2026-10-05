@@ -16,6 +16,7 @@ import loc, { formatBalance } from '../../loc';
 import { BitcoinUnit } from '../../models/bitcoinUnits';
 import { goFromCoinControlToSendDetails } from '../../navigation/goFromCoinControlToSendDetails';
 import { CoinControlSortDirection, CoinControlSortType, SendDetailsStackParamList } from '../../navigation/SendDetailsStackParamList';
+import { mainnetServicesEnabled } from '../../models/bitcoinNetwork';
 
 type NavigationProps = NativeStackNavigationProp<SendDetailsStackParamList, 'CoinControl'>;
 type RouteProps = RouteProp<SendDetailsStackParamList, 'CoinControl'>;
@@ -275,7 +276,9 @@ const CoinControl: React.FC = () => {
     const summ = selected.reduce((prev, curr) => {
       return prev + (utxos.find(({ txid, vout }) => `${txid}:${vout}` === curr) as Utxo).value;
     }, 0);
-    const value = formatBalance(summ, wallet.getPreferredBalanceUnit(), true);
+    const preferredUnit = wallet.getPreferredBalanceUnit();
+    const unit = !mainnetServicesEnabled && preferredUnit === BitcoinUnit.LOCAL_CURRENCY ? BitcoinUnit.BTC : preferredUnit;
+    const value = formatBalance(summ, unit, true);
     return loc.formatString(loc.cc.selected_summ, { value });
   }, [selected, utxos, wallet]);
 
@@ -317,7 +320,11 @@ const CoinControl: React.FC = () => {
     return (
       <OutputList
         key={key}
-        balanceUnit={wallet.getPreferredBalanceUnit()}
+        balanceUnit={
+          !mainnetServicesEnabled && wallet.getPreferredBalanceUnit() === BitcoinUnit.LOCAL_CURRENCY
+            ? BitcoinUnit.BTC
+            : wallet.getPreferredBalanceUnit()
+        }
         item={item}
         oMemo={memo}
         frozen={oFrozen}

@@ -33,6 +33,7 @@ import Badge from './Badge';
 import BlueText from './BlueText';
 import Icon from './Icon';
 import { useTheme } from './themes';
+import { mainnetServicesEnabled } from '../models/bitcoinNetwork';
 
 export const conversionCache: { [key: string]: string } = {};
 
@@ -147,6 +148,7 @@ export const AmountInput: React.FC<AmountInputProps> = props => {
   }, [amount, unit]);
 
   const secondaryDisplayCurrency = useMemo(() => {
+    if (!mainnetServicesEnabled) return '';
     if (amount === BitcoinUnit.MAX) {
       return '';
     }
@@ -173,15 +175,23 @@ export const AmountInput: React.FC<AmountInputProps> = props => {
   }, [amount, unit]);
 
   useEffect(() => {
+    if (!mainnetServicesEnabled) {
+      if (unit === BitcoinUnit.LOCAL_CURRENCY) {
+        onChangeText('');
+        onAmountUnitChange(BitcoinUnit.BTC);
+      }
+      return;
+    }
     (async () => {
       if (await isRateOutdated()) {
         const recent = await mostRecentFetchedRate();
         setOutdatedRefreshRate(recent);
       }
     })();
-  }, []);
+  }, [onAmountUnitChange, onChangeText, unit]);
 
   const updateRate = useCallback(async () => {
+    if (!mainnetServicesEnabled) return;
     try {
       await updateExchangeRate();
     } finally {
@@ -196,13 +206,18 @@ export const AmountInput: React.FC<AmountInputProps> = props => {
   }, []);
 
   const changeAmountUnit = useCallback(() => {
+    if (!mainnetServicesEnabled && unit === BitcoinUnit.LOCAL_CURRENCY) {
+      onChangeText('');
+      onAmountUnitChange(BitcoinUnit.BTC);
+      return;
+    }
     let previousUnit = unit;
     let newUnit;
     // cycle through units BTC -> SAT -> LOCAL_CURRENCY -> BTC
     if (previousUnit === BitcoinUnit.BTC) {
       newUnit = BitcoinUnit.SATS;
     } else if (previousUnit === BitcoinUnit.SATS) {
-      newUnit = BitcoinUnit.LOCAL_CURRENCY;
+      newUnit = mainnetServicesEnabled ? BitcoinUnit.LOCAL_CURRENCY : BitcoinUnit.BTC;
     } else if (previousUnit === BitcoinUnit.LOCAL_CURRENCY) {
       newUnit = BitcoinUnit.BTC;
     } else {

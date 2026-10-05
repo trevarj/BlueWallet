@@ -16,6 +16,7 @@ import CoinControlOutputSheet from '../screen/send/CoinControlOutputSheet';
 import PsbtRawSheet from '../components/PsbtRawSheet';
 import { CommonToolTipActions } from '../typings/CommonToolTipActions';
 import { navigationGuardRouter } from './navigationGuard';
+import { labelForNetwork } from '../models/bitcoinNetwork';
 
 const Stack = createNativeStackNavigator<SendDetailsStackParamList>();
 
@@ -118,7 +119,7 @@ const SendDetailsStack = () => {
         component={SendDetailsComponent}
         options={navigationStyle(
           {
-            title: loc.send.header,
+            title: labelForNetwork(loc.send.header),
             statusBarStyle: 'light',
             closeButtonPosition: CloseButtonPosition.Left,
           },
@@ -143,7 +144,7 @@ const SendDetailsStack = () => {
         name="Confirm"
         component={ConfirmComponent}
         options={navigationStyle(
-          { title: loc.send.confirm_header, headerRight: () => DetailsButton },
+          { title: labelForNetwork(loc.send.confirm_header), headerRight: () => DetailsButton },
           withRouteParamHeaderOptions({ headerRight: true }),
         )(theme)}
       />
@@ -151,7 +152,7 @@ const SendDetailsStack = () => {
         name="PsbtWithHardwareWallet"
         component={PsbtWithHardwareWalletComponent}
         options={navigationStyle({
-          title: loc.send.header,
+          title: labelForNetwork(loc.send.header),
           closeButtonPosition: CloseButtonPosition.Right,
           gestureEnabled: false,
           fullScreenGestureEnabled: false,
@@ -165,12 +166,12 @@ const SendDetailsStack = () => {
       <Stack.Screen
         name="PsbtMultisig"
         component={PsbtMultisigComponent}
-        options={navigationStyle({ title: loc.multisig.header })(theme)}
+        options={navigationStyle({ title: labelForNetwork(loc.multisig.header) })(theme)}
       />
       <Stack.Screen
         name="PsbtMultisigQRCode"
         component={PsbtMultisigQRCodeComponent}
-        options={navigationStyle({ title: loc.multisig.header })(theme)}
+        options={navigationStyle({ title: labelForNetwork(loc.multisig.header) })(theme)}
       />
       <Stack.Screen
         name="Success"

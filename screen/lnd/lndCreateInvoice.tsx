@@ -33,6 +33,7 @@ import { LightningArkWallet } from '../../class/wallets/lightning-ark-wallet';
 import { LightningCustodianWallet } from '../../class/wallets/lightning-custodian-wallet';
 import assert from 'assert';
 import { scanQrHelper } from '../../helpers/scan-qr.ts';
+import { mainnetServicesEnabled } from '../../models/bitcoinNetwork';
 
 type LNDCreateInvoiceRouteParams = {
   walletID: string;
@@ -84,6 +85,10 @@ const LNDCreateInvoice = () => {
 
   const processLnurl = useCallback(
     async (data: string) => {
+      if (!mainnetServicesEnabled) {
+        presentAlert({ message: loc._.mainnet_services_unavailable });
+        return goBack();
+      }
       setIsLoading(true);
       if (!wallet.current) {
         triggerHapticFeedback(HapticFeedbackTypes.NotificationError);
@@ -187,6 +192,11 @@ const LNDCreateInvoice = () => {
   }, []);
 
   const renderReceiveDetails = async () => {
+    if (!mainnetServicesEnabled) {
+      setIsLoading(false);
+      presentAlert({ message: loc._.mainnet_services_unavailable });
+      return;
+    }
     try {
       wallet.current?.setUserHasSavedExport(true);
       await saveToDisk();
@@ -201,6 +211,12 @@ const LNDCreateInvoice = () => {
 
   useFocusEffect(
     useCallback(() => {
+      if (!mainnetServicesEnabled) {
+        setIsLoading(false);
+        presentAlert({ message: loc._.mainnet_services_unavailable });
+        goBack();
+        return;
+      }
       if (wallet.current) {
         if (wallet.current.getUserHasSavedExport()) {
           renderReceiveDetails();
@@ -234,6 +250,10 @@ const LNDCreateInvoice = () => {
   };
 
   const createInvoice = async () => {
+    if (!mainnetServicesEnabled) {
+      presentAlert({ message: loc._.mainnet_services_unavailable });
+      return;
+    }
     setIsLoading(true);
     try {
       let invoiceAmount: string | number = amount ?? 0;

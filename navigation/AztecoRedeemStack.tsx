@@ -4,6 +4,8 @@ import navigationStyle from '../components/navigationStyle';
 import { useTheme } from '../components/themes';
 import loc from '../loc';
 import { withLazySuspense } from './LazyLoadingIndicator';
+import { mainnetServicesEnabled } from '../models/bitcoinNetwork';
+import BlueTextCentered from '../components/BlueTextCentered';
 
 const Stack = createNativeStackNavigator();
 
@@ -15,6 +17,7 @@ const SelectWalletComponent = withLazySuspense(SelectWallet);
 
 const AztecoRedeemStackRoot = () => {
   const theme = useTheme();
+  if (!mainnetServicesEnabled) return <BlueTextCentered>{loc._.mainnet_services_unavailable}</BlueTextCentered>;
 
   return (
     <Stack.Navigator screenOptions={{ headerShadowVisible: false }}>

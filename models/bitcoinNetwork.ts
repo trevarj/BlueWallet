@@ -8,6 +8,13 @@ if (nativeNetwork !== 'bitcoin' && nativeNetwork !== 'testnet') {
 }
 
 export const bitcoinNetwork = nativeNetwork;
+export const mainnetServicesEnabled = bitcoinNetwork === 'bitcoin';
+export const networkDisplayName = mainnetServicesEnabled ? 'Bitcoin' : 'Testnet3';
+export const labelForNetwork = (label: string): string => (mainnetServicesEnabled ? label : `${label} — ${networkDisplayName}`);
+export const MAINNET_SERVICES_UNAVAILABLE = 'This feature is unavailable on Testnet3.';
+export const assertMainnetServicesEnabled = (): void => {
+  if (!mainnetServicesEnabled) throw new Error(MAINNET_SERVICES_UNAVAILABLE);
+};
 export const network = bitcoinNetwork === 'testnet' ? networks.testnet : networks.bitcoin;
 export const coinType = bitcoinNetwork === 'testnet' ? 1 : 0;
 

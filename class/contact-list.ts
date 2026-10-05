@@ -5,10 +5,11 @@ import { SilentPayment } from 'silent-payments';
 import ecc from '../blue_modules/noble_ecc';
 import { concatUint8Arrays } from '../blue_modules/uint8array-extras';
 import * as bitcoin from 'bitcoinjs-lib';
-import { network } from '../models/bitcoinNetwork';
+import { mainnetServicesEnabled, network } from '../models/bitcoinNetwork';
 
 export class ContactList {
   isBip47PaymentCodeValid(pc: string) {
+    if (!mainnetServicesEnabled) return false;
     try {
       BIP47Factory(ecc).fromPaymentCode(pc);
       return true;
@@ -18,10 +19,12 @@ export class ContactList {
   }
 
   isBip352PaymentCodeValid(pc: string) {
+    if (!mainnetServicesEnabled) return false;
     return SilentPayment.isPaymentCodeValid(pc);
   }
 
   isPaymentCodeValid(pc: string): boolean {
+    if (!mainnetServicesEnabled) return false;
     return this.isBip47PaymentCodeValid(pc) || this.isBip352PaymentCodeValid(pc);
   }
 

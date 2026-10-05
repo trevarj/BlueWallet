@@ -5,6 +5,7 @@ import navigationStyle, { CloseButtonPosition } from '../components/navigationSt
 import { useTheme } from '../components/themes';
 import loc from '../loc';
 import { withLazySuspense } from './LazyLoadingIndicator';
+import { labelForNetwork } from '../models/bitcoinNetwork';
 
 const Stack = createNativeStackNavigator();
 
@@ -22,7 +23,7 @@ const SignVerifyStackRoot = () => {
         options={navigationStyle({
           headerBackVisible: false,
           statusBarStyle: 'light',
-          title: loc.addresses.sign_title,
+          title: labelForNetwork(loc.addresses.sign_title),
           closeButtonPosition: CloseButtonPosition.Right,
         })(theme)}
       />

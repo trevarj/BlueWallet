@@ -35,6 +35,8 @@ import { useTheme } from './themes';
 import { Transaction, TWallet } from '../class/wallets/types';
 import { BlueSpacing10 } from './BlueSpacing';
 import { useLocale } from '@react-navigation/native';
+import { mainnetServicesEnabled } from '../models/bitcoinNetwork';
+import { BitcoinUnit } from '../models/bitcoinUnits';
 
 export const WALLET_CAROUSEL_HEADER_WIDTH = 16;
 
@@ -344,7 +346,11 @@ export const WalletCarouselItem: React.FC<WalletCarouselItemProps> = ({
     [colors.inverseForegroundColor, direction],
   );
   const previousBalance = useRef<string | undefined>(undefined);
-  const balance = !hideBalance && formatBalance(Number(item.getBalance()), item.getPreferredBalanceUnit(), true);
+  const preferredUnit =
+    !mainnetServicesEnabled && item.getPreferredBalanceUnit() === BitcoinUnit.LOCAL_CURRENCY
+      ? BitcoinUnit.BTC
+      : item.getPreferredBalanceUnit();
+  const balance = !hideBalance && formatBalance(Number(item.getBalance()), preferredUnit, true);
   const safeBalance = balance || undefined;
 
   const animatePressScale = useCallback(

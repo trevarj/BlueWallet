@@ -24,6 +24,7 @@ class MarketWidgetUpdateWorker(context: Context, workerParams: WorkerParameters)
         private const val NETWORK_RETRY_DELAY_SECONDS = 30L
 
         fun scheduleMarketUpdate(context: Context, forceUpdate: Boolean = false) {
+            if (!mainnetWidgetsEnabled) return AppWidgetUtils.disableMainnetWidgets(context)
             val sharedPrefs = context.getSharedPreferences(SHARED_PREF_NAME, Context.MODE_PRIVATE)
             val lastUpdateTime = sharedPrefs.getLong(KEY_LAST_UPDATE_TIME, 0)
             val currentTime = System.currentTimeMillis()
@@ -72,6 +73,7 @@ class MarketWidgetUpdateWorker(context: Context, workerParams: WorkerParameters)
         }
 
         fun scheduleRetryOnNetworkAvailable(context: Context) {
+            if (!mainnetWidgetsEnabled) return AppWidgetUtils.disableMainnetWidgets(context)
             val constraints = Constraints.Builder()
                 .setRequiredNetworkType(NetworkType.CONNECTED)
                 .build()
@@ -92,11 +94,16 @@ class MarketWidgetUpdateWorker(context: Context, workerParams: WorkerParameters)
     }
 
     override suspend fun doWork(): Result {
+        if (!mainnetWidgetsEnabled) {
+            AppWidgetUtils.disableMainnetWidgets(applicationContext)
+            return Result.success()
+        }
         Log.d(TAG, "MarketWidgetUpdateWorker running. Confirming interaction with MainActivity.")
         return updateMarketWidgets()
     }
 
     private suspend fun updateMarketWidgets(): Result {
+        if (!mainnetWidgetsEnabled) return Result.success()
         Log.d(TAG, "Starting market widget update work")
         val widgetIds = MarketWidget.getAllWidgetIds(applicationContext)
         
@@ -168,6 +175,10 @@ class MarketWidgetUpdateWorker(context: Context, workerParams: WorkerParameters)
     }
     
     private fun scheduleNextMarketUpdate(delayMs: Long) {
+        if (!mainnetWidgetsEnabled) {
+            AppWidgetUtils.disableMainnetWidgets(applicationContext)
+            return
+        }
         val constraints = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.CONNECTED)
             .build()

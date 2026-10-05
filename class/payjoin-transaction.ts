@@ -7,6 +7,8 @@ import presentAlert from '../components/Alert';
 import { HDSegwitBech32Wallet } from './wallets/hd-segwit-bech32-wallet';
 import assert from 'assert';
 import { uint8ArrayToHex } from '../blue_modules/uint8array-extras';
+import { assertMainnetServicesEnabled } from '../models/bitcoinNetwork';
+
 const ECPair = ECPairFactory(ecc);
 
 const delay = (milliseconds: number) => new Promise(resolve => setTimeout(resolve, milliseconds));
@@ -20,6 +22,7 @@ export default class PayjoinTransaction {
   private _payjoinPsbt: any;
 
   constructor(psbt: bitcoin.Psbt, broadcast: (txhex: string) => Promise<true | undefined>, wallet: HDSegwitBech32Wallet) {
+    assertMainnetServicesEnabled();
     this._psbt = psbt;
     this._broadcast = broadcast;
     this._wallet = wallet;

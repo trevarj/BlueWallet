@@ -33,6 +33,7 @@ import { SuccessView } from '../send/success';
 import { BlueSpacing40 } from '../../components/BlueSpacing';
 import { BlueLoading } from '../../components/BlueLoading';
 import SafeAreaScrollView from '../../components/SafeAreaScrollView';
+import { mainnetServicesEnabled, networkDisplayName } from '../../models/bitcoinNetwork';
 
 const segmentControlValues = [loc.wallets.details_address, loc.bip47.payment_code];
 
@@ -171,9 +172,13 @@ const ReceiveDetails = () => {
   const [qrCodeSize, setQRCodeSize] = useState(90);
 
   const wallet = walletID ? wallets.find(w => w.getID() === walletID) : undefined;
-  const isBIP47Enabled = wallet?.isBIP47Enabled();
+  const isUnsupportedServiceWallet = !mainnetServicesEnabled && wallet?.chain === Chain.OFFCHAIN;
+  const isBIP47Enabled = mainnetServicesEnabled && wallet?.allowBIP47() && wallet?.isBIP47Enabled();
 
-  const paymentCodeString = useMemo(() => (wallet && 'getBIP47PaymentCode' in wallet && wallet.getBIP47PaymentCode()) || '', [wallet]);
+  const paymentCodeString = useMemo(
+    () => (mainnetServicesEnabled && wallet && 'getBIP47PaymentCode' in wallet && wallet.getBIP47PaymentCode()) || '',
+    [wallet],
+  );
 
   /** Dark: theme input surface (#262626) reads softer than pure elevated / system gray 6. Light: iOS-style grouped background. */
   const cardBackgroundColor = isDarkTheme ? colors.inputBackgroundColor : '#F2F2F7';
@@ -206,7 +211,7 @@ const ReceiveDetails = () => {
   const copyRef = useRef<CopyTextToClipboardHandle>(null);
   useScreenMenuActions({
     copyAddress:
-      showAddress && currentTab === segmentControlValues[0] && !!address
+      !isUnsupportedServiceWallet && showAddress && currentTab === segmentControlValues[0] && !!address
         ? () => {
             Clipboard.setString(address);
             triggerHapticFeedback(HapticFeedbackTypes.ImpactLight);
@@ -244,6 +249,10 @@ const ReceiveDetails = () => {
     // this function should only be called when wallet exists
     if (!wallet) {
       console.warn('Wallet not found');
+      return;
+    }
+    if (!mainnetServicesEnabled && wallet.chain === Chain.OFFCHAIN) {
+      presentAlert({ title: loc.errors.error, message: loc._.mainnet_services_unavailable });
       return;
     }
     if (address) {
@@ -309,10 +318,11 @@ const ReceiveDetails = () => {
   }, [showConfirmedBalance]);
 
   useEffect(() => {
+    if (isUnsupportedServiceWallet) return;
     if (address && !isCustom) {
       setAddressBIP21Encoded(address);
     }
-  }, [address, isCustom, setAddressBIP21Encoded]);
+  }, [address, isCustom, isUnsupportedServiceWallet, setAddressBIP21Encoded]);
 
   // Derived read: the label sheet mutates addressMetadata in place, and saving re-renders this screen.
   const addressLabel = address ? (addressMetadata[address]?.label ?? '') : '';
@@ -324,6 +334,7 @@ const ReceiveDetails = () => {
 
   // re-fetching address balance periodically
   useEffect(() => {
+    if (isUnsupportedServiceWallet) return;
     console.debug('receive/details - useEffect');
 
     const intervalId = setInterval(async () => {
@@ -361,11 +372,14 @@ const ReceiveDetails = () => {
             }
           }
 
+          const pendingBitcoin = formatBalance(balance.unconfirmed, BitcoinUnit.BTC, true).toString();
           setDisplayBalance(
-            loc.formatString(loc.transactions.pending_with_amount, {
-              amt1: formatBalance(balance.unconfirmed, BitcoinUnit.LOCAL_CURRENCY, true).toString(),
-              amt2: formatBalance(balance.unconfirmed, BitcoinUnit.BTC, true).toString(),
-            }),
+            mainnetServicesEnabled
+              ? loc.formatString(loc.transactions.pending_with_amount, {
+                  amt1: formatBalance(balance.unconfirmed, BitcoinUnit.LOCAL_CURRENCY, true).toString(),
+                  amt2: pendingBitcoin,
+                })
+              : loc.formatString(loc.transactions.pending_with_amount, { amt1: pendingBitcoin, amt2: networkDisplayName }),
           );
           setShowPendingBalance(true);
           setShowAddress(false);
@@ -379,11 +393,14 @@ const ReceiveDetails = () => {
             setShowConfirmedBalance(true);
             setShowPendingBalance(false);
             setShowAddress(false);
+            const receivedBitcoin = formatBalance(balanceToShow, BitcoinUnit.BTC, true).toString();
             setDisplayBalance(
-              loc.formatString(loc.transactions.received_with_amount, {
-                amt1: formatBalance(balanceToShow, BitcoinUnit.LOCAL_CURRENCY, true).toString(),
-                amt2: formatBalance(balanceToShow, BitcoinUnit.BTC, true).toString(),
-              }),
+              mainnetServicesEnabled
+                ? loc.formatString(loc.transactions.received_with_amount, {
+                    amt1: formatBalance(balanceToShow, BitcoinUnit.LOCAL_CURRENCY, true).toString(),
+                    amt2: receivedBitcoin,
+                  })
+                : loc.formatString(loc.transactions.received_with_amount, { amt1: receivedBitcoin, amt2: networkDisplayName }),
             );
             if (walletID) {
               fetchAndSaveWalletTransactions(walletID);
@@ -401,7 +418,16 @@ const ReceiveDetails = () => {
     }, intervalMs);
 
     return () => clearInterval(intervalId);
-  }, [bip21encoded, address, initialConfirmed, initialUnconfirmed, intervalMs, fetchAndSaveWalletTransactions, walletID]);
+  }, [
+    bip21encoded,
+    address,
+    initialConfirmed,
+    initialUnconfirmed,
+    intervalMs,
+    fetchAndSaveWalletTransactions,
+    isUnsupportedServiceWallet,
+    walletID,
+  ]);
 
   useEffect(() => {
     const handleBackButton = () => {
@@ -606,6 +632,7 @@ const ReceiveDetails = () => {
 
   useFocusEffect(
     useCallback(() => {
+      if (isUnsupportedServiceWallet) return;
       if (isCustom || hasIncomingCustomParams) return () => {};
       let cancelled = false;
       (async () => {
@@ -624,21 +651,29 @@ const ReceiveDetails = () => {
       return () => {
         cancelled = true;
       };
-    }, [wallet, address, obtainWalletAddress, setAddressBIP21Encoded, isCustom, hasIncomingCustomParams]),
+    }, [wallet, address, obtainWalletAddress, setAddressBIP21Encoded, isCustom, hasIncomingCustomParams, isUnsupportedServiceWallet]),
   );
 
   const showMoreOptionsSheet = useCallback(() => {
+    if (isUnsupportedServiceWallet) {
+      presentAlert({ title: loc.errors.error, message: loc._.mainnet_services_unavailable });
+      return;
+    }
     if (!address) return;
     navigate('ReceiveMoreOptions', {
       address,
       currentLabel: customLabel,
       currentAmount: customAmount,
       currentUnit: customUnit,
-      preferredUnit: wallet?.getPreferredBalanceUnit() || BitcoinUnit.BTC,
+      preferredUnit:
+        !mainnetServicesEnabled && wallet?.getPreferredBalanceUnit() === BitcoinUnit.LOCAL_CURRENCY
+          ? BitcoinUnit.BTC
+          : wallet?.getPreferredBalanceUnit() || BitcoinUnit.BTC,
     });
-  }, [address, customAmount, customLabel, customUnit, navigate, wallet]);
+  }, [address, customAmount, customLabel, customUnit, isUnsupportedServiceWallet, navigate, wallet]);
 
   useEffect(() => {
+    if (isUnsupportedServiceWallet) return;
     const {
       customLabel: incomingLabel,
       customAmount: incomingAmount,
@@ -659,8 +694,10 @@ const ReceiveDetails = () => {
     if (incomingIsCustom) {
       setIsCustom(true);
       setCustomLabel(incomingLabel ?? '');
-      setCustomAmount(incomingAmount ?? '');
-      setCustomUnit(incomingUnit ?? BitcoinUnit.BTC);
+      setCustomAmount(!mainnetServicesEnabled && incomingUnit === BitcoinUnit.LOCAL_CURRENCY ? '' : (incomingAmount ?? ''));
+      setCustomUnit(
+        !mainnetServicesEnabled && incomingUnit === BitcoinUnit.LOCAL_CURRENCY ? BitcoinUnit.BTC : (incomingUnit ?? BitcoinUnit.BTC),
+      );
       if (incomingBip21) {
         setBip21encoded(incomingBip21);
       }
@@ -668,7 +705,8 @@ const ReceiveDetails = () => {
       setShowPendingBalance(false);
       setShowConfirmedBalance(false);
     } else {
-      const fallbackUnit = wallet?.getPreferredBalanceUnit() || BitcoinUnit.BTC;
+      const preferredUnit = wallet?.getPreferredBalanceUnit() || BitcoinUnit.BTC;
+      const fallbackUnit = !mainnetServicesEnabled && preferredUnit === BitcoinUnit.LOCAL_CURRENCY ? BitcoinUnit.BTC : preferredUnit;
       setIsCustom(false);
       setCustomLabel('');
       setCustomAmount('');
@@ -682,7 +720,7 @@ const ReceiveDetails = () => {
     }
 
     setParams({ customLabel: undefined, customAmount: undefined, customUnit: undefined, bip21encoded: undefined, isCustom: undefined });
-  }, [route.params, setParams, wallet]);
+  }, [isUnsupportedServiceWallet, route.params, setParams, wallet]);
 
   /**
    * @returns {string} BTC amount, accounting for current `customUnit` and `customUnit`
@@ -696,7 +734,7 @@ const ReceiveDetails = () => {
         case BitcoinUnit.SATS:
           return satoshiToBTC(number) + ' BTC';
         case BitcoinUnit.LOCAL_CURRENCY:
-          return fiatToBTC(number) + ' BTC';
+          return mainnetServicesEnabled ? fiatToBTC(number) + ' BTC' : null;
       }
       return customAmount + ' ' + customUnit;
     } else {
@@ -705,6 +743,10 @@ const ReceiveDetails = () => {
   };
 
   const handleShareButtonPressed = () => {
+    if (isUnsupportedServiceWallet) {
+      presentAlert({ title: loc.errors.error, message: loc._.mainnet_services_unavailable });
+      return;
+    }
     const message = currentTab === segmentControlValues[0] ? bip21encoded : paymentCodeString;
 
     if (!message) {
@@ -714,6 +756,13 @@ const ReceiveDetails = () => {
 
     Share.open({ message }).catch(error => console.debug('Error sharing:', error));
   };
+  if (isUnsupportedServiceWallet) {
+    return (
+      <SafeAreaScrollView centerContent testID="ReceiveDetailsUnavailable">
+        <BlueText>{loc._.mainnet_services_unavailable}</BlueText>
+      </SafeAreaScrollView>
+    );
+  }
 
   return (
     <Animated.View layout={Layout.duration(200)} style={[styles.flex, stylesHook.root]}>

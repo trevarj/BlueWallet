@@ -18,6 +18,7 @@ import { CommonToolTipActions } from '../typings/CommonToolTipActions';
 import { withLazySuspense } from './LazyLoadingIndicator';
 import { ScanQRCodeParamList } from './DetailViewStackParamList';
 import { navigationGuardRouter } from './navigationGuard';
+import { mainnetServicesEnabled } from '../models/bitcoinNetwork';
 
 type HeaderRightRenderer = NonNullable<NativeStackNavigationOptions['headerRight']>;
 
@@ -180,6 +181,7 @@ const createAddWalletOptions = (theme: ReturnType<typeof useTheme>) =>
       : loc.wallets.add_entropy_provide;
 
     const onPressMenuItem = (id: string) => {
+      if (!mainnetServicesEnabled && id === LightningCustodianWallet.type) return;
       if (id === LightningCustodianWallet.type) {
         navigation.setParams({ selectedWalletType: Chain.OFFCHAIN });
       } else if (id === '12_words') {
@@ -201,12 +203,14 @@ const createAddWalletOptions = (theme: ReturnType<typeof useTheme>) =>
         id: 'wallets',
         text: loc.multisig.wallet_type,
         displayInline: true,
-        subactions: addWalletTypes.map((walletType, index) => ({
-          id: walletType.id,
-          text: walletType.text,
-          subtitle: walletType.subtitle,
-          menuState: index === selectedIndex && selectedWalletType === Chain.ONCHAIN,
-        })),
+        subactions: addWalletTypes
+          .filter(walletType => mainnetServicesEnabled || walletType.id !== LightningCustodianWallet.type)
+          .map((walletType, index) => ({
+            id: walletType.id,
+            text: walletType.text,
+            subtitle: walletType.subtitle,
+            menuState: index === selectedIndex && selectedWalletType === Chain.ONCHAIN,
+          })),
       },
     ];
 

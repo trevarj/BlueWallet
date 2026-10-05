@@ -15,6 +15,7 @@ import { useStorage } from '../hooks/context/useStorage';
 import loc from '../loc';
 import { navigationRef } from '../NavigationService';
 import { DetailViewStackParamList } from '../navigation/DetailViewStackParamList';
+import presentAlert from '../components/Alert';
 
 type NavigationProps = NativeStackNavigationProp<DetailViewStackParamList, 'ClipboardDetected'>;
 type RouteProps = RouteProp<DetailViewStackParamList, 'ClipboardDetected'>;
@@ -31,6 +32,11 @@ export const ClipboardDetectedHeaderTitle = () => {
 
 const copyForKind = (kind: ClipboardPaymentKind) => {
   switch (kind) {
+    case ClipboardPaymentKind.Unsupported:
+      return {
+        kindMessage: loc._.mainnet_services_unavailable,
+        actionTitle: loc._.close,
+      };
     case ClipboardPaymentKind.Lnurl:
       return {
         kindMessage: loc.wallets.clipboard_lnurl,
@@ -94,6 +100,11 @@ const ClipboardDetected = () => {
   );
 
   const handleUseClipboard = useCallback(() => {
+    if (kind === ClipboardPaymentKind.Unsupported) {
+      presentAlert({ message: loc._.mainnet_services_unavailable });
+      navigation.goBack();
+      return;
+    }
     triggerHapticFeedback(HapticFeedbackTypes.ImpactLight);
     if (contentHash) setLastSeenClipboardHash(contentHash).catch(() => {});
     navigation.goBack();
@@ -105,7 +116,7 @@ const ClipboardDetected = () => {
         setSharedCosigner,
       });
     });
-  }, [addWallet, contentHash, navigation, payload, saveToDisk, setSharedCosigner, wallets]);
+  }, [addWallet, contentHash, kind, navigation, payload, saveToDisk, setSharedCosigner, wallets]);
 
   return (
     <SafeAreaView

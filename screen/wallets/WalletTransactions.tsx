@@ -39,7 +39,7 @@ import { TX_ROW_BASE_HEIGHT } from '../../components/ListItem';
 import TransactionsNavigationHeader, { actionKeys } from '../../components/TransactionsNavigationHeader';
 import { unlockWithBiometrics, useBiometrics } from '../../hooks/useBiometrics';
 import loc, { formatBalance } from '../../loc';
-import { Chain } from '../../models/bitcoinUnits';
+import { BitcoinUnit, Chain } from '../../models/bitcoinUnits';
 import ActionSheet from '../ActionSheet';
 import { useStorage } from '../../hooks/context/useStorage';
 import WatchOnlyWarning from '../../components/WatchOnlyWarning';
@@ -62,6 +62,7 @@ import HandOffComponent from '../../components/HandOffComponent';
 import { HandOffActivityType } from '../../components/types';
 import WalletGradient from '../../class/wallet-gradient';
 import Animated, { SharedValue, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
+import { mainnetServicesEnabled } from '../../models/bitcoinNetwork';
 
 const buttonFontSize =
   PixelRatio.roundToNearestPixel(Dimensions.get('window').width / 26) > 22
@@ -185,6 +186,7 @@ const WalletTransactions: React.FC<WalletTransactionsProps> = ({ route }: { rout
   const { params, name } = useRoute<RouteProps>();
   const { walletID } = params;
   const wallet = useWalletSubscribe(walletID);
+  const isUnsupportedServiceWallet = !mainnetServicesEnabled && wallet instanceof LightningCustodianWallet;
   const [limit, setLimit] = useState(15);
   const [pageSize] = useState(20);
   const navigation = useNavigation();
@@ -200,7 +202,9 @@ const WalletTransactions: React.FC<WalletTransactionsProps> = ({ route }: { rout
   const [lastFetchTimestamp, setLastFetchTimestamp] = useState(() => wallet._lastTxFetch || 0);
   const [fetchFailures, setFetchFailures] = useState(0);
   const [balance, setBalance] = useState(wallet.getBalance());
-  const [displayUnit, setDisplayUnit] = useState(wallet.preferredBalanceUnit);
+  const [displayUnit, setDisplayUnit] = useState(
+    !mainnetServicesEnabled && wallet.preferredBalanceUnit === BitcoinUnit.LOCAL_CURRENCY ? BitcoinUnit.BTC : wallet.preferredBalanceUnit,
+  );
   const [isUnitSwitching, setIsUnitSwitching] = useState(false);
   const [isWatchOnlyWarningVisible, setIsWatchOnlyWarningVisible] = useState<boolean>(() => {
     return wallet.type === WatchOnlyWallet.type && (wallet as WatchOnlyWallet).isWatchOnlyWarningVisible;
@@ -246,6 +250,10 @@ const WalletTransactions: React.FC<WalletTransactionsProps> = ({ route }: { rout
 
   const onBarCodeRead = useCallback(
     (ret?: { data?: any }) => {
+      if (isUnsupportedServiceWallet) {
+        presentAlert({ message: loc._.mainnet_services_unavailable });
+        return;
+      }
       if (!isLoading) {
         setIsLoading(true);
         const parameters = {
@@ -266,7 +274,7 @@ const WalletTransactions: React.FC<WalletTransactionsProps> = ({ route }: { rout
         setIsLoading(false);
       }
     },
-    [isLoading, walletID, wallet.chain, navigate],
+    [isLoading, isUnsupportedServiceWallet, walletID, wallet.chain, navigate],
   );
 
   useEffect(() => {
@@ -279,7 +287,9 @@ const WalletTransactions: React.FC<WalletTransactionsProps> = ({ route }: { rout
 
   useEffect(() => {
     // keep local display unit in sync when wallet changes (e.g., switching wallets)
-    setDisplayUnit(wallet.preferredBalanceUnit);
+    setDisplayUnit(
+      !mainnetServicesEnabled && wallet.preferredBalanceUnit === BitcoinUnit.LOCAL_CURRENCY ? BitcoinUnit.BTC : wallet.preferredBalanceUnit,
+    );
   }, [wallet, walletID]);
 
   useEffect(() => {
@@ -304,6 +314,10 @@ const WalletTransactions: React.FC<WalletTransactionsProps> = ({ route }: { rout
   const refreshTransactions = useCallback(
     async (isManualRefresh = false) => {
       console.debug('refreshTransactions, ', wallet.getLabel());
+      if (isUnsupportedServiceWallet) {
+        if (isManualRefresh) presentAlert({ message: loc._.mainnet_services_unavailable });
+        return;
+      }
       if (isElectrumDisabled || isLoading) return;
 
       const MIN_REFRESH_INTERVAL = 5000; // 5 seconds
@@ -366,7 +380,7 @@ const WalletTransactions: React.FC<WalletTransactionsProps> = ({ route }: { rout
         setIsLoading(false);
       }
     },
-    [wallet, isElectrumDisabled, isLoading, saveToDisk, pageSize, lastFetchTimestamp, fetchFailures],
+    [wallet, isUnsupportedServiceWallet, isElectrumDisabled, isLoading, saveToDisk, pageSize, lastFetchTimestamp, fetchFailures],
   );
 
   useEffect(() => {
@@ -396,6 +410,10 @@ const WalletTransactions: React.FC<WalletTransactionsProps> = ({ route }: { rout
 
   const onWalletSelect = useCallback(
     async (selectedWallet: TWallet) => {
+      if (isUnsupportedServiceWallet) {
+        presentAlert({ message: loc._.mainnet_services_unavailable });
+        return;
+      }
       assert(
         wallet.type === LightningCustodianWallet.type || wallet.type === LightningArkWallet.type,
         `internal error, wallet is not ${LightningCustodianWallet.type} or ${LightningArkWallet.type}`,
@@ -427,7 +445,7 @@ const WalletTransactions: React.FC<WalletTransactionsProps> = ({ route }: { rout
         },
       });
     },
-    [navigate, wallet],
+    [isUnsupportedServiceWallet, navigate, wallet],
   );
 
   const navigateToViewEditCosigners = useCallback(() => {
@@ -438,6 +456,10 @@ const WalletTransactions: React.FC<WalletTransactionsProps> = ({ route }: { rout
 
   const onManageFundsPressed = useCallback(
     (id?: string) => {
+      if (isUnsupportedServiceWallet) {
+        presentAlert({ message: loc._.mainnet_services_unavailable });
+        return;
+      }
       if (id === actionKeys.Refill) {
         const availableWallets = wallets.filter(item => item.chain === Chain.ONCHAIN && item.allowSend());
         if (availableWallets.length === 0) {
@@ -449,7 +471,7 @@ const WalletTransactions: React.FC<WalletTransactionsProps> = ({ route }: { rout
         navigate('ReceiveDetails', { walletID });
       }
     },
-    [name, navigate, navigation, onWalletSelect, walletID, wallets],
+    [isUnsupportedServiceWallet, name, navigate, navigation, onWalletSelect, walletID, wallets],
   );
 
   const txRowHeight = Math.round(TX_ROW_BASE_HEIGHT * fontScale);
@@ -505,6 +527,7 @@ const WalletTransactions: React.FC<WalletTransactionsProps> = ({ route }: { rout
   };
 
   const sendButtonPress = () => {
+    if (isUnsupportedServiceWallet) return presentAlert({ message: loc._.mainnet_services_unavailable });
     if (wallet.chain === Chain.OFFCHAIN) {
       return navigate('ScanLNDInvoiceRoot', {
         screen: 'ScanLNDInvoice',
@@ -579,6 +602,7 @@ const WalletTransactions: React.FC<WalletTransactionsProps> = ({ route }: { rout
   };
 
   const receiveButtonPress = () => {
+    if (isUnsupportedServiceWallet) return presentAlert({ message: loc._.mainnet_services_unavailable });
     if (wallet.chain === Chain.OFFCHAIN) {
       navigate('LNDCreateInvoiceRoot', { screen: 'LNDCreateInvoice', params: { walletID } });
     } else {
@@ -587,9 +611,12 @@ const WalletTransactions: React.FC<WalletTransactionsProps> = ({ route }: { rout
   };
 
   useScreenMenuActions({
-    reloadTransactions: !isElectrumDisabled && !isLoading ? () => refreshTransactions(true) : undefined,
-    send: wallet.allowSend() || (wallet.type === WatchOnlyWallet.type && wallet.isHd()) ? sendButtonPress : undefined,
-    receive: wallet.allowReceive() ? receiveButtonPress : undefined,
+    reloadTransactions: !isUnsupportedServiceWallet && !isElectrumDisabled && !isLoading ? () => refreshTransactions(true) : undefined,
+    send:
+      !isUnsupportedServiceWallet && (wallet.allowSend() || (wallet.type === WatchOnlyWallet.type && wallet.isHd()))
+        ? sendButtonPress
+        : undefined,
+    receive: !isUnsupportedServiceWallet && wallet.allowReceive() ? receiveButtonPress : undefined,
     walletDetails: !isLoading ? () => navigate('WalletDetails', { walletID }) : undefined,
   });
 
@@ -754,16 +781,20 @@ const WalletTransactions: React.FC<WalletTransactionsProps> = ({ route }: { rout
         setListHeaderHeight(prev => (prev === nextHeight ? prev : nextHeight));
       }}
     >
+      {isUnsupportedServiceWallet ? (
+        <Text style={[styles.emptyTxs, stylesHook.listHeaderText]}>{loc._.mainnet_services_unavailable}</Text>
+      ) : null}
       <TransactionsNavigationHeader
         headerOverlayHeight={headerOverlayHeight}
         wallet={wallet}
         onWalletUnitChange={async selectedUnit => {
+          const supportedUnit = !mainnetServicesEnabled && selectedUnit === BitcoinUnit.LOCAL_CURRENCY ? BitcoinUnit.BTC : selectedUnit;
           setIsUnitSwitching(true);
-          setDisplayUnit(selectedUnit);
+          setDisplayUnit(supportedUnit);
           if ('setPreferredBalanceUnit' in wallet) {
-            wallet.setPreferredBalanceUnit(selectedUnit);
+            wallet.setPreferredBalanceUnit(supportedUnit);
           } else {
-            (wallet as TWallet).preferredBalanceUnit = selectedUnit;
+            (wallet as TWallet).preferredBalanceUnit = supportedUnit;
           }
           await saveToDisk();
           setTimeout(() => {
@@ -884,7 +915,7 @@ const WalletTransactions: React.FC<WalletTransactionsProps> = ({ route }: { rout
           )
         }
         refreshControl={
-          !isDesktop && !isElectrumDisabled ? (
+          !isUnsupportedServiceWallet && !isDesktop && !isElectrumDisabled ? (
             <RefreshControl
               refreshing={isLoading}
               onRefresh={() => refreshTransactions(true)}
@@ -906,7 +937,7 @@ const WalletTransactions: React.FC<WalletTransactionsProps> = ({ route }: { rout
 
       <FloatButtonsBottomFade />
       <FContainer ref={walletActionButtonsRef}>
-        {wallet.allowReceive() && (
+        {!isUnsupportedServiceWallet && wallet.allowReceive() && (
           <FButton
             testID="ReceiveButton"
             text={loc.receive.header}
@@ -924,7 +955,7 @@ const WalletTransactions: React.FC<WalletTransactionsProps> = ({ route }: { rout
             }
           />
         )}
-        {(wallet.allowSend() || (wallet.type === WatchOnlyWallet.type && wallet.isHd())) && (
+        {!isUnsupportedServiceWallet && (wallet.allowSend() || (wallet.type === WatchOnlyWallet.type && wallet.isHd())) && (
           <FButton
             onLongPress={sendButtonLongPress}
             onPress={sendButtonPress}

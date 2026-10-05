@@ -61,6 +61,14 @@ it('binds address encoding, coin type and genesis to each immutable native profi
     1,
     '000000000933ea01ad0ee984209779baaec3ced90fa3f408719526f8d77f4943',
   ]);
+  expect(mainnet.mainnetServicesEnabled).toBe(true);
+  expect(mainnet.networkDisplayName).toBe('Bitcoin');
+  expect(mainnet.labelForNetwork('Send')).toBe('Send');
+  expect(() => mainnet.assertMainnetServicesEnabled()).not.toThrow();
+  expect(testnet.mainnetServicesEnabled).toBe(false);
+  expect(testnet.networkDisplayName).toBe('Testnet3');
+  expect(testnet.labelForNetwork('Send')).toBe('Send — Testnet3');
+  expect(() => testnet.assertMainnetServicesEnabled()).toThrow(testnet.MAINNET_SERVICES_UNAVAILABLE);
 
   expect(mainnet.mapStandardAccountPath("m/84'/0'/7'")).toBe("m/84'/0'/7'");
   expect(testnet.mapStandardAccountPath("m/84'/0'/7'")).toBe("m/84'/1'/7'");

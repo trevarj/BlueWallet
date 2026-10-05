@@ -31,6 +31,7 @@ class WidgetUpdateWorker(context: Context, workerParams: WorkerParameters) : Cor
         private const val NETWORK_RETRY_DELAY_SECONDS = 30L
 
         fun scheduleWork(context: Context) {
+            if (!mainnetWidgetsEnabled) return AppWidgetUtils.disableMainnetWidgets(context)
             val constraints = Constraints.Builder()
                 .setRequiredNetworkType(NetworkType.CONNECTED)
                 .setRequiresBatteryNotLow(false)
@@ -52,6 +53,7 @@ class WidgetUpdateWorker(context: Context, workerParams: WorkerParameters) : Cor
         }
         
         fun scheduleImmediateUpdate(context: Context) {
+            if (!mainnetWidgetsEnabled) return AppWidgetUtils.disableMainnetWidgets(context)
             val constraints = Constraints.Builder()
                 .setRequiredNetworkType(NetworkType.CONNECTED)
                 .build()
@@ -66,6 +68,7 @@ class WidgetUpdateWorker(context: Context, workerParams: WorkerParameters) : Cor
         }
 
         fun scheduleRetryOnNetworkAvailable(context: Context) {
+            if (!mainnetWidgetsEnabled) return AppWidgetUtils.disableMainnetWidgets(context)
             val constraints = Constraints.Builder()
                 .setRequiredNetworkType(NetworkType.CONNECTED)
                 .build()
@@ -86,6 +89,10 @@ class WidgetUpdateWorker(context: Context, workerParams: WorkerParameters) : Cor
     private lateinit var sharedPref: SharedPreferences
 
     override suspend fun doWork(): Result {
+        if (!mainnetWidgetsEnabled) {
+            AppWidgetUtils.disableMainnetWidgets(applicationContext)
+            return Result.success()
+        }
         sharedPref = applicationContext.getSharedPreferences(SHARED_PREF_NAME, Context.MODE_PRIVATE)
         
         if (!NetworkUtils.isNetworkAvailable(applicationContext)) {
@@ -100,6 +107,7 @@ class WidgetUpdateWorker(context: Context, workerParams: WorkerParameters) : Cor
     }
 
     private suspend fun updatePriceWidgets(): Result {
+        if (!mainnetWidgetsEnabled) return Result.success()
         val appWidgetManager = AppWidgetManager.getInstance(applicationContext)
         val thisWidget = ComponentName(applicationContext, BitcoinPriceWidget::class.java)
         val appWidgetIds = appWidgetManager.getAppWidgetIds(thisWidget)
@@ -148,6 +156,7 @@ class WidgetUpdateWorker(context: Context, workerParams: WorkerParameters) : Cor
     }
 
     private suspend fun fetchPrice(currency: String?): String? {
+        if (!mainnetWidgetsEnabled) return null
         return withContext(Dispatchers.IO) {
             MarketAPI.fetchPrice(applicationContext, currency ?: "USD")
         }

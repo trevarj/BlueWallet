@@ -27,6 +27,8 @@ import { pop } from '../NavigationService';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { uint8ArrayToHex } from '../blue_modules/uint8array-extras';
 import ListItem from './ListItem';
+import { mainnetServicesEnabled } from '../models/bitcoinNetwork';
+import presentAlert from './Alert';
 
 const styles = StyleSheet.create({
   fullWidthButton: {
@@ -131,6 +133,7 @@ const TransactionListItemComponent: React.FC<TransactionListItemProps> = ({
   const { language, selectedBlockExplorer } = useSettings();
   const insets = useSafeAreaInsets();
   const { fontScale } = useWindowDimensions();
+  const displayPriceUnit = !mainnetServicesEnabled && itemPriceUnit === BitcoinUnit.LOCAL_CURRENCY ? BitcoinUnit.BTC : itemPriceUnit;
   const containerStyle = useMemo(
     () => ({
       backgroundColor: colors.background,
@@ -223,8 +226,8 @@ const TransactionListItemComponent: React.FC<TransactionListItemProps> = ({
   }, [isPending, item.timestamp, language, arkRowKind]);
 
   const formattedAmount = useMemo(() => {
-    return formatBalanceWithoutSuffix(item.value, itemPriceUnit, true).toString();
-  }, [item.value, itemPriceUnit]);
+    return formatBalanceWithoutSuffix(item.value, displayPriceUnit, true).toString();
+  }, [displayPriceUnit, item.value]);
 
   const rowTitle = useMemo(() => {
     if (item.type === 'user_invoice' || item.type === 'payment_request') {
@@ -364,9 +367,9 @@ const TransactionListItemComponent: React.FC<TransactionListItemProps> = ({
   const { label: transactionTypeLabel, icon: avatar } = determineTransactionTypeAndAvatar();
 
   const amountWithUnit = useMemo(() => {
-    const unitSuffix = itemPriceUnit === BitcoinUnit.BTC || itemPriceUnit === BitcoinUnit.SATS ? ` ${itemPriceUnit}` : ' ';
+    const unitSuffix = displayPriceUnit === BitcoinUnit.BTC || displayPriceUnit === BitcoinUnit.SATS ? ` ${displayPriceUnit}` : ' ';
     return `${formattedAmount}${unitSuffix}`;
-  }, [formattedAmount, itemPriceUnit]);
+  }, [displayPriceUnit, formattedAmount]);
 
   const onPress = useCallback(async () => {
     // If a custom onPress handler was provided, use it and return
@@ -381,6 +384,10 @@ const TransactionListItemComponent: React.FC<TransactionListItemProps> = ({
       }
       navigate('TransactionStatus', { hash: item.hash, walletID, tx: item });
     } else if (item.type === 'user_invoice' || item.type === 'payment_request' || item.type === 'paid_invoice' || item.payment_request) {
+      if (!mainnetServicesEnabled) {
+        presentAlert({ message: loc._.mainnet_services_unavailable });
+        return;
+      }
       // A settled Arkade swap is an enriched native Ark leg (type 'bitcoind_tx')
       // carrying the swap's invoice payload (payment_request/hash/preimage). Route
       // it to the Lightning invoice view by that payload, not by type — otherwise
@@ -431,6 +438,10 @@ const TransactionListItemComponent: React.FC<TransactionListItemProps> = ({
     if (walletID && item && item.hash) {
       navigate('TransactionStatus', { hash: item.hash, walletID, tx: item });
     } else if (item.type === 'user_invoice' || item.type === 'payment_request' || item.type === 'paid_invoice' || item.payment_request) {
+      if (!mainnetServicesEnabled) {
+        presentAlert({ message: loc._.mainnet_services_unavailable });
+        return;
+      }
       // Settled Arkade swaps carry invoice data on a 'bitcoind_tx' leg; route by
       // payload so they open the Lightning invoice view (see onPress above).
       const lightningWallet = wallets.find(wallet => wallet?.getID() === item.walletID);

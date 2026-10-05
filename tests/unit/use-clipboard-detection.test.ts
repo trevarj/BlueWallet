@@ -5,7 +5,13 @@ import { CLIPBOARD_IDLE_DELAY_MS } from '../../blue_modules/clipboardPayment';
 import { readClipboardForDetection } from '../../blue_modules/clipboard';
 import useClipboardDetection from '../../hooks/useClipboardDetection';
 import { navigationRef } from '../../NavigationService';
+import presentAlert from '../../components/Alert';
 
+jest.mock('../../models/bitcoinNetwork', () => ({
+  ...jest.requireActual('../../models/bitcoinNetwork'),
+  mainnetServicesEnabled: false,
+}));
+jest.mock('../../components/Alert', () => ({ __esModule: true, default: jest.fn() }));
 jest.mock('@react-navigation/native', () => ({
   CommonActions: { navigate: (name: string, params: unknown) => ({ type: 'NAVIGATE', name, params }) },
 }));
@@ -18,7 +24,7 @@ jest.mock('../../blue_modules/clipboard', () => ({
 jest.mock('../../blue_modules/hapticFeedback', () => ({
   __esModule: true,
   default: jest.fn(),
-  HapticFeedbackTypes: { ImpactLight: 'impactLight' },
+  HapticFeedbackTypes: { ImpactLight: 'impactLight', NotificationError: 'notificationError' },
 }));
 jest.mock('../../blue_modules/environment', () => ({ isDesktop: false }));
 jest.mock('../../hooks/context/useStorage', () => ({
@@ -29,6 +35,7 @@ jest.mock('../../NavigationService', () => ({
 }));
 
 const P2WPKH = 'bc1qykcp2x3djgdtdwelxn9z4j2y956npte0a4sref';
+const BIP47 = 'PM8TJS2JxQ5ztXUpBBRnpTbcUXbUHy2T1abfrb3KkAAtMEGNbey4oumH7Hc578WgQJhPjBxteQ5GHHToTYHE3A1w6p7tU6KSoFmWBVbFGjKPisZDbP97';
 
 const appStateListeners: Array<(state: AppStateStatus) => void> = [];
 const emitAppState = (state: AppStateStatus) => {
@@ -80,6 +87,16 @@ it('presents the Detected sheet after a plain resume', async () => {
 
   expect(readClipboardForDetection).toHaveBeenCalledTimes(1);
   expect(navigationRef.dispatch).toHaveBeenCalledWith(expect.objectContaining({ name: 'ClipboardDetected' }));
+});
+
+it('shows the Testnet3 unavailable message for an unsupported clipboard payment', async () => {
+  jest.mocked(readClipboardForDetection).mockResolvedValue({ content: BIP47, pasteBlocked: false });
+  renderHook(useClipboardDetection, { initialProps: true });
+
+  await flush(CLIPBOARD_IDLE_DELAY_MS + 1);
+
+  expect(presentAlert).toHaveBeenCalledWith({ message: expect.stringContaining('Testnet3') });
+  expect(navigationRef.dispatch).not.toHaveBeenCalled();
 });
 
 it('defers the launch read until the app is active and the companion reports it', async () => {

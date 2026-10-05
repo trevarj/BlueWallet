@@ -6,6 +6,8 @@ import { useTheme } from '../components/themes';
 import loc from '../loc';
 import { withLazySuspense } from './LazyLoadingIndicator';
 import { navigationGuardRouter } from './navigationGuard';
+import { mainnetServicesEnabled } from '../models/bitcoinNetwork';
+import BlueTextCentered from '../components/BlueTextCentered';
 
 const Stack = createNativeStackNavigator();
 
@@ -25,6 +27,7 @@ const ScanQRCodeComponent = withLazySuspense(ScanQRCode);
 
 const ScanLNDInvoiceRoot = () => {
   const theme = useTheme();
+  if (!mainnetServicesEnabled) return <BlueTextCentered>{loc._.mainnet_services_unavailable}</BlueTextCentered>;
   return (
     <Stack.Navigator screenOptions={{ headerShadowVisible: false }} UNSTABLE_router={navigationGuardRouter}>
       <Stack.Screen

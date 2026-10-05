@@ -30,6 +30,7 @@ import { useSettings } from '../../hooks/context/useSettings';
 import loc from '../../loc';
 import { DetailViewStackParamList } from '../../navigation/DetailViewStackParamList';
 import { CommonToolTipActions } from '../../typings/CommonToolTipActions';
+import { networkDisplayName } from '../../models/bitcoinNetwork';
 
 type RouteProps = RouteProp<DetailViewStackParamList, 'ElectrumSettings'>;
 
@@ -485,6 +486,7 @@ const ElectrumSettings: React.FC = () => {
       <>
         <SettingsSection title={loc.settings.electrum_status}>
           <View style={settingsCardContent}>
+            <SettingsFootnote>{`${loc.settings.network}: ${networkDisplayName}`}</SettingsFootnote>
             <View style={styles.connectWrap}>
               <View style={[styles.container, config.connected === 1 ? stylesHook.containerConnected : stylesHook.containerDisconnected]}>
                 <Text

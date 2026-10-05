@@ -15,6 +15,7 @@ import { DetailViewStackParamList } from '../../navigation/DetailViewStackParamL
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { BlueSpacing20, BlueSpacing40 } from '../../components/BlueSpacing';
 import { BlueLoading } from '../../components/BlueLoading.tsx';
+import { mainnetServicesEnabled } from '../../models/bitcoinNetwork';
 
 type LnurlPaySuccessRouteProp = RouteProp<DetailViewStackParamList, 'LnurlPaySuccess'>;
 type LnurlPaySuccessNavigationProp = NativeStackNavigationProp<DetailViewStackParamList, 'LnurlPaySuccess'>;
@@ -32,6 +33,10 @@ const LnurlPaySuccess: React.FC = () => {
   const [url, setUrl] = useState<string>('');
 
   useEffect(() => {
+    if (!mainnetServicesEnabled) {
+      setIsLoading(false);
+      return;
+    }
     const loadSuccessfulPayment = async () => {
       const lnurl = new Lnurl(false, AsyncStorage);
       await lnurl.loadSuccessfulPayment(paymentHash);
@@ -68,6 +73,13 @@ const LnurlPaySuccess: React.FC = () => {
 
     loadSuccessfulPayment();
   }, [paymentHash]);
+  if (!mainnetServicesEnabled) {
+    return (
+      <SafeArea style={styles.root}>
+        <BlueText>{loc._.mainnet_services_unavailable}</BlueText>
+      </SafeArea>
+    );
+  }
 
   if (isLoading || !LN) {
     return <BlueLoading />;

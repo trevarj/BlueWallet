@@ -31,6 +31,7 @@ object MarketAPI {
     data class PriceResult(val rateDouble: Double, val formattedRate: String?)
 
     suspend fun fetchPrice(context: Context, currency: String): String? {
+        if (!mainnetWidgetsEnabled) return null
         Log.i(TAG, "Fetching Bitcoin price for currency: $currency")
         val startTime = System.currentTimeMillis()
         
@@ -52,6 +53,7 @@ object MarketAPI {
     }
     
     suspend fun fetchPriceWithResponse(context: Context, currency: String): ApiResponse {
+        if (!mainnetWidgetsEnabled) return ApiResponse(null, 503)
         val startTime = System.currentTimeMillis()
         Log.d(TAG, "Starting price fetch for currency: $currency")
         
@@ -163,6 +165,7 @@ object MarketAPI {
      * Fetch the next block fee from Electrum servers with network awareness
      */
     suspend fun fetchNextBlockFee(context: Context): String {
+        if (!mainnetWidgetsEnabled) return ERROR_INDICATOR
         val startTime = System.currentTimeMillis()
         Log.i(TAG, "Fetching next block fee from Electrum")
         
@@ -375,6 +378,7 @@ object MarketAPI {
      * Fetch complete market data including price and next block fee
      */
     suspend fun fetchMarketData(context: Context, currency: String): MarketData {
+        if (!mainnetWidgetsEnabled) return MarketData()
         val startTime = System.currentTimeMillis()
         Log.i(TAG, "Starting market data fetch for currency: $currency")
         

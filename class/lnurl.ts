@@ -7,6 +7,7 @@ import ecc from '../blue_modules/noble_ecc';
 import { parse } from 'url'; // eslint-disable-line n/no-deprecated-api
 import { fetch } from '../util/fetch';
 import { base64ToUint8Array, hexToUint8Array, uint8ArrayToHex, uint8ArrayToString } from '../blue_modules/uint8array-extras';
+import { assertMainnetServicesEnabled } from '../models/bitcoinNetwork';
 
 const ONION_REGEX = /^(http:\/\/[^/:@]+\.onion(?::\d{1,5})?)(\/.*)?$/; // regex for onion URL
 
@@ -112,6 +113,7 @@ export default class Lnurl {
   }
 
   async fetchGet(url: string): Promise<any> {
+    assertMainnetServicesEnabled();
     const resp = await fetch(url, { method: 'GET' });
     if (resp.status >= 300) {
       throw new Error('Bad response from server');
@@ -166,6 +168,7 @@ export default class Lnurl {
   }
 
   async requestBolt11FromLnurlPayService(amountSat: number, comment: string = ''): Promise<LnurlPayServiceBolt11Payload> {
+    assertMainnetServicesEnabled();
     if (!this._lnurlPayServicePayload) throw new Error('this._lnurlPayServicePayload is not set');
     if (!this._lnurlPayServicePayload.callback) throw new Error('this._lnurlPayServicePayload.callback is not set');
     if (amountSat < this._lnurlPayServicePayload.min || amountSat > this._lnurlPayServicePayload.max)
@@ -201,6 +204,7 @@ export default class Lnurl {
   }
 
   async callLnurlPayService(): Promise<LnurlPayServicePayload> {
+    assertMainnetServicesEnabled();
     if (!this._lnurl) throw new Error('this._lnurl is not set');
     const url = Lnurl.getUrlFromLnurl(this._lnurl);
     if (!url) throw new Error('Invalid LNURL');
@@ -252,6 +256,7 @@ export default class Lnurl {
   }
 
   async loadSuccessfulPayment(paymentHash: string): Promise<boolean> {
+    assertMainnetServicesEnabled();
     if (!paymentHash) throw new Error('No paymentHash provided');
     let data;
     try {
@@ -272,6 +277,7 @@ export default class Lnurl {
   }
 
   async storeSuccess(paymentHash: string, preimage: string | { data: Buffer }): Promise<void> {
+    assertMainnetServicesEnabled();
     if (typeof preimage === 'object') {
       preimage = uint8ArrayToHex(new Uint8Array(preimage.data));
     }
@@ -361,6 +367,7 @@ export default class Lnurl {
   }
 
   async authenticate(secret: string): Promise<void> {
+    assertMainnetServicesEnabled();
     if (!this._lnurl) throw new Error('this._lnurl is not set');
 
     const url = parse(Lnurl.getUrlFromLnurl(this._lnurl) || '', true);

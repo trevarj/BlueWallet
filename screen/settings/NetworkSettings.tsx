@@ -4,6 +4,7 @@ import { Platform } from 'react-native';
 import loc from '../../loc';
 import { SettingsSection, SettingsListItem, SettingsScrollView } from '../../components/SettingsSection';
 import { isNotificationsCapable } from '../../blue_modules/notifications';
+import { mainnetServicesEnabled, networkDisplayName } from '../../models/bitcoinNetwork';
 
 const NetworkSettings: React.FC = () => {
   const navigation = useNavigation();
@@ -27,6 +28,7 @@ const NetworkSettings: React.FC = () => {
   return (
     <SettingsScrollView>
       <SettingsSection>
+        <SettingsListItem title={loc.settings.network} subtitle={networkDisplayName} bottomDivider />
         <SettingsListItem
           title={loc.settings.block_explorer}
           iconName="blockExplorer"
@@ -43,14 +45,16 @@ const NetworkSettings: React.FC = () => {
           chevron
         />
 
-        <SettingsListItem
-          title={loc.settings.lightning_settings}
-          iconName="lightning"
-          onPress={navigateToLightningSettings}
-          testID="LightningSettings"
-          chevron
-          bottomDivider={showNotifications}
-        />
+        {mainnetServicesEnabled && (
+          <SettingsListItem
+            title={loc.settings.lightning_settings}
+            iconName="lightning"
+            onPress={navigateToLightningSettings}
+            testID="LightningSettings"
+            chevron
+            bottomDivider={showNotifications}
+          />
+        )}
 
         {showNotifications && (
           <SettingsListItem

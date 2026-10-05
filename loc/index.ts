@@ -13,6 +13,7 @@ import * as RNLocalize from 'react-native-localize';
 import { satoshiToLocalCurrency } from '../blue_modules/currency';
 import { BitcoinUnit } from '../models/bitcoinUnits';
 import { AvailableLanguages, LangCode } from './languages';
+import { mainnetServicesEnabled } from '../models/bitcoinNetwork';
 import enJson from './en.json';
 
 export const STORAGE_KEY = 'lang';
@@ -455,6 +456,7 @@ export function formatBalance(balance: number, toUnit: string, withFormatting = 
   } else if (toUnit === BitcoinUnit.SATS) {
     return (withFormatting ? new Intl.NumberFormat().format(balance).toString() : String(balance)) + ' ' + loc.units[BitcoinUnit.SATS];
   } else {
+    if (!mainnetServicesEnabled) return formatBalance(balance, BitcoinUnit.BTC, withFormatting);
     console.debug('[UnitSwitch/Fiat] formatBalance to fiat', { balance, unit: toUnit, withFormatting });
     return satoshiToLocalCurrency(balance);
   }
@@ -477,6 +479,7 @@ export function formatBalanceWithoutSuffix(balance = 0, toUnit: string, withForm
   } else if (toUnit === BitcoinUnit.SATS) {
     return withFormatting ? new Intl.NumberFormat().format(balance).toString() : String(balance);
   } else {
+    if (!mainnetServicesEnabled) return formatBalanceWithoutSuffix(balance, BitcoinUnit.BTC, withFormatting);
     console.debug('[UnitSwitch/Fiat] formatBalanceWithoutSuffix to fiat', { balance, unit: toUnit, withFormatting });
     return satoshiToLocalCurrency(balance);
   }

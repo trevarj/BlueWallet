@@ -28,7 +28,9 @@
     "unlock": "Unlock",
     "port": "Port",
     "ssl_port": "SSL Port",
-    "suggested": "Suggested"
+    "suggested": "Suggested",
+    "mainnet_services_unavailable": "This feature is unavailable on Testnet3.",
+    "payjoin_unavailable": "Payjoin is unavailable on Testnet3."
   },
   "azteco": {
     "codeIs": "Your voucher code is",

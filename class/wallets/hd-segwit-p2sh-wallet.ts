@@ -5,7 +5,7 @@ import { CoinSelectReturnInput } from 'coinselect';
 
 import ecc from '../../blue_modules/noble_ecc';
 import { AbstractHDElectrumWallet } from './abstract-hd-electrum-wallet';
-import { coinType, network } from '../../models/bitcoinNetwork';
+import { coinType, mainnetServicesEnabled, network } from '../../models/bitcoinNetwork';
 import { convertExtendedKey } from './extended-key';
 
 const bip32 = BIP32Factory(ecc);
@@ -114,6 +114,6 @@ export class HDSegwitP2SHWallet extends AbstractHDElectrumWallet {
   }
 
   allowSilentPaymentSend(): boolean {
-    return true;
+    return mainnetServicesEnabled;
   }
 }

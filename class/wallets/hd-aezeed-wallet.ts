@@ -5,7 +5,7 @@ import * as bitcoin from 'bitcoinjs-lib';
 import ecc from '../../blue_modules/noble_ecc';
 import { hexToUint8Array, uint8ArrayToHex } from '../../blue_modules/uint8array-extras';
 import { AbstractHDElectrumWallet } from './abstract-hd-electrum-wallet';
-import { coinType, network } from '../../models/bitcoinNetwork';
+import { coinType, mainnetServicesEnabled, network } from '../../models/bitcoinNetwork';
 import { convertExtendedKey } from './extended-key';
 
 const bip32 = BIP32Factory(ecc);
@@ -186,7 +186,7 @@ export class HDAezeedWallet extends AbstractHDElectrumWallet {
   }
 
   allowPayJoin() {
-    return true;
+    return mainnetServicesEnabled;
   }
 
   isSegwit() {

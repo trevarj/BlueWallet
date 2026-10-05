@@ -26,6 +26,7 @@ import { HDSegwitBech32Wallet } from '../../class/wallets/hd-segwit-bech32-walle
 import { useSettings } from '../../hooks/context/useSettings';
 import { majorTomToGroundControl } from '../../blue_modules/notifications';
 import { uint8ArrayToHex } from '../../blue_modules/uint8array-extras';
+import { mainnetServicesEnabled, network } from '../../models/bitcoinNetwork';
 
 enum ActionType {
   SET_LOADING = 'SET_LOADING',
@@ -180,10 +181,14 @@ const Confirm: React.FC = () => {
     if (!(recipients.length > 0) || !recipients[0].address) {
       return undefined;
     }
-    return bitcoin.address.toOutputScript(recipients[0].address, bitcoin.networks.bitcoin);
+    return bitcoin.address.toOutputScript(recipients[0].address, network);
   };
 
   const handleSendTransaction = async () => {
+    if (!mainnetServicesEnabled && payjoinUrl) {
+      presentAlert({ title: loc.errors.error, message: loc._.payjoin_unavailable });
+      return;
+    }
     dispatch({ type: ActionType.SET_BUTTON_DISABLED, payload: true });
     dispatch({ type: ActionType.SET_LOADING, payload: true });
     try {
@@ -298,9 +303,11 @@ const Confirm: React.FC = () => {
           </Text>
           <Text style={[styles.valueUnit, stylesHook.valueValue]}>{' ' + loc.units[BitcoinUnit.BTC]}</Text>
         </View>
-        <Text style={[styles.transactionAmountFiat, stylesHook.transactionAmountFiat]}>
-          {item.value && satoshiToLocalCurrency(item.value)}
-        </Text>
+        {mainnetServicesEnabled ? (
+          <Text style={[styles.transactionAmountFiat, stylesHook.transactionAmountFiat]}>
+            {item.value && satoshiToLocalCurrency(item.value)}
+          </Text>
+        ) : null}
         <BlueCard>
           <Text style={[styles.transactionDetailsTitle, stylesHook.transactionDetailsTitle]}>{loc.send.create_to}</Text>
           <Text testID="TransactionAddress" style={[styles.transactionDetailsSubtitle, stylesHook.transactionDetailsSubtitle]}>
@@ -332,31 +339,37 @@ const Confirm: React.FC = () => {
           keyExtractor={(_item, index) => `${index}`}
           ItemSeparatorComponent={renderSeparator}
         />
-        {!!payjoinUrl && (
-          <View style={styles.cardContainer}>
+        {!!payjoinUrl &&
+          (mainnetServicesEnabled ? (
+            <View style={styles.cardContainer}>
+              <BlueCard>
+                <View style={[styles.payjoinWrapper, stylesHook.payjoinWrapper]}>
+                  <Text style={styles.payjoinText}>Payjoin</Text>
+                  <Switch
+                    testID="PayjoinSwitch"
+                    value={state.isPayjoinEnabled}
+                    onValueChange={value => dispatch({ type: ActionType.SET_PAYJOIN_ENABLED, payload: value })}
+                  />
+                </View>
+              </BlueCard>
+            </View>
+          ) : (
             <BlueCard>
-              <View style={[styles.payjoinWrapper, stylesHook.payjoinWrapper]}>
-                <Text style={styles.payjoinText}>Payjoin</Text>
-                <Switch
-                  testID="PayjoinSwitch"
-                  value={state.isPayjoinEnabled}
-                  onValueChange={value => dispatch({ type: ActionType.SET_PAYJOIN_ENABLED, payload: value })}
-                />
-              </View>
+              <Text>{loc._.payjoin_unavailable}</Text>
             </BlueCard>
-          </View>
-        )}
+          ))}
       </View>
       <View style={styles.cardBottom}>
         <BlueCard>
           <Text style={styles.cardText} testID="TransactionFee">
-            {loc.send.create_fee}: {formatBalance(feeSatoshi, BitcoinUnit.BTC)} ({satoshiToLocalCurrency(feeSatoshi)})
+            {loc.send.create_fee}: {formatBalance(feeSatoshi, BitcoinUnit.BTC)}
+            {mainnetServicesEnabled ? ` (${satoshiToLocalCurrency(feeSatoshi)})` : ''}
           </Text>
           {state.isLoading ? (
             <ActivityIndicator />
           ) : (
             <Button
-              disabled={isElectrumDisabled || state.isButtonDisabled}
+              disabled={isElectrumDisabled || state.isButtonDisabled || (!mainnetServicesEnabled && !!payjoinUrl)}
               onPress={handleSendTransaction}
               title={loc.send.confirm_sendNow}
             />

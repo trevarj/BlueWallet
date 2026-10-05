@@ -14,6 +14,7 @@ import { BitcoinUnit } from '../../models/bitcoinUnits';
 import DeeplinkSchemaMatch from '../../class/deeplink-schema-match';
 import { satoshiToBTC, fiatToBTC } from '../../blue_modules/currency';
 import { ReceiveDetailsStackParamList } from '../../navigation/ReceiveDetailsStackParamList';
+import { mainnetServicesEnabled } from '../../models/bitcoinNetwork';
 
 const ReceiveCustomAmountSheet = () => {
   const navigation = useNavigation<NativeStackNavigationProp<ReceiveDetailsStackParamList, 'ReceiveCustomAmount'>>();
@@ -21,10 +22,11 @@ const ReceiveCustomAmountSheet = () => {
   const { colors } = useTheme();
 
   const { address, currentLabel = '', currentAmount = '', currentUnit = BitcoinUnit.BTC, preferredUnit = BitcoinUnit.BTC } = route.params;
+  const initialUnit = !mainnetServicesEnabled && currentUnit === BitcoinUnit.LOCAL_CURRENCY ? BitcoinUnit.BTC : currentUnit;
 
   const [label, setLabel] = useState(currentLabel);
-  const [amount, setAmount] = useState(currentAmount);
-  const [unit, setUnit] = useState<BitcoinUnit>(currentUnit);
+  const [amount, setAmount] = useState(!mainnetServicesEnabled && currentUnit === BitcoinUnit.LOCAL_CURRENCY ? '' : currentAmount);
+  const [unit, setUnit] = useState<BitcoinUnit>(initialUnit);
   const latestLabel = useRef(currentLabel);
 
   const stylesHook = useMemo(
@@ -107,7 +109,8 @@ const ReceiveCustomAmountSheet = () => {
   }, [amount, unit, label, computeBip21, navigation]);
 
   const handleReset = useCallback(() => {
-    const fallbackUnit = preferredUnit || BitcoinUnit.BTC;
+    const fallbackUnit =
+      !mainnetServicesEnabled && preferredUnit === BitcoinUnit.LOCAL_CURRENCY ? BitcoinUnit.BTC : preferredUnit || BitcoinUnit.BTC;
     const encoded = DeeplinkSchemaMatch.bip21encode(address);
     navigation.popTo(
       'ReceiveDetails',

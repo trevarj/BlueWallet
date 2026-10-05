@@ -27,11 +27,12 @@ class MainApplication : Application(), ReactApplication {
         if (key == "preferredCurrency") {
             prefs.edit().remove("previous_price").apply()
             
-            // Update BitcoinPrice widgets
-            WidgetUpdateWorker.scheduleWork(this)
-            
-            // Immediately refresh Market widgets
-            MarketWidget.refreshAllWidgetsImmediately(this)
+            if (mainnetWidgetsEnabled) {
+                WidgetUpdateWorker.scheduleWork(this)
+                MarketWidget.refreshAllWidgetsImmediately(this)
+            } else {
+                AppWidgetUtils.disableMainnetWidgets(this)
+            }
         } else if (key == "force_dark_mode") {
             // Theme setting changed, update all widgets
             ThemeHelper.updateAllWidgets(this)
@@ -89,6 +90,7 @@ class MainApplication : Application(), ReactApplication {
     override fun onCreate() {
         super.onCreate()
         sharedPref = getSharedPreferences("group.io.bluewallet.bluewallet", Context.MODE_PRIVATE)
+        if (!mainnetWidgetsEnabled) AppWidgetUtils.disableMainnetWidgets(this)
         
         // Handle clearFilesOnLaunch before registering listeners
         clearFilesIfNeeded()

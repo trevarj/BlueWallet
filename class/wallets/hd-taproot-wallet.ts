@@ -4,7 +4,7 @@ import ecc from '../../blue_modules/noble_ecc';
 import * as bitcoin from 'bitcoinjs-lib';
 import { Psbt } from 'bitcoinjs-lib';
 import { CoinSelectReturnInput } from 'coinselect';
-import { coinType, network } from '../../models/bitcoinNetwork';
+import { coinType, mainnetServicesEnabled, network } from '../../models/bitcoinNetwork';
 import { convertExtendedKey } from './extended-key';
 
 const bip32 = BIP32Factory(ecc);
@@ -152,10 +152,10 @@ export class HDTaprootWallet extends AbstractHDElectrumWallet {
   }
 
   allowBIP47() {
-    return true;
+    return mainnetServicesEnabled;
   }
 
   allowSilentPaymentSend(): boolean {
-    return true;
+    return mainnetServicesEnabled;
   }
 }

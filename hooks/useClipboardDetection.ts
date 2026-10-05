@@ -19,6 +19,8 @@ import { isDesktop } from '../blue_modules/environment';
 import triggerHapticFeedback, { HapticFeedbackTypes } from '../blue_modules/hapticFeedback';
 import { navigationRef } from '../NavigationService';
 import { useStorage } from './context/useStorage';
+import presentAlert from '../components/Alert';
+import loc from '../loc';
 
 const CLIPBOARD_DETECTED_ROUTE = 'ClipboardDetected';
 
@@ -86,6 +88,13 @@ const useClipboardDetection = (enabled: boolean) => {
         : ((await getLastSeenClipboardHash()) ?? lastSeenClipboardHash.current);
       const { offer, nextHash } = evaluateClipboardOnForeground(content, lastSeenHash, wallets, { ignoreLastSeen });
       if (!offer) {
+        lastSeenClipboardHash.current = nextHash;
+        await setLastSeenClipboardHash(nextHash);
+        return;
+      }
+      if (offer.kind === ClipboardPaymentKind.Unsupported) {
+        presentAlert({ message: loc._.mainnet_services_unavailable });
+        triggerHapticFeedback(HapticFeedbackTypes.NotificationError);
         lastSeenClipboardHash.current = nextHash;
         await setLastSeenClipboardHash(nextHash);
         return;

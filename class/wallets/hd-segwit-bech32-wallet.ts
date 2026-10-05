@@ -1,5 +1,5 @@
 import { AbstractHDElectrumWallet } from './abstract-hd-electrum-wallet';
-import { coinType } from '../../models/bitcoinNetwork';
+import { coinType, mainnetServicesEnabled } from '../../models/bitcoinNetwork';
 
 /**
  * HD Wallet (BIP39).
@@ -25,7 +25,7 @@ export class HDSegwitBech32Wallet extends AbstractHDElectrumWallet {
   }
 
   allowPayJoin() {
-    return true;
+    return mainnetServicesEnabled;
   }
 
   allowCosignPsbt() {
@@ -49,10 +49,10 @@ export class HDSegwitBech32Wallet extends AbstractHDElectrumWallet {
   }
 
   allowBIP47() {
-    return true;
+    return mainnetServicesEnabled;
   }
 
   allowSilentPaymentSend(): boolean {
-    return true;
+    return mainnetServicesEnabled;
   }
 }

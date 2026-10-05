@@ -6,7 +6,7 @@ import * as BlueElectrum from '../../blue_modules/BlueElectrum';
 import ecc from '../../blue_modules/noble_ecc';
 import { AbstractHDElectrumWallet } from './abstract-hd-electrum-wallet';
 import { hexToUint8Array } from '../../blue_modules/uint8array-extras';
-import { coinType, network } from '../../models/bitcoinNetwork';
+import { coinType, mainnetServicesEnabled, network } from '../../models/bitcoinNetwork';
 
 const bip32 = BIP32Factory(ecc);
 
@@ -45,7 +45,7 @@ export class HDLegacyP2PKHWallet extends AbstractHDElectrumWallet {
   }
 
   allowBIP47() {
-    return true;
+    return mainnetServicesEnabled;
   }
 
   getXpub() {
@@ -114,6 +114,6 @@ export class HDLegacyP2PKHWallet extends AbstractHDElectrumWallet {
   }
 
   allowSilentPaymentSend(): boolean {
-    return true;
+    return mainnetServicesEnabled;
   }
 }

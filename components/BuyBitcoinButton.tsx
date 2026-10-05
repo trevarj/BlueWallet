@@ -4,6 +4,7 @@ import { ActivityIndicator, Alert, Linking, Pressable, StyleSheet, Text } from '
 import loc from '../loc';
 import { Chain } from '../models/bitcoinUnits';
 import { useTheme } from './themes';
+import { assertMainnetServicesEnabled, mainnetServicesEnabled } from '../models/bitcoinNetwork';
 
 /** MoonPay publishable key. Safe to ship in the client. */
 export const MOONPAY_API_KEY = 'pk_live_IkhSI2lIXSiolwakfd95QFD4p3908cZa';
@@ -11,8 +12,10 @@ export const MOONPAY_API_KEY = 'pk_live_IkhSI2lIXSiolwakfd95QFD4p3908cZa';
 /** Matches ReceiveDetails: don't wait on a full gap-limit Electrum scan before showing an address. */
 export const BUY_BITCOIN_ADDRESS_TIMEOUT_MS = 1000;
 
-export const buyBitcoinUrl = (address: string): string =>
-  `https://moonpay-redirect.herokuapp.com/?apiKey=${MOONPAY_API_KEY}&walletAddress=${address}`;
+export const buyBitcoinUrl = (address: string): string => {
+  assertMainnetServicesEnabled();
+  return `https://moonpay-redirect.herokuapp.com/?apiKey=${MOONPAY_API_KEY}&walletAddress=${address}`;
+};
 
 export type BuyBitcoinButtonVariant = 'empty' | 'list';
 
@@ -21,6 +24,7 @@ export const BUY_BITCOIN_HIDDEN_COUNTRIES = new Set<string>(['GB']);
 
 /** Where the buy-bitcoin button sits on an on-chain wallet. Lightning wallets and blocked countries get none. */
 export const buyBitcoinButtonVariant = (chain: Chain, transactionCount: number, country: string): BuyBitcoinButtonVariant | null => {
+  if (!mainnetServicesEnabled) return null;
   if (chain !== Chain.ONCHAIN) return null;
   if (BUY_BITCOIN_HIDDEN_COUNTRIES.has(country.toUpperCase())) return null;
   return transactionCount > 0 ? 'list' : 'empty';
@@ -54,6 +58,7 @@ export const resolveBuyBitcoinReceiveAddress = async (
     timeoutMs?: number;
   },
 ): Promise<string | undefined> => {
+  assertMainnetServicesEnabled();
   if (!isElectrumDisabled) {
     try {
       const address = await Promise.race([wallet.getAddressAsync(), sleep(timeoutMs).then(() => undefined)]);
@@ -112,6 +117,10 @@ export const BuyBitcoinButton: React.FC<BuyBitcoinButtonProps> = ({ variant, get
   });
 
   const onPress = async () => {
+    if (!mainnetServicesEnabled) {
+      Alert.alert(loc.errors.error, loc._.mainnet_services_unavailable);
+      return;
+    }
     if (busyRef.current) return;
     busyRef.current = true;
     setBusy(true);

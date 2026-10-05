@@ -9,6 +9,7 @@ import SafeArea from '../../components/SafeArea';
 import { useTheme } from '../../components/themes';
 import loc from '../../loc';
 import { BlueSpacing20 } from '../../components/BlueSpacing';
+import { mainnetServicesEnabled } from '../../models/bitcoinNetwork';
 
 type LNDViewAdditionalInvoicePreImageRouteParams = {
   preImageData: string;
@@ -22,6 +23,9 @@ const LNDViewAdditionalInvoicePreImage = () => {
       backgroundColor: colors.elevated,
     },
   });
+  if (!mainnetServicesEnabled) {
+    return <BlueTextCentered>{loc._.mainnet_services_unavailable}</BlueTextCentered>;
+  }
 
   return (
     <SafeArea style={stylesHook.root}>

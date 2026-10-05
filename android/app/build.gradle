@@ -106,7 +106,7 @@ android {
             buildConfigField "String", "BITCOIN_NETWORK", '"bitcoin"'
             resValue "string", "app_name", "BHWI PoC"
             resValue "string", "app_settings_name", "BHWI PoC Settings"
-            manifestPlaceholders = [appScheme: "bluewallet-bhwi"]
+            manifestPlaceholders = [appScheme: "bluewallet-bhwi", widgetsEnabled: "true"]
         }
         bitcoinTestnet {
             dimension "bitcoinNetwork"
@@ -114,7 +114,7 @@ android {
             buildConfigField "String", "BITCOIN_NETWORK", '"testnet"'
             resValue "string", "app_name", "BHWI PoC Testnet3"
             resValue "string", "app_settings_name", "BHWI PoC Testnet3 Settings"
-            manifestPlaceholders = [appScheme: "bluewallet-bhwi-testnet"]
+            manifestPlaceholders = [appScheme: "bluewallet-bhwi-testnet", widgetsEnabled: "false"]
         }
     }
 

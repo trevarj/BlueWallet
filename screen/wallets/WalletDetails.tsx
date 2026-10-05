@@ -47,6 +47,7 @@ import { BlueSpacing20 } from '../../components/BlueSpacing';
 import { BlueLoading } from '../../components/BlueLoading';
 import Icon from '../../components/Icon';
 import { navigateToWalletsList } from '../../NavigationService';
+import { mainnetServicesEnabled } from '../../models/bitcoinNetwork';
 
 type RouteProps = RouteProp<DetailViewStackParamList, 'WalletDetails'>;
 const IMPORT_NOTES_ACTION_ID = 'import_notes';
@@ -69,13 +70,16 @@ const WalletDetails: React.FC = () => {
   const [backdoorPressed, setBackdoorPressed] = useState<number>(0);
   const walletRef = useRef<TWallet | undefined>(wallets.find(w => w.getID() === walletID));
   const wallet = walletRef.current as TWallet;
+  const isUnsupportedServiceWallet = !mainnetServicesEnabled && wallet instanceof LightningCustodianWallet;
   const [walletUseWithHardwareWallet, setWalletUseWithHardwareWallet] = useState<boolean>(
     wallet.useWithHardwareWalletEnabled ? wallet.useWithHardwareWalletEnabled() : false,
   );
-  const [isBIP47Enabled, setIsBIP47Enabled] = useState<boolean>(wallet.isBIP47Enabled ? wallet.isBIP47Enabled() : false);
+  const [isBIP47Enabled, setIsBIP47Enabled] = useState<boolean>(
+    mainnetServicesEnabled && wallet.isBIP47Enabled ? wallet.isBIP47Enabled() : false,
+  );
 
   const [isContactsVisible, setIsContactsVisible] = useState<boolean>(
-    (wallet.allowBIP47 && wallet.allowBIP47() && wallet.isBIP47Enabled && wallet.isBIP47Enabled()) || false,
+    (mainnetServicesEnabled && wallet.allowBIP47 && wallet.allowBIP47() && wallet.isBIP47Enabled && wallet.isBIP47Enabled()) || false,
   );
 
   const [hideTransactionsInWalletsList, setHideTransactionsInWalletsList] = useState<boolean>(
@@ -101,6 +105,7 @@ const WalletDetails: React.FC = () => {
   useFocusEffect(
     useCallback(() => {
       let cancelled = false;
+      if (isUnsupportedServiceWallet) return;
       const w = walletRef.current;
       if (!w || typeof w.getUtxo !== 'function') return;
 
@@ -119,7 +124,7 @@ const WalletDetails: React.FC = () => {
       return () => {
         cancelled = true;
       };
-    }, [sleep]),
+    }, [isUnsupportedServiceWallet, sleep]),
   );
 
   const { hasCoinControl, utxoCount } = coinControlStats;
@@ -145,7 +150,7 @@ const WalletDetails: React.FC = () => {
   // Fetch ark address when wallet is a LightningArkWallet
   useEffect(() => {
     const fetchArkAddress = async () => {
-      if (wallet.type === LightningArkWallet.type && wallet.getArkAddress) {
+      if (mainnetServicesEnabled && wallet.type === LightningArkWallet.type && wallet.getArkAddress) {
         try {
           const address = await wallet.getArkAddress();
           setArkAddress(address);
@@ -160,6 +165,10 @@ const WalletDetails: React.FC = () => {
 
   const [isRestoringSwaps, setIsRestoringSwaps] = useState<boolean>(false);
   const onRestoreSwapsPressed = useCallback(async () => {
+    if (!mainnetServicesEnabled) {
+      presentAlert({ message: loc._.mainnet_services_unavailable });
+      return;
+    }
     if (wallet.type !== LightningArkWallet.type || !(wallet as unknown as LightningArkWallet).restoreSwaps) return;
     setIsRestoringSwaps(true);
     try {
@@ -520,7 +529,10 @@ const WalletDetails: React.FC = () => {
       walletID,
     });
 
-  const navigateToContacts = () => navigate('PaymentCodeList', { walletID });
+  const navigateToContacts = () => {
+    if (!mainnetServicesEnabled) return presentAlert({ message: loc._.mainnet_services_unavailable });
+    navigate('PaymentCodeList', { walletID });
+  };
 
   const exportInternals = async () => {
     if (backdoorPressed < 10) return setBackdoorPressed(backdoorPressed + 1);
@@ -670,6 +682,11 @@ const WalletDetails: React.FC = () => {
           <BlueLoading />
         ) : (
           <>
+            {isUnsupportedServiceWallet ? (
+              <BlueCard style={styles.address}>
+                <BlueText>{loc._.mainnet_services_unavailable}</BlueText>
+              </BlueCard>
+            ) : null}
             <BlueCard style={styles.address}>
               <Text style={[styles.textLabel2, stylesHook.textLabel2]}>{loc.wallets.add_wallet_name}</Text>
               <View style={[styles.nameRow, stylesHook.nameRow]}>
@@ -854,7 +871,7 @@ const WalletDetails: React.FC = () => {
                 }}
                 bottomDivider
               />
-              {wallet.allowBIP47 && wallet.allowBIP47() && (
+              {mainnetServicesEnabled && wallet.allowBIP47 && wallet.allowBIP47() && (
                 <>
                   <Text style={[styles.textLabel2, stylesHook.textLabel2, styles.optionsSubheader]}>{loc.bip47.payment_code}</Text>
                   <SettingsListItem
@@ -1013,7 +1030,7 @@ const WalletDetails: React.FC = () => {
                       onPress={onRestoreSwapsPressed}
                       testID="RestoreSwapActivity"
                       title={loc.wallets.restore_swap_activity}
-                      disabled={isRestoringSwaps}
+                      disabled={isUnsupportedServiceWallet || isRestoringSwaps}
                       loading={isRestoringSwaps}
                     />
                   </>

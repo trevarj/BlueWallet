@@ -24,6 +24,7 @@ import { LightningArkWallet } from '../../class/wallets/lightning-ark-wallet';
 import presentAlert from '../../components/Alert';
 import { isReverseSuccessStatus } from '@arkade-os/boltz-swap';
 import type { BoltzSubmarineSwap } from '@arkade-os/boltz-swap';
+import { mainnetServicesEnabled } from '../../models/bitcoinNetwork';
 
 type LNDViewInvoiceRouteParams = {
   walletID: string;
@@ -69,6 +70,7 @@ const LNDViewInvoice = () => {
   // the time we force a render `getSwapById(swapId).status` reflects the
   // new state and the success/refund branches re-evaluate correctly.
   useEffect(() => {
+    if (!mainnetServicesEnabled) return;
     if (!arkWallet || !swapId) return;
     return arkWallet.subscribeToSwapEvents(updatedSwap => {
       if (updatedSwap.id === swapId) forceRender();
@@ -84,6 +86,10 @@ const LNDViewInvoice = () => {
   };
 
   const onRefundPressed = async () => {
+    if (!mainnetServicesEnabled) {
+      presentAlert({ message: loc._.mainnet_services_unavailable });
+      return;
+    }
     if (!arkWallet || !swap || isActioning) return;
     setIsActioning(true);
     try {
@@ -132,6 +138,7 @@ const LNDViewInvoice = () => {
   }, []);
 
   useEffect(() => {
+    if (!mainnetServicesEnabled) return;
     console.log('LNDViewInvoice - useEffect', { invoice });
 
     if (!wallet) {
@@ -236,6 +243,9 @@ const LNDViewInvoice = () => {
   };
 
   const render = () => {
+    if (!mainnetServicesEnabled) {
+      return <BlueTextCentered>{loc._.mainnet_services_unavailable}</BlueTextCentered>;
+    }
     if (typeof invoice === 'object') {
       const currentDate = new Date();
       const now = (currentDate.getTime() / 1000) | 0; // eslint-disable-line no-bitwise

@@ -28,6 +28,7 @@ import { BlueSpacing20, BlueSpacing40 } from '../../components/BlueSpacing';
 import { hexToUint8Array } from '../../blue_modules/uint8array-extras';
 import { LightningArkWallet } from '../../class/wallets/lightning-ark-wallet.ts';
 import { resetScanWasBBQR } from '../../helpers/scan-qr.ts';
+import { mainnetServicesEnabled } from '../../models/bitcoinNetwork';
 
 enum ButtonSelected {
   // @ts-ignore: Return later to update
@@ -159,6 +160,11 @@ const WalletsAdd: React.FC = () => {
       backgroundColor: colors.inputBackgroundColor,
     },
   };
+  useEffect(() => {
+    if (!mainnetServicesEnabled && (selectedWalletType === ButtonSelected.OFFCHAIN || selectedWalletType === ButtonSelected.ARK)) {
+      presentAlert({ message: loc._.mainnet_services_unavailable });
+    }
+  }, [selectedWalletType]);
 
   const hasStoredLndHub = (walletBaseURI ?? '').trim().length > 0;
 
@@ -204,10 +210,12 @@ const WalletsAdd: React.FC = () => {
   );
 
   const handleOnLightningArkButtonPressed = useCallback(() => {
+    if (!mainnetServicesEnabled) return presentAlert({ message: loc._.mainnet_services_unavailable });
     confirmResetEntropy(ButtonSelected.ARK);
   }, [confirmResetEntropy]);
 
   const handleOnLightningButtonPressed = useCallback(() => {
+    if (!mainnetServicesEnabled) return presentAlert({ message: loc._.mainnet_services_unavailable });
     confirmResetEntropy(ButtonSelected.OFFCHAIN);
   }, [confirmResetEntropy]);
 
@@ -216,6 +224,10 @@ const WalletsAdd: React.FC = () => {
     // scan his wallet backup to import wallet
     resetScanWasBBQR();
 
+    if (!mainnetServicesEnabled) {
+      setIsLoading(false);
+      return;
+    }
     getLNDHub()
       .then(url => (url ? setWalletBaseURI(url) : setWalletBaseURI('')))
       .catch(() => setWalletBaseURI(''))
@@ -235,6 +247,11 @@ const WalletsAdd: React.FC = () => {
   };
 
   const createWallet = async () => {
+    if (!mainnetServicesEnabled && (selectedWalletType === ButtonSelected.OFFCHAIN || selectedWalletType === ButtonSelected.ARK)) {
+      setIsLoading(false);
+      presentAlert({ message: loc._.mainnet_services_unavailable });
+      return;
+    }
     setIsLoading(true);
 
     if (selectedWalletType === ButtonSelected.OFFCHAIN) {
@@ -296,6 +313,7 @@ const WalletsAdd: React.FC = () => {
   };
 
   const createLightningWallet = async () => {
+    if (!mainnetServicesEnabled) return presentAlert({ message: loc._.mainnet_services_unavailable });
     const wallet = new LightningCustodianWallet();
     wallet.setLabel(label || loc.wallets.details_title);
 
@@ -334,6 +352,7 @@ const WalletsAdd: React.FC = () => {
   };
 
   const createLightningArkWallet = async () => {
+    if (!mainnetServicesEnabled) return presentAlert({ message: loc._.mainnet_services_unavailable });
     const wallet = new LightningArkWallet();
     wallet.setLabel(label || loc.wallets.details_title);
     try {
@@ -425,7 +444,7 @@ const WalletsAdd: React.FC = () => {
             onPress={handleOnVaultButtonPressed}
             size={styles.button}
           />
-          {backdoorPressed >= 20 ? (
+          {mainnetServicesEnabled && backdoorPressed >= 20 ? (
             <WalletButton
               buttonType="LightningArk"
               testID="ActivateLightningArkButton"
@@ -434,7 +453,7 @@ const WalletsAdd: React.FC = () => {
               size={styles.button}
             />
           ) : null}
-          {(selectedWalletType === ButtonSelected.OFFCHAIN || hasStoredLndHub) && LightningButtonMemo}
+          {mainnetServicesEnabled && (selectedWalletType === ButtonSelected.OFFCHAIN || hasStoredLndHub) && LightningButtonMemo}
         </View>
         {entropy && entropyBytesProvided > 0 && selectedWalletType === ButtonSelected.ONCHAIN ? (
           <View style={styles.entropyMixed} testID="EntropyMixedIndicator">

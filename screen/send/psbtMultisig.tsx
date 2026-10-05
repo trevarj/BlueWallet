@@ -28,7 +28,7 @@ import { useStorage } from '../../hooks/context/useStorage';
 import { combinePSBTs } from '../../util/combinePSBTs.ts';
 import { MultisigHDWallet } from '../../class/wallets/multisig-hd-wallet';
 import assert from 'assert';
-import { network } from '../../models/bitcoinNetwork';
+import { mainnetServicesEnabled, network } from '../../models/bitcoinNetwork';
 
 type RouteParams = {
   params: {
@@ -157,7 +157,7 @@ const PsbtMultisig = () => {
 
   const displayData = isFiltered ? filteredData : unfilteredData;
   const displayTotalBtc = new BigNumber(displayData.totalSat).dividedBy(100000000).toNumber();
-  const displayTotalFiat = satoshiToLocalCurrency(displayData.totalSat);
+  const displayTotalFiat = mainnetServicesEnabled ? satoshiToLocalCurrency(displayData.totalSat) : undefined;
 
   const getFee = () => {
     return wallet.calculateFeeFromPsbt(psbt);
@@ -326,13 +326,15 @@ const PsbtMultisig = () => {
           </BlueText>
         </View>
       </View>
-      <View style={styles.containerText}>
-        <TouchableOpacity onPress={handleToggleFilter}>
-          <BlueText selectable style={[styles.textFiat, stylesHook.textFiat]}>
-            {displayTotalFiat}
-          </BlueText>
-        </TouchableOpacity>
-      </View>
+      {displayTotalFiat ? (
+        <View style={styles.containerText}>
+          <TouchableOpacity onPress={handleToggleFilter}>
+            <BlueText selectable style={[styles.textFiat, stylesHook.textFiat]}>
+              {displayTotalFiat}
+            </BlueText>
+          </TouchableOpacity>
+        </View>
+      ) : null}
       <View>{destinationAddress(isFiltered)}</View>
     </View>
   );
@@ -394,12 +396,14 @@ const PsbtMultisig = () => {
           <View style={styles.feeContainer}>
             <View style={styles.bottomWrapper}>
               <View style={styles.bottomFeesWrapper}>
-                <BlueText selectable style={stylesHook.feeFiatText}>
-                  {loc.formatString(loc.multisig.fee, {
-                    number: satoshiToLocalCurrency(getFee()),
-                  })}{' '}
-                  -{' '}
-                </BlueText>
+                {mainnetServicesEnabled ? (
+                  <BlueText selectable style={stylesHook.feeFiatText}>
+                    {loc.formatString(loc.multisig.fee, {
+                      number: satoshiToLocalCurrency(getFee()),
+                    })}{' '}
+                    -{' '}
+                  </BlueText>
+                ) : null}
                 <BlueText selectable>
                   {loc.formatString(loc.multisig.fee_btc, {
                     number: satoshiToBTC(getFee()),

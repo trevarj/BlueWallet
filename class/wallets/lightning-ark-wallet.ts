@@ -30,6 +30,7 @@ import ecc from '../../blue_modules/noble_ecc.ts';
 import { Measure } from '../measure.ts';
 import { deleteArkadeRealm, getArkadeRealm } from '../../blue_modules/arkade-adapters/realm/realmInstance';
 import { registerArkPaymentPush } from '../../blue_modules/notifications';
+import { assertMainnetServicesEnabled, mainnetServicesEnabled } from '../../models/bitcoinNetwork';
 const { bech32m } = require('bech32');
 
 const bip32 = BIP32Factory(ecc);
@@ -166,6 +167,7 @@ export class LightningArkWallet extends LightningCustodianWallet {
   }
 
   async init() {
+    assertMainnetServicesEnabled();
     const namespace = this.getNamespace();
 
     if (this._wallet && this._arkadeSwaps) return;
@@ -331,6 +333,7 @@ export class LightningArkWallet extends LightningCustodianWallet {
   }
 
   async generate(): Promise<void> {
+    assertMainnetServicesEnabled();
     const buf = await randomBytes(16);
     this.secret = 'arkade://' + bip39.entropyToMnemonic(uint8ArrayToHex(buf));
 
@@ -634,6 +637,7 @@ export class LightningArkWallet extends LightningCustodianWallet {
   }
 
   async fetchTransactions() {
+    assertMainnetServicesEnabled();
     if (!this._wallet) await this.init();
     if (!this._wallet) throw new Error('Arkade wallet not initialized');
     if (!this._arkadeSwaps) throw new Error('ArkadeSwaps not initialized');
@@ -644,6 +648,7 @@ export class LightningArkWallet extends LightningCustodianWallet {
   }
 
   async fetchBalance(): Promise<void> {
+    assertMainnetServicesEnabled();
     if (!this._wallet) await this.init();
     if (!this._wallet) throw new Error('Arkade wallet not initialized');
 
@@ -667,6 +672,7 @@ export class LightningArkWallet extends LightningCustodianWallet {
   }
 
   async payInvoice(invoice: string, freeAmount: number = 0) {
+    assertMainnetServicesEnabled();
     if (!this._wallet) await this.init();
     if (!this._wallet) throw new Error('Arkade wallet not initialized');
 
@@ -710,6 +716,7 @@ export class LightningArkWallet extends LightningCustodianWallet {
 
   /** Warm the cached Boltz fee/limit params so getSubmarineFeeEstimate() returns a value. */
   async ensureLightningFeesLoaded(): Promise<void> {
+    assertMainnetServicesEnabled();
     if (this._feesLoaded) return;
     await this.init(); // guarantees _arkadeSwaps is set (or throws)
     // init() can return without fetching fees, so fetch explicitly if still cold.
@@ -723,6 +730,7 @@ export class LightningArkWallet extends LightningCustodianWallet {
   }
 
   async addInvoice(amt: number, memo: string) {
+    assertMainnetServicesEnabled();
     if (!this._wallet) await this.init();
     assert(this._arkadeSwaps, 'ArkadeSwaps not initialized');
     assert(amt > this._limitMin, `Minimum to receive is ${this._limitMin} sat`);
@@ -742,6 +750,7 @@ export class LightningArkWallet extends LightningCustodianWallet {
   }
 
   async getArkAddress(): Promise<string> {
+    assertMainnetServicesEnabled();
     if (!this._wallet) await this.init();
     if (!this._wallet) throw new Error('Arkade not initialized');
     return await this._wallet.getAddress();
@@ -756,10 +765,11 @@ export class LightningArkWallet extends LightningCustodianWallet {
   }
 
   async allowOnchainAddress() {
-    return true;
+    return mainnetServicesEnabled;
   }
 
   async fetchBtcAddress() {
+    assertMainnetServicesEnabled();
     if (!this._wallet) await this.init();
     assert(this._wallet, 'Arkade wallet not initialized');
 
@@ -863,6 +873,7 @@ export class LightningArkWallet extends LightningCustodianWallet {
   // (returns an inert unsubscribe) if init hasn't populated `_arkadeSwaps`
   // yet — callers re-subscribe whenever the wallet ref changes.
   subscribeToSwapEvents(callback: (swap: BoltzSwap) => void): () => void {
+    if (!mainnetServicesEnabled) return () => {};
     const sm = this._arkadeSwaps?.getSwapManager();
     if (!sm) return () => {};
     sm.onSwapUpdate(callback).catch(() => {});
@@ -870,6 +881,7 @@ export class LightningArkWallet extends LightningCustodianWallet {
   }
 
   async refundSwap(swap: BoltzSubmarineSwap): Promise<SubmarineRefundOutcome> {
+    assertMainnetServicesEnabled();
     if (!this._wallet) await this.init();
     if (!this._arkadeSwaps) throw new Error('ArkadeSwaps not initialized');
     const outcome = await this._arkadeSwaps.refundVHTLC(swap);
@@ -879,6 +891,7 @@ export class LightningArkWallet extends LightningCustodianWallet {
   }
 
   async restoreSwaps(): Promise<void> {
+    assertMainnetServicesEnabled();
     const namespace = this.getNamespace();
     let inFlight = restoreInFlight.get(namespace);
     if (!inFlight) {

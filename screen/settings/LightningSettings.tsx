@@ -20,6 +20,7 @@ import {
   SettingsFootnote,
   settingsCardContent,
 } from '../../components/SettingsSection';
+import { mainnetServicesEnabled } from '../../models/bitcoinNetwork';
 
 type LightingSettingsRouteProps = RouteProp<DetailViewStackParamList, 'LightningSettings'>;
 
@@ -30,6 +31,10 @@ const LightningSettings: React.FC = () => {
   const { setParams } = useNavigation();
 
   useEffect(() => {
+    if (!mainnetServicesEnabled) {
+      setIsLoading(false);
+      return;
+    }
     const fetchURI = async () => {
       try {
         const value = await getLNDHub();
@@ -72,6 +77,10 @@ const LightningSettings: React.FC = () => {
   };
 
   const save = useCallback(async () => {
+    if (!mainnetServicesEnabled) {
+      presentAlert({ message: loc._.mainnet_services_unavailable });
+      return;
+    }
     setIsLoading(true);
     let normalizedURI;
     try {
@@ -97,12 +106,24 @@ const LightningSettings: React.FC = () => {
   }, [URI]);
 
   useEffect(() => {
+    if (!mainnetServicesEnabled) return;
     const data = params?.onBarScanned;
     if (data) {
       setLndhubURI(data);
       setParams({ onBarScanned: undefined });
     }
   }, [params?.onBarScanned, setParams]);
+  if (!mainnetServicesEnabled) {
+    return (
+      <SettingsScrollView>
+        <SettingsSection>
+          <View style={settingsCardContent}>
+            <SettingsFootnote>{loc._.mainnet_services_unavailable}</SettingsFootnote>
+          </View>
+        </SettingsSection>
+      </SettingsScrollView>
+    );
+  }
 
   const handleOpenGithub = () => {
     Linking.openURL('https://github.com/BlueWallet/LndHub');

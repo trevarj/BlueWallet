@@ -16,6 +16,7 @@ import { MultisigHDWallet } from '../class/wallets/multisig-hd-wallet';
 import { AbstractHDElectrumWallet } from '../class/wallets/abstract-hd-electrum-wallet';
 import { WatchOnlyWallet } from '../class/wallets/watch-only-wallet';
 import WalletListItem from './WalletListItem';
+import { mainnetServicesEnabled } from '../models/bitcoinNetwork';
 
 const getHdElectrumWallet = (wallet: TWallet): AbstractHDElectrumWallet | undefined => {
   const w: unknown = wallet;
@@ -25,6 +26,11 @@ const getHdElectrumWallet = (wallet: TWallet): AbstractHDElectrumWallet | undefi
     if (inner instanceof AbstractHDElectrumWallet) return inner;
   }
   return undefined;
+};
+
+const getWalletDisplayUnit = (wallet: TWallet): BitcoinUnit => {
+  const unit = wallet.getPreferredBalanceUnit() || BitcoinUnit.BTC;
+  return !mainnetServicesEnabled && unit === BitcoinUnit.LOCAL_CURRENCY ? BitcoinUnit.BTC : unit;
 };
 
 const getWalletIconImage = (walletType: string, direction: string) => {
@@ -204,32 +210,31 @@ const ManageWalletsListItem: React.FC<ManageWalletsListItemProps> = ({
       </Swipeable>
     );
   } else if (item.type === ItemType.TransactionSection && item.data) {
+    let wallet: (typeof state.wallets)[number] | undefined;
     try {
-      const w = state.wallets.find(wallet => wallet.getTransactions()?.some((tx: Transaction) => tx.hash === item.data.hash));
-
-      const walletID = w ? w.getID() : '';
-
-      const transactionStyle = {
-        borderLeftWidth: 2,
-        borderLeftColor: colors.brandingColor,
-        backgroundColor: colors.background,
-        background: colors.background,
-      };
-
-      return (
-        <TransactionListItem
-          item={item.data}
-          itemPriceUnit={w?.getPreferredBalanceUnit() || BitcoinUnit.BTC}
-          walletID={walletID}
-          searchQuery={state.searchQuery}
-          renderHighlightedText={renderHighlightedText}
-          style={transactionStyle}
-        />
-      );
-    } catch (e) {
-      console.warn('Error rendering transaction item:', e);
+      wallet = state.wallets.find(candidate => candidate.getTransactions()?.some((tx: Transaction) => tx.hash === item.data.hash));
+    } catch (error) {
+      console.warn('Error rendering transaction item:', error);
       return null;
     }
+
+    const transactionStyle = {
+      borderLeftWidth: 2,
+      borderLeftColor: colors.brandingColor,
+      backgroundColor: colors.background,
+      background: colors.background,
+    };
+
+    return (
+      <TransactionListItem
+        item={item.data}
+        itemPriceUnit={wallet ? getWalletDisplayUnit(wallet) : BitcoinUnit.BTC}
+        walletID={wallet?.getID() ?? ''}
+        searchQuery={state.searchQuery}
+        renderHighlightedText={renderHighlightedText}
+        style={transactionStyle}
+      />
+    );
   } else if (item.type === ItemType.AddressSection) {
     const wallet = state.wallets.find(w => w.getID() === item.data.walletID);
     if (!wallet) return null;
@@ -243,7 +248,7 @@ const ManageWalletsListItem: React.FC<ManageWalletsListItemProps> = ({
         balance: 0,
         transactions: 0,
       },
-      balanceUnit: wallet.getPreferredBalanceUnit() || BitcoinUnit.BTC,
+      balanceUnit: getWalletDisplayUnit(wallet),
       walletID: item.data.walletID,
       allowSignVerifyMessage: wallet.allowSignVerifyMessage(),
       onPress: () => navigateToAddress(item.data.address, item.data.walletID),
@@ -354,7 +359,7 @@ const WalletGroupComponent: React.FC<WalletGroupProps> = ({
               balance: computedBalance,
               transactions: computedTransactions,
             }}
-            balanceUnit={wallet.getPreferredBalanceUnit() || BitcoinUnit.BTC}
+            balanceUnit={getWalletDisplayUnit(wallet)}
             walletID={address.data.walletID}
             allowSignVerifyMessage={wallet.allowSignVerifyMessage()}
             onPress={() => navigateToAddress(address.data.address, address.data.walletID)}
@@ -390,7 +395,7 @@ const WalletGroupComponent: React.FC<WalletGroupProps> = ({
                       <View style={childItemStyle()}>
                         <TransactionListItem
                           item={transaction.data}
-                          itemPriceUnit={wallet.getPreferredBalanceUnit() || BitcoinUnit.BTC}
+                          itemPriceUnit={getWalletDisplayUnit(wallet)}
                           walletID={wallet.getID()}
                           searchQuery={state.searchQuery}
                           renderHighlightedText={renderHighlightedText}

@@ -20,6 +20,7 @@ import type { BoltzReverseSwap } from '@arkade-os/boltz-swap';
 import loc from '../loc';
 import { arkadePaymentPushUri, groundControlUri } from './constants';
 import { fetch } from '../util/fetch';
+import { mainnetServicesEnabled } from '../models/bitcoinNetwork';
 
 const PUSH_TOKEN = 'PUSH_TOKEN';
 const NOTIFICATIONS_STORAGE = 'NOTIFICATIONS_STORAGE';
@@ -27,10 +28,11 @@ const ANDROID_NOTIFICATION_CHANNEL_ID = 'channel_01';
 export const NOTIFICATIONS_NO_AND_DONT_ASK_FLAG = 'NOTIFICATIONS_NO_AND_DONT_ASK_FLAG';
 const androidBundleId = Platform.OS === 'android' ? getBundleId() : undefined;
 export const isNotificationsCapable =
-  Platform.OS !== 'android' ||
-  (androidBundleId !== 'io.bluewallet.bluewallet.bhwi' &&
-    androidBundleId !== 'io.bluewallet.bluewallet.bhwi.testnet' &&
-    (hasGmsSync() || hasHmsSync()));
+  mainnetServicesEnabled &&
+  (Platform.OS !== 'android' ||
+    (androidBundleId !== 'io.bluewallet.bluewallet.bhwi' &&
+      androidBundleId !== 'io.bluewallet.bluewallet.bhwi.testnet' &&
+      (hasGmsSync() || hasHmsSync())));
 const baseURI = groundControlUri;
 let notificationSubscriptions: EmitterSubscription[] = [];
 let remoteNotificationSubscriptions: EmitterSubscription[] = [];
@@ -422,6 +424,9 @@ export const registerArkPaymentPush = async (paymentHash: string, label: string,
  * @returns {Promise<Object>}
  */
 export const checkPermissions = async () => {
+  if (!isNotificationsCapable) {
+    return { alert: false, badge: false, sound: false, status: RESULTS.UNAVAILABLE };
+  }
   try {
     if (Platform.OS === 'ios') {
       return Notifications.ios.checkPermissions();

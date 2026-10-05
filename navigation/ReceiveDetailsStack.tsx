@@ -8,6 +8,7 @@ import { ReceiveDetailsStackParamList } from './ReceiveDetailsStackParamList';
 import ReceiveCustomAmountSheet from '../screen/receive/ReceiveCustomAmountSheet';
 import ReceiveMoreOptionsSheet from '../screen/receive/ReceiveMoreOptionsSheet';
 import ReceiveAddressLabelSheet from '../screen/receive/ReceiveAddressLabelSheet';
+import { labelForNetwork } from '../models/bitcoinNetwork';
 
 const Stack = createNativeStackNavigator<ReceiveDetailsStackParamList>();
 
@@ -21,7 +22,7 @@ const ReceiveDetailsStack = () => {
         component={ReceiveDetails}
         options={navigationStyle(
           {
-            title: loc.receive.header,
+            title: labelForNetwork(loc.receive.header),
             closeButtonPosition: CloseButtonPosition.Right,
             headerShown: true,
           },

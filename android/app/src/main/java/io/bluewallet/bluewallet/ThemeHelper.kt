@@ -61,6 +61,7 @@ object ThemeHelper {
      * @param context Application context
      */
     fun updateAllWidgets(context: Context) {
+        if (!mainnetWidgetsEnabled) return AppWidgetUtils.disableMainnetWidgets(context)
         // Update Bitcoin Price Widgets
         val bitcoinPriceWidgetIds = AppWidgetUtils.getBitcoinPriceWidgetIds(context)
         if (bitcoinPriceWidgetIds.isNotEmpty()) {

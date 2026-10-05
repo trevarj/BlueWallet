@@ -12,6 +12,8 @@ import loc from '../../loc';
 import { BitcoinUnit } from '../../models/bitcoinUnits';
 import { useSettings } from '../../hooks/context/useSettings';
 import { useScreenProtect } from '../../hooks/useScreenProtect';
+import { mainnetServicesEnabled } from '../../models/bitcoinNetwork';
+import type { TWallet } from '../../class/wallets/types';
 
 export const TABS = {
   EXTERNAL: 'receive',
@@ -118,9 +120,10 @@ const WalletAddresses: React.FC = () => {
   const { walletID } = useRoute<RouteProps>().params;
 
   const addressList = useRef<FlatList<Address>>(null);
-  const wallet = wallets.find((w: any) => w.getID() === walletID);
+  const wallet = wallets.find((w: TWallet) => w.getID() === walletID);
 
-  const balanceUnit = wallet?.getPreferredBalanceUnit() ?? BitcoinUnit.BTC;
+  const preferredUnit = wallet?.getPreferredBalanceUnit() ?? BitcoinUnit.BTC;
+  const balanceUnit = !mainnetServicesEnabled && preferredUnit === BitcoinUnit.LOCAL_CURRENCY ? BitcoinUnit.BTC : preferredUnit;
   const isWatchOnly = wallet?.type === WatchOnlyWallet.type;
   const walletInstance = isWatchOnly ? wallet._hdWalletInstance : wallet;
   const allowSignVerifyMessage = (wallet && 'allowSignVerifyMessage' in wallet && wallet.allowSignVerifyMessage()) ?? false;

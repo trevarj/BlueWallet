@@ -16,6 +16,7 @@ class BitcoinPriceWidget : AppWidgetProvider() {
         private const val SHARED_PREF_NAME = "group.io.bluewallet.bluewallet"
         
         fun updateNetworkStatus(context: Context, appWidgetIds: IntArray) {
+            if (!mainnetWidgetsEnabled) return AppWidgetUtils.disableMainnetWidgets(context)
             val isNetworkAvailable = NetworkUtils.isNetworkAvailable(context)
             val appWidgetManager = AppWidgetManager.getInstance(context)
             
@@ -27,6 +28,7 @@ class BitcoinPriceWidget : AppWidgetProvider() {
         }
 
         fun refreshWidget(context: Context, appWidgetId: Int) {
+            if (!mainnetWidgetsEnabled) return AppWidgetUtils.disableMainnetWidgets(context)
             val appWidgetManager = AppWidgetManager.getInstance(context)
             
             // Create new RemoteViews to ensure it picks up current theme
@@ -101,6 +103,7 @@ class BitcoinPriceWidget : AppWidgetProvider() {
     }
 
     override fun onUpdate(context: Context, appWidgetManager: AppWidgetManager, appWidgetIds: IntArray) {
+        if (!mainnetWidgetsEnabled) return AppWidgetUtils.disableMainnetWidgets(context)
         super.onUpdate(context, appWidgetManager, appWidgetIds)
         
         for (widgetId in appWidgetIds) {
@@ -110,6 +113,7 @@ class BitcoinPriceWidget : AppWidgetProvider() {
     }
 
     override fun onEnabled(context: Context) {
+        if (!mainnetWidgetsEnabled) return AppWidgetUtils.disableMainnetWidgets(context)
         super.onEnabled(context)
         WidgetUpdateWorker.scheduleImmediateUpdate(context)
         WidgetUpdateWorker.scheduleWork(context)

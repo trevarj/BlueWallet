@@ -16,6 +16,7 @@ import { useStorage } from '../../hooks/context/useStorage';
 import loc from '../../loc';
 import { Chain } from '../../models/bitcoinUnits';
 import { DetailViewStackParamList } from '../../navigation/DetailViewStackParamList';
+import { mainnetServicesEnabled } from '../../models/bitcoinNetwork';
 
 type RouteProps = RouteProp<DetailViewStackParamList, 'AztecoRedeem'>;
 
@@ -30,6 +31,11 @@ const AztecoRedeem = () => {
   const [wallet, setWallet] = useState<undefined | TWallet>(undefined);
 
   useEffect(() => {
+    if (!mainnetServicesEnabled) {
+      presentAlert({ message: loc._.mainnet_services_unavailable });
+      navigation.goBack();
+      return;
+    }
     const suitable = wallets.filter(w => w.chain === Chain.ONCHAIN);
     if (suitable.length === 0) {
       presentAlert({ message: loc.azteco.errorBeforeRefeem });
@@ -43,6 +49,10 @@ const AztecoRedeem = () => {
   }, []);
 
   const handleRedeem = async (): Promise<void> => {
+    if (!mainnetServicesEnabled) {
+      presentAlert({ message: loc._.mainnet_services_unavailable });
+      return;
+    }
     if (!wallet) {
       presentAlert({ message: loc.azteco.errorSomething });
       return;
@@ -114,7 +124,7 @@ const AztecoRedeem = () => {
           </View>
         </View>
 
-        <Button onPress={handleRedeem} title={loc.azteco.redeemButton} />
+        <Button onPress={handleRedeem} title={loc.azteco.redeemButton} disabled={!mainnetServicesEnabled} />
         <BlueSpacing />
       </View>
     </SafeArea>

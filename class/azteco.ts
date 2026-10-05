@@ -1,5 +1,6 @@
 import URL from 'url';
 import { fetch } from '../util/fetch';
+import { assertMainnetServicesEnabled } from '../models/bitcoinNetwork';
 
 export type AztecoVoucher = {
   c1: string;
@@ -18,6 +19,7 @@ export default class Azteco {
    * @returns {Promise<boolean>} Successfully redeemed or not. This method does not throw exceptions
    */
   static async redeem(voucher: AztecoVoucher, address: string): Promise<boolean> {
+    assertMainnetServicesEnabled();
     const baseURI = 'https://azte.co/';
     const url = `${baseURI}blue_despatch.php?CODE_1=${voucher.c1}&CODE_2=${voucher.c2}&CODE_3=${voucher.c3}&CODE_4=${voucher.c4}&ADDRESS=${address}`;
 

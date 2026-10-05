@@ -31,6 +31,7 @@ class MarketWidget : AppWidgetProvider() {
         )
 
         private suspend fun connectToElectrumServer(): Boolean {
+            if (!mainnetWidgetsEnabled) return false
             for (peer in hardcodedPeers) {
                 repeat(3) { attempt ->
                     Log.d(TAG, "Attempting to connect to Electrum server: ${peer.host}:${peer.port}, Attempt: ${attempt + 1}")
@@ -49,11 +50,13 @@ class MarketWidget : AppWidgetProvider() {
         }
 
         fun updateWidget(context: Context, appWidgetId: Int) {
+            if (!mainnetWidgetsEnabled) return AppWidgetUtils.disableMainnetWidgets(context)
             val appWidgetManager = AppWidgetManager.getInstance(context)
             updateAppWidget(context, appWidgetManager, appWidgetId)
         }
         
         fun updateAllWidgets(context: Context) {
+            if (!mainnetWidgetsEnabled) return AppWidgetUtils.disableMainnetWidgets(context)
             val widgetIds = getAllWidgetIds(context)
             if (widgetIds.isNotEmpty()) {
                 MarketWidgetUpdateWorker.scheduleMarketUpdate(context)
@@ -61,6 +64,7 @@ class MarketWidget : AppWidgetProvider() {
         }
         
         fun refreshAllWidgetsImmediately(context: Context) {
+            if (!mainnetWidgetsEnabled) return AppWidgetUtils.disableMainnetWidgets(context)
             val widgetIds = getAllWidgetIds(context)
             if (widgetIds.isNotEmpty()) {
                 val appWidgetManager = AppWidgetManager.getInstance(context)
@@ -81,6 +85,7 @@ class MarketWidget : AppWidgetProvider() {
         }
 
         private fun updateAppWidget(context: Context, appWidgetManager: AppWidgetManager, appWidgetId: Int) {
+            if (!mainnetWidgetsEnabled) return AppWidgetUtils.disableMainnetWidgets(context)
             Log.d(TAG, "Updating widget: $appWidgetId")
             
             // Check network connectivity
@@ -187,6 +192,7 @@ class MarketWidget : AppWidgetProvider() {
     }
 
     override fun onUpdate(context: Context, appWidgetManager: AppWidgetManager, appWidgetIds: IntArray) {
+        if (!mainnetWidgetsEnabled) return AppWidgetUtils.disableMainnetWidgets(context)
         super.onUpdate(context, appWidgetManager, appWidgetIds)
         Log.d(TAG, "MarketWidget onUpdate called. Widget IDs: ${appWidgetIds.joinToString()}")
         
@@ -198,6 +204,7 @@ class MarketWidget : AppWidgetProvider() {
     }
 
     override fun onEnabled(context: Context) {
+        if (!mainnetWidgetsEnabled) return AppWidgetUtils.disableMainnetWidgets(context)
         super.onEnabled(context)
         Log.d(TAG, "MarketWidget enabled - First widget added")
         val widgetIds = getAllWidgetIds(context)

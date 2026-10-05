@@ -19,6 +19,7 @@ import useWalletSubscribe from '../../hooks/useWalletSubscribe.tsx';
 import assert from 'assert';
 import { LightningArkWallet } from '../../class/wallets/lightning-ark-wallet';
 import { LightningCustodianWallet } from '../../class/wallets/lightning-custodian-wallet';
+import { mainnetServicesEnabled } from '../../models/bitcoinNetwork';
 
 const AuthState = {
   USER_PROMPT: 0,
@@ -61,6 +62,11 @@ const LnurlAuth = () => {
   }, [navigation, name, setParams]);
 
   const authenticate = useCallback(() => {
+    if (!mainnetServicesEnabled) {
+      setAuthState(AuthState.ERROR);
+      setErrMsg(loc._.mainnet_services_unavailable);
+      return;
+    }
     // @ts-ignore ffokc uf
     assert(wallet instanceof LightningCustodianWallet || wallet instanceof LightningArkWallet);
     wallet
@@ -74,6 +80,15 @@ const LnurlAuth = () => {
         setErrMsg(err);
       });
   }, [wallet, LN]);
+  if (!mainnetServicesEnabled) {
+    return (
+      <SafeArea style={styles.root}>
+        <BlueCard>
+          <BlueText>{loc._.mainnet_services_unavailable}</BlueText>
+        </BlueCard>
+      </SafeArea>
+    );
+  }
 
   if (!parsedLnurl || !wallet || authState === AuthState.IN_PROGRESS)
     return (

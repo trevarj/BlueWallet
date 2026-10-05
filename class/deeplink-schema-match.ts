@@ -1,14 +1,16 @@
 import bip21, { TOptions } from 'bip21';
 import * as bitcoin from 'bitcoinjs-lib';
 import URL from 'url';
+import { Alert } from 'react-native';
 import { readFileOutsideSandbox } from '../blue_modules/fs';
 import { Chain } from '../models/bitcoinUnits';
 import { appScheme } from '../models/appScheme';
-import { network } from '../models/bitcoinNetwork';
+import { mainnetServicesEnabled, network } from '../models/bitcoinNetwork';
 import { WatchOnlyWallet } from './wallets/watch-only-wallet';
 import Azteco from './azteco';
 import { ContactList } from './contact-list';
 import Lnurl from './lnurl';
+import loc from '../loc';
 import type { TWallet } from './wallets/types';
 
 type TCompletionHandlerParams = [string, object];
@@ -20,6 +22,11 @@ type TContext = {
 };
 
 type TBothBitcoinAndLightning = { bitcoin: string; lndInvoice: string } | undefined;
+const rejectUnsupportedServiceIntent = (): boolean => {
+  if (mainnetServicesEnabled) return false;
+  Alert.alert(loc.errors.error, loc._.mainnet_services_unavailable);
+  return true;
+};
 
 class DeeplinkSchemaMatch {
   static hasSchema(schemaString: string): boolean {
@@ -96,6 +103,7 @@ class DeeplinkSchemaMatch {
             ]);
           }
         } else if (wallet.chain === Chain.OFFCHAIN) {
+          if (rejectUnsupportedServiceIntent()) return;
           if (action === 'openSend') {
             completionHandler([
               'ScanLNDInvoiceRoot',
@@ -153,6 +161,7 @@ class DeeplinkSchemaMatch {
       console.log(e);
     }
     if (isBothBitcoinAndLightning) {
+      if (rejectUnsupportedServiceIntent()) return;
       completionHandler([
         'SelectWallet',
         {
@@ -163,6 +172,14 @@ class DeeplinkSchemaMatch {
         },
       ]);
     } else if (DeeplinkSchemaMatch.isBitcoinAddress(event.url)) {
+      if (!mainnetServicesEnabled && /(?:[?&])lightning=/i.test(event.url)) {
+        rejectUnsupportedServiceIntent();
+        return;
+      }
+      if (!mainnetServicesEnabled && DeeplinkSchemaMatch.decodeBitcoinUri(event.url).payjoinUrl) {
+        Alert.alert(loc.errors.error, loc._.payjoin_unavailable);
+        return;
+      }
       completionHandler([
         'SendDetailsRoot',
         {
@@ -172,7 +189,10 @@ class DeeplinkSchemaMatch {
           },
         },
       ]);
+    } else if (!mainnetServicesEnabled && (/^PM/.test(event.url) || /^sp1/i.test(event.url))) {
+      rejectUnsupportedServiceIntent();
     } else if (new ContactList().isPaymentCodeValid(event.url)) {
+      if (rejectUnsupportedServiceIntent()) return;
       completionHandler([
         'SendDetailsRoot',
         {
@@ -183,6 +203,7 @@ class DeeplinkSchemaMatch {
         },
       ]);
     } else if (DeeplinkSchemaMatch.isLightningInvoice(event.url)) {
+      if (rejectUnsupportedServiceIntent()) return;
       completionHandler([
         'ScanLNDInvoiceRoot',
         {
@@ -193,6 +214,7 @@ class DeeplinkSchemaMatch {
         },
       ]);
     } else if (DeeplinkSchemaMatch.isLnUrl(event.url)) {
+      if (rejectUnsupportedServiceIntent()) return;
       // at this point we can not tell if it is lnurl-pay or lnurl-withdraw since it needs additional async call
       // to the server, which is undesirable here, so LNDCreateInvoice screen will handle it for us and will
       // redirect user to LnurlPay screen if necessary
@@ -206,6 +228,7 @@ class DeeplinkSchemaMatch {
         },
       ]);
     } else if (Lnurl.isLightningAddress(event.url)) {
+      if (rejectUnsupportedServiceIntent()) return;
       // this might be not just an email but a lightning address
       // @see https://lightningaddress.com
       completionHandler([
@@ -218,6 +241,7 @@ class DeeplinkSchemaMatch {
         },
       ]);
     } else if (Azteco.isRedeemUrl(event.url)) {
+      if (rejectUnsupportedServiceIntent()) return;
       completionHandler([
         'AztecoRedeemRoot',
         {
@@ -250,6 +274,7 @@ class DeeplinkSchemaMatch {
               ]);
               break;
             case 'setlndhuburl':
+              if (rejectUnsupportedServiceIntent()) return;
               completionHandler([
                 'LightningSettings',
                 {
