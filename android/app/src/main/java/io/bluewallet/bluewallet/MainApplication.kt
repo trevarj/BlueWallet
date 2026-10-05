@@ -75,6 +75,7 @@ class MainApplication : Application(), ReactApplication {
                     add(SegmentedControlPackage())
                     add(SettingsPackage())
                     add(MenuElementsPackage())
+                    add(BhwiPackage())
                 }
 
             override fun getUseDeveloperSupport() = BuildConfig.DEBUG

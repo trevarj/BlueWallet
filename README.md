@@ -48,6 +48,8 @@ Please make sure that your console is running the most stable versions of npm an
 
 This branch has two isolated Android profiles: **BHWI PoC** (`mainnet`, `io.bluewallet.bluewallet.bhwi`) and **BHWI PoC Testnet3** (`testnet`, `io.bluewallet.bluewallet.bhwi.testnet`). Both require API 28+ and arm64-v8a or x86_64; the Kotlin namespace, React Native component and private `${applicationId}.provider` are unchanged. Remote push is unavailable for both Android identities; iOS and local notifications are unchanged.
 
+The Android BHWI module supports Ledger, BitBox02 and Coldcard over USB HID, Jade over explicitly approved allowlisted USB serial adapters, and Ledger/Jade over BLE. USB host and BLE are optional device features: USB access, Android 12+ Bluetooth scan/connect, and pre-Android 12 scan location permission are requested only when a hardware-wallet action needs them. Disconnecting or backgrounding an owned session cancels its discovery, prompt and transport work; hardware-wallet handles and BitBox02 pairing material are not persisted.
+
 The external profile selector remains `testnet`, but its internal Gradle flavor is `bitcoinTestnet`: AGP reserves flavor names starting with `test`. Tasks/modes use `BitcoinTestnet`/`bitcoinTestnet`, and generated APK directories/basenames use `bitcoinTestnet`. Mainnet is unchanged. This internal name does not change the application ID, Testnet3 label, scheme or native `testnet` value.
 
 Install Nix with flakes enabled, then enter the pinned consumer shell (Node 24, JDK 17, SDK/build tools 36 and NDK 28.2.13676358). Android library modules use the same NDK pin rather than AGP's default version:
