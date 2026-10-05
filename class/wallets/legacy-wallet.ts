@@ -171,8 +171,9 @@ export class LegacyWallet extends AbstractWallet {
    */
   getUtxo(respectFrozen = false): Utxo[] {
     let ret: Utxo[] = [];
+    const currentHeight = BlueElectrum.estimateCurrentBlockheight();
     for (const u of this._utxo) {
-      if (!u.confirmations && u.height) u.confirmations = BlueElectrum.estimateCurrentBlockheight() - u.height;
+      if (!u.confirmations && u.height && currentHeight >= u.height) u.confirmations = currentHeight - u.height;
       ret.push(u);
     }
 
@@ -197,6 +198,7 @@ export class LegacyWallet extends AbstractWallet {
      * below copypasted from
      * @see AbstractHDElectrumWallet.getDerivedUtxoFromOurTransaction
      */
+    const currentHeight = BlueElectrum.estimateCurrentBlockheight();
 
     for (const tx of this.getTransactions()) {
       for (const output of tx.outputs) {
@@ -213,7 +215,7 @@ export class LegacyWallet extends AbstractWallet {
             value,
             confirmations: tx.confirmations,
             wif: false,
-            height: BlueElectrum.estimateCurrentBlockheight() - (tx.confirmations ?? 0),
+            height: Math.max(0, currentHeight - (tx.confirmations ?? 0)),
           });
         }
       }

@@ -1,0 +1,342 @@
+diff --git a/node_modules/react-native-tcp-socket/android/src/main/java/com/asterinet/react/tcpsocket/TcpSocketClient.java b/node_modules/react-native-tcp-socket/android/src/main/java/com/asterinet/react/tcpsocket/TcpSocketClient.java
+index 48433f8..cedf017 100644
+--- a/node_modules/react-native-tcp-socket/android/src/main/java/com/asterinet/react/tcpsocket/TcpSocketClient.java
++++ b/node_modules/react-native-tcp-socket/android/src/main/java/com/asterinet/react/tcpsocket/TcpSocketClient.java
+@@ -17,5 +17,6 @@ import java.util.concurrent.ExecutorService;
+ import java.util.concurrent.Executors;
+ 
++import javax.net.ssl.SSLParameters;
+ import javax.net.ssl.SSLSocket;
+ import javax.net.ssl.SSLSocketFactory;
+ 
+@@ -24,8 +25,12 @@ class TcpSocketClient extends TcpSocket {
+     private final ExecutorService writeExecutor;
+     private final TcpEventListener receiverListener;
+     private TcpReceiverTask receiverTask;
+-    private Socket socket;
++    private volatile Socket socket;
+     private boolean closed = true;
++    private volatile boolean destroyed = false;
++    private volatile boolean strictTLSUpgrading = false;
++    private volatile String peerHostname;
++    private static final int STRICT_SOCKET_TIMEOUT_MS = 10000;
+ 
+     TcpSocketClient(TcpEventListener receiverListener, Integer id, Socket socket) {
+         super(id);
+@@ -39,34 +44,81 @@ class TcpSocketClient extends TcpSocket {
+         return socket;
+     }
+ 
++    private boolean isStrictTLS(ReadableMap tlsOptions) {
++        return tlsOptions != null && tlsOptions.hasKey("rejectUnauthorized") && tlsOptions.getBoolean("rejectUnauthorized");
++    }
++
++    private synchronized void publishSocket(Socket ownedSocket) throws IOException {
++        if (destroyed) {
++            ownedSocket.close();
++            throw new IOException("Socket is closed");
++        }
++        socket = ownedSocket;
++    }
++
++    public synchronized boolean beginStrictTLSUpgrade() {
++        if (destroyed || socket instanceof SSLSocket) return false;
++        strictTLSUpgrading = true;
++        return true;
++    }
++
++    private SSLSocket createStrictSocket(SSLSocketFactory ssf, Socket rawSocket, int port) throws IOException {
++        if (peerHostname == null || peerHostname.isEmpty()) throw new IOException("TLS peer hostname is missing");
++        SSLSocket sslSocket = (SSLSocket) ssf.createSocket(rawSocket, peerHostname, port, true);
++        sslSocket.setUseClientMode(true);
++        SSLParameters sslParameters = sslSocket.getSSLParameters();
++        sslParameters.setEndpointIdentificationAlgorithm("HTTPS");
++        sslSocket.setSSLParameters(sslParameters);
++        sslSocket.setSoTimeout(STRICT_SOCKET_TIMEOUT_MS);
++        publishSocket(sslSocket);
++        return sslSocket;
++    }
++
++    private void completeStrictHandshake(SSLSocketFactory ssf, Socket rawSocket, int port) throws IOException {
++        try {
++            SSLSocket sslSocket = createStrictSocket(ssf, rawSocket, port);
++            sslSocket.startHandshake();
++            sslSocket.setSoTimeout(0);
++            strictTLSUpgrading = false;
++        } catch (IOException | RuntimeException error) {
++            destroy();
++            throw error;
++        }
++    }
++
+     public void connect(Context context, String address, final Integer port, ReadableMap options, Network network, ReadableMap tlsOptions) throws IOException, GeneralSecurityException {
+         if (socket != null) throw new IOException("Already connected");
+-        if (tlsOptions != null) {
+-            SSLSocketFactory ssf = getSSLSocketFactory(context, tlsOptions);
+-            socket = ssf.createSocket();
+-            ((SSLSocket) socket).setUseClientMode(true);
+-        } else {
+-            socket = new Socket();
+-        }
++        peerHostname = address;
++        final boolean strictTLS = isStrictTLS(tlsOptions);
++        final SSLSocketFactory ssf = tlsOptions != null ? getSSLSocketFactory(context, tlsOptions) : null;
++        final Socket connectingSocket = strictTLS ? new Socket() : tlsOptions != null ? ssf.createSocket() : new Socket();
++        if (connectingSocket instanceof SSLSocket) ((SSLSocket) connectingSocket).setUseClientMode(true);
++        publishSocket(connectingSocket);
+         // Get the addresses
+         final String localAddress = options.hasKey("localAddress") ? options.getString("localAddress") : "0.0.0.0";
+         final InetAddress localInetAddress = InetAddress.getByName(localAddress);
+         final InetAddress remoteInetAddress = InetAddress.getByName(address);
+         if (network != null)
+-            network.bindSocket(socket);
++            network.bindSocket(connectingSocket);
+         // setReuseAddress
+         if (options.hasKey("reuseAddress")) {
+             boolean reuseAddress = options.getBoolean("reuseAddress");
+-            socket.setReuseAddress(reuseAddress);
++            connectingSocket.setReuseAddress(reuseAddress);
+         } else {
+             // Default to true
+-            socket.setReuseAddress(true);
++            connectingSocket.setReuseAddress(true);
+         }
+         final int localPort = options.hasKey("localPort") ? options.getInt("localPort") : 0;
+         // bind
+-        socket.bind(new InetSocketAddress(localInetAddress, localPort));
+-        final int connectTimeout = options.hasKey("connectTimeout") ? options.getInt("connectTimeout") : 0; 
+-        socket.connect(new InetSocketAddress(remoteInetAddress, port), connectTimeout);
+-        if (socket instanceof SSLSocket) ((SSLSocket) socket).startHandshake();
++        connectingSocket.bind(new InetSocketAddress(localInetAddress, localPort));
++        final int configuredConnectTimeout = options.hasKey("connectTimeout") ? options.getInt("connectTimeout") : 0;
++        final int connectTimeout = strictTLS && configuredConnectTimeout <= 0 ? STRICT_SOCKET_TIMEOUT_MS : configuredConnectTimeout;
++        connectingSocket.connect(new InetSocketAddress(remoteInetAddress, port), connectTimeout);
++        if (strictTLS) {
++            completeStrictHandshake(ssf, connectingSocket, port);
++        } else if (connectingSocket instanceof SSLSocket) {
++            ((SSLSocket) connectingSocket).startHandshake();
++        }
++        if (destroyed) throw new IOException("Socket is closed");
+         startListening();
+     }
+@@ -73,9 +125,15 @@ class TcpSocketClient extends TcpSocket {
+ 
+     public void startTLS(Context context, ReadableMap tlsOptions) throws IOException, GeneralSecurityException {
+         if (socket instanceof SSLSocket) return;
++        final Socket rawSocket = socket;
++        if (rawSocket == null) throw new IOException("Socket is closed");
+         SSLSocketFactory ssf = getSSLSocketFactory(context, tlsOptions);
+-        SSLSocket sslSocket = (SSLSocket) ssf.createSocket(socket, socket.getInetAddress().getHostAddress(), socket.getPort(), true);
+-        sslSocket.setUseClientMode(true);
++        if (isStrictTLS(tlsOptions)) {
++            completeStrictHandshake(ssf, rawSocket, rawSocket.getPort());
++            return;
++        }
++        SSLSocket sslSocket = (SSLSocket) ssf.createSocket(rawSocket, rawSocket.getInetAddress().getHostAddress(), rawSocket.getPort(), true);
++        sslSocket.setUseClientMode(true);
+         sslSocket.startHandshake();
+         socket = sslSocket;
+     }
+@@ -103,6 +161,10 @@ class TcpSocketClient extends TcpSocket {
+     }
+ 
+     private SSLSocketFactory getSSLSocketFactory(Context context, ReadableMap tlsOptions) throws GeneralSecurityException, IOException {
++        if (isStrictTLS(tlsOptions)) {
++            return (SSLSocketFactory) SSLSocketFactory.getDefault();
++        }
++
+         SSLSocketFactory ssf = null;
+ 
+         final ResolvableOption customTlsCa = getResolvableOption(tlsOptions, "ca");
+@@ -154,9 +216,15 @@ class TcpSocketClient extends TcpSocket {
+     public void write(final int msgId, final byte[] data) {
+         writeExecutor.execute(new Runnable() {
+             @Override
+             public void run() {
++                if (strictTLSUpgrading) {
++                    IOException error = new IOException("TLS upgrade is still in progress");
++                    receiverListener.onWritten(getId(), msgId, error);
++                    receiverListener.onError(getId(), error);
++                    return;
++                }
+                 final Socket s = socket;
+                 if (s == null) {
+                     receiverListener.onError(getId(), new IOException("Attempted to write to closed socket"));
+                     return;
+                 }
+@@ -182,16 +250,20 @@ class TcpSocketClient extends TcpSocket {
+     /**
+      * Shuts down the receiver task, closing the socket.
+      */
+-    public void destroy() {
++    public synchronized void destroy() {
++        if (destroyed) return;
++        destroyed = true;
++        strictTLSUpgrading = false;
++        closed = true;
++        final Socket ownedSocket = socket;
++        socket = null;
+         try {
+             // close the socket
+-            if (socket != null && !socket.isClosed()) {
+-                closed = true;
+-                socket.close();
++            if (ownedSocket != null && !ownedSocket.isClosed()) {
++                ownedSocket.close();
+                 receiverListener.onClose(getId(), null);
+-                socket = null;
+             }
+         } catch (IOException e) {
+             receiverListener.onClose(getId(), e);
+         }
+     }
+diff --git a/node_modules/react-native-tcp-socket/android/src/main/java/com/asterinet/react/tcpsocket/TcpSocketModule.java b/node_modules/react-native-tcp-socket/android/src/main/java/com/asterinet/react/tcpsocket/TcpSocketModule.java
+index 6fce166..f8a794d 100644
+--- a/node_modules/react-native-tcp-socket/android/src/main/java/com/asterinet/react/tcpsocket/TcpSocketModule.java
++++ b/node_modules/react-native-tcp-socket/android/src/main/java/com/asterinet/react/tcpsocket/TcpSocketModule.java
+@@ -34,6 +34,7 @@ import java.util.HashMap;
+ import java.util.List;
+ import java.util.Map;
+ import java.util.Objects;
++import java.util.Set;
+ import java.util.concurrent.ConcurrentHashMap;
+ import java.util.concurrent.CountDownLatch;
+ import java.util.concurrent.ExecutorService;
+@@ -47,6 +48,8 @@ public class TcpSocketModule extends ReactContextBaseJavaModule {
+     private final ReactApplicationContext mReactContext;
+     private final ConcurrentHashMap<Integer, TcpSocket> socketMap = new ConcurrentHashMap<>();
+     private final ConcurrentHashMap<Integer, ReadableMap> pendingTLS = new ConcurrentHashMap<>();
++    private final Set<Integer> cancelledSocketIds = ConcurrentHashMap.newKeySet();
++    private final Set<Integer> connectingSocketIds = ConcurrentHashMap.newKeySet();
+     private final ConcurrentHashMap<String, Network> mNetworkMap = new ConcurrentHashMap<>();
+     private final CurrentNetwork currentNetwork = new CurrentNetwork();
+     private final ExecutorService executorService = Executors.newFixedThreadPool(N_THREADS);
+@@ -84,10 +87,17 @@ public class TcpSocketModule extends ReactContextBaseJavaModule {
++        connectingSocketIds.add(cId);
+         executorService.execute(new Runnable() {
+             @Override
+             public void run() {
++                if (cancelledSocketIds.remove(cId)) {
++                    connectingSocketIds.remove(cId);
++                    return;
++                }
+                 if (socketMap.get(cId) != null) {
+                     tcpEvtListener.onError(cId, new Exception("connect() called twice with the same id."));
++                    connectingSocketIds.remove(cId);
+                     return;
+                 }
++                TcpSocketClient client = null;
+                 try {
+                     // Get the network interface
+                     final String localAddress = options.hasKey("localAddress") ? options.getString("localAddress") : null;
+@@ -96,11 +106,25 @@ public class TcpSocketModule extends ReactContextBaseJavaModule {
+                     final String iotDeviceHost = options.hasKey("host") ? options.getString("host") : null;
+                     selectNetwork(iface, localAddress, iotDeviceHost);
+-                    TcpSocketClient client = new TcpSocketClient(tcpEvtListener, cId, null);
++                    client = new TcpSocketClient(tcpEvtListener, cId, null);
+                     socketMap.put(cId, client);
++                    if (cancelledSocketIds.remove(cId)) {
++                        socketMap.remove(cId, client);
++                        client.destroy();
++                        return;
++                    }
+                     ReadableMap tlsOptions = pendingTLS.get(cId);
+                     client.connect(mReactContext, host, port, options, currentNetwork.getNetwork(), tlsOptions);
++                    pendingTLS.remove(cId);
++                    if (socketMap.get(cId) != client) {
++                        client.destroy();
++                        return;
++                    }
+                     tcpEvtListener.onConnect(cId, client);
+                 } catch (Exception e) {
++                    pendingTLS.remove(cId);
++                    if (client != null && socketMap.get(cId) != client) return;
+                     tcpEvtListener.onError(cId, e);
++                } finally {
++                    connectingSocketIds.remove(cId);
+                 }
+             }
+@@ -115,6 +139,21 @@ public class TcpSocketModule extends ReactContextBaseJavaModule {
+         // Not yet connected
+         if (socketClient == null) {
+             pendingTLS.put(cId, tlsOptions);
++        } else if (tlsOptions.hasKey("rejectUnauthorized") && tlsOptions.getBoolean("rejectUnauthorized")) {
++            if (!socketClient.beginStrictTLSUpgrade()) return;
++            executorService.execute(new Runnable() {
++                @Override
++                public void run() {
++                    try {
++                        socketClient.startTLS(mReactContext, tlsOptions);
++                    } catch (Exception e) {
++                        if (socketMap.remove(cId, socketClient)) {
++                            tcpEvtListener.onError(cId, e);
++                            socketClient.destroy();
++                        }
++                    }
++                }
++            });
+         } else {
+             try {
+                 socketClient.startTLS(mReactContext, tlsOptions);
+@@ -136,11 +175,13 @@ public class TcpSocketModule extends ReactContextBaseJavaModule {
+     @SuppressWarnings("unused")
+     @ReactMethod
+     public void end(final Integer cId) {
++        TcpSocket socket = socketMap.get(cId);
++        if (!(socket instanceof TcpSocketClient)) return;
++        TcpSocketClient ownedClient = (TcpSocketClient) socket;
+         executorService.execute(new Runnable() {
+             @Override
+             public void run() {
+-                TcpSocketClient socketClient = getTcpClient(cId);
+-                socketClient.destroy();
++                if (socketMap.remove(cId, ownedClient)) ownedClient.destroy();
+             }
+         });
+     }
+@@ -148,7 +189,13 @@ public class TcpSocketModule extends ReactContextBaseJavaModule {
+     @SuppressWarnings("unused")
+     @ReactMethod
+     public void destroy(final Integer cId) {
+-        end(cId);
++        pendingTLS.remove(cId);
++        TcpSocket ownedSocket = socketMap.remove(cId);
++        if (ownedSocket instanceof TcpSocketClient) {
++            ((TcpSocketClient) ownedSocket).destroy();
++        } else if (ownedSocket == null && connectingSocketIds.contains(cId)) {
++            cancelledSocketIds.add(cId);
++        }
+     }
+ 
+     @SuppressWarnings("unused")
+diff --git a/node_modules/react-native-tcp-socket/lib/types/TLSSocket.d.ts b/node_modules/react-native-tcp-socket/lib/types/TLSSocket.d.ts
+index 46c548a..4e08bc6 100644
+--- a/node_modules/react-native-tcp-socket/lib/types/TLSSocket.d.ts
++++ b/node_modules/react-native-tcp-socket/lib/types/TLSSocket.d.ts
+@@ -7,6 +7,7 @@
+  * @property {string} [certAlias]
+  * @property {string} [keyAlias]
+  * @property {string[]} [resolvedKeys]
++ * @property {boolean} [rejectUnauthorized]
+  *
+  * @extends {Socket}
+  */
+@@ -59,5 +60,6 @@ export type TLSSocketOptions = {
+     certAlias?: string | undefined;
+     keyAlias?: string | undefined;
+     resolvedKeys?: string[] | undefined;
++    rejectUnauthorized?: boolean | undefined;
+ };
+ import Socket from "./Socket";
+diff --git a/node_modules/react-native-tcp-socket/src/TLSSocket.js b/node_modules/react-native-tcp-socket/src/TLSSocket.js
+index cb05a54..3d3b3bd 100644
+--- a/node_modules/react-native-tcp-socket/src/TLSSocket.js
++++ b/node_modules/react-native-tcp-socket/src/TLSSocket.js
+@@ -13,6 +13,7 @@ const Sockets = NativeModules.TcpSockets;
+  * @property {string} [certAlias]
+  * @property {string} [keyAlias]
+  * @property {string[]} [resolvedKeys]
++ * @property {boolean} [rejectUnauthorized]
+  *
+  * @extends {Socket}
+  */

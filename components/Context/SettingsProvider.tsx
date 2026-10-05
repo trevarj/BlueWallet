@@ -14,7 +14,8 @@ import { getIsHandOffUseEnabled, setIsHandOffUseEnabled } from '../HandOffCompon
 import { useStorage } from '../../hooks/context/useStorage';
 import { BitcoinUnit } from '../../models/bitcoinUnits';
 import { TotalWalletsBalanceKey, TotalWalletsBalancePreferredUnit } from '../TotalWalletsBalance';
-import { BLOCK_EXPLORERS, getBlockExplorerUrl, saveBlockExplorer, BlockExplorer, normalizeUrl } from '../../models/blockExplorer';
+import type { BlockExplorer } from '../../models/blockExplorer';
+import { BLOCK_EXPLORERS, findMatchingExplorer, getBlockExplorerUrl, saveBlockExplorer } from '../../models/blockExplorer';
 import * as BlueElectrum from '../../blue_modules/BlueElectrum';
 import { isBalanceDisplayAllowed, setBalanceDisplayAllowed } from '../../hooks/useWidgetCommunication';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -189,7 +190,7 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = React.m
           setTotalBalancePreferredUnit(preferredUnit);
         }),
         getBlockExplorerUrl().then(url => {
-          const predefinedExplorer = Object.values(BLOCK_EXPLORERS).find(explorer => normalizeUrl(explorer.url) === normalizeUrl(url));
+          const predefinedExplorer = findMatchingExplorer(url);
           setSelectedBlockExplorer(predefinedExplorer ?? ({ key: 'custom', name: 'Custom', url } as BlockExplorer));
         }),
       ];

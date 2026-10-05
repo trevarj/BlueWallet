@@ -1,0 +1,15 @@
+diff --git a/node_modules/electrum-client/lib/client.js b/node_modules/electrum-client/lib/client.js
+index b2e69c7..595fd45 100644
+--- a/node_modules/electrum-client/lib/client.js
++++ b/node_modules/electrum-client/lib/client.js
+@@ -42,7 +42,9 @@ class Client {
+           throw new Error('tls package could not be loaded');
+         }
+         this.connUnsecure = new this.net.Socket();
+-        this.conn = new this.tls.TLSSocket(this.connUnsecure, { rejectUnauthorized: false });
++        this.conn = new this.tls.TLSSocket(this.connUnsecure, {
++          rejectUnauthorized: options != null && options.rejectUnauthorized === true,
++        });
+         break;
+       default:
+         throw new Error('unknown protocol');

@@ -6,6 +6,64 @@ on `postinstall` (see `package.json` → `scripts.patches`).
 When upstream ships an equivalent fix, drop the patch here and bump the dependency.
 
 ---
+## `electrum-client+3.1.1.patch`
+
+**What:** lets callers explicitly pass `rejectUnauthorized: true` to the
+Electrum client's existing options argument. Omitted and false values retain
+the package's legacy trust-all behavior, so existing mainnet callers are
+unchanged.
+
+**Why:** version 3.1.1 hardcodes `rejectUnauthorized: false` when constructing
+every TLS socket, ignoring its saved constructor options. The immutable
+Testnet3 profile must opt into the platform trust store rather than accepting
+an arbitrary server certificate.
+
+**Upstream:** [the pinned constructor and TLS socket implementation](https://github.com/BlueWallet/rn-electrum-client/blob/83420b861bac2c0ea343f1d8503104a49e9654a3/lib/client.js)
+and the downstream transport's [hostname-verification issue #239](https://github.com/Rapsssito/react-native-tcp-socket/issues/239).
+No electrum-client-specific issue has been filed. Remove this patch when the
+pinned dependency can forward strict TLS trust without changing its legacy
+default.
+
+---
+
+## `react-native-tcp-socket+6.4.2.patch`
+
+**What:** for explicit `rejectUnauthorized: true` Android connections, retains
+the originally requested host, layers the platform-default TLS socket over the
+connected transport, enables `HTTPS` endpoint identification, and applies
+finite connect and TLS-handshake read deadlines. The read timeout is reset to
+zero immediately after a successful handshake, before listening for
+application data. Both initial TLS and later `startTLS` use the original host
+rather than a resolved IP. Writes fail closed while a strict upgrade is in
+progress, so application bytes cannot reach the raw socket before trust and
+hostname verification complete. Native `destroy` becomes idempotent and
+closes the owned socket without waiting behind the connection executor;
+queued connection IDs are retired, and queued `end` work captures and checks
+its exact owner so it cannot throw after retirement or close a replacement.
+The option is also added to the shipped JS/TypeScript TLS declarations. Legacy
+false branches retain their existing blind-trust behavior. BlueElectrum
+separately enforces one wall-clock deadline over each complete
+version/chain/tip handshake.
+
+**Why:** 6.4.2 validates a strict connection's CA chain but does not enable
+hostname verification, and its upgrade path substitutes the resolved IP as
+the peer identity. It also permits writes to race an asynchronous upgrade and
+queues close behind the same bounded executor whose threads may be blocked in
+connect/TLS work. Testnet3 therefore could neither authenticate the requested
+Electrum host, prevent pre-verification plaintext, nor promptly cancel stalled
+native work.
+
+**Upstream:** [hostname-verification issue #239](https://github.com/Rapsssito/react-native-tcp-socket/issues/239),
+[proposed identity fix #240](https://github.com/Rapsssito/react-native-tcp-socket/pull/240),
+[idempotent-destroy work #241](https://github.com/Rapsssito/react-native-tcp-socket/pull/241),
+[Android client source at 6.4.2](https://github.com/Rapsssito/react-native-tcp-socket/blob/v6.4.2/android/src/main/java/com/asterinet/react/tcpsocket/TcpSocketClient.java),
+and Android's [`SSLParameters.setEndpointIdentificationAlgorithm`](https://developer.android.com/reference/javax/net/ssl/SSLParameters#setEndpointIdentificationAlgorithm(java.lang.String)).
+Remove this patch when upstream preserves the logical host for standard-trust
+endpoint verification and exposes executor-independent cancellation on both
+TLS paths.
+
+---
+
 
 ## `react-native-background-fetch+4.4.2.patch`
 

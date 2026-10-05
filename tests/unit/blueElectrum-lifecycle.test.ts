@@ -11,25 +11,33 @@ import * as BlueElectrum from '../../blue_modules/BlueElectrum';
 
 // Jest hoists these above the import above. The factories close over `globalThis`
 // so the test body can swap implementations per-test without re-mocking.
+type TestGlobals = typeof globalThis & {
+  __createNextFakeClient: (...args: unknown[]) => FakeClient;
+  __presentAlertSpy?: jest.Mock;
+};
 jest.mock('electrum-client', () => {
-  return jest.fn().mockImplementation(() => (globalThis as any).__createNextFakeClient());
+  return jest.fn().mockImplementation((...args: unknown[]) => (globalThis as unknown as TestGlobals).__createNextFakeClient(...args));
 });
 
 jest.mock('../../components/Alert', () => ({
   __esModule: true,
-  default: (...args: unknown[]) => (globalThis as any).__presentAlertSpy?.(...args),
+  default: (...args: unknown[]) => (globalThis as unknown as TestGlobals).__presentAlertSpy?.(...args),
 }));
 
 type FakeClient = {
   initElectrumDeferred: Deferred<[string, string]>;
-  headersDeferred: Deferred<{ height: number }>;
+  headersDeferred: Deferred<{ height: unknown; hex?: string }>;
   pingDeferred: Deferred<unknown> | null;
   pingShouldReject: boolean;
   closed: boolean;
   onError?: (e: { message: string }) => void;
   host: string;
   port: number;
+  connect: jest.Mock;
   initElectrum: jest.Mock;
+  server_version: jest.Mock;
+  server_features: jest.Mock;
+  blockchainBlock_header: jest.Mock;
   blockchainHeaders_subscribe: jest.Mock;
   blockchainScripthash_getHistory: jest.Mock;
   blockchainTransaction_get: jest.Mock;
@@ -56,14 +64,21 @@ function deferred<T>(): Deferred<T> {
 function makeFakeClient(host = 'fake.host', port = 50002): FakeClient {
   const fc: Partial<FakeClient> = {
     initElectrumDeferred: deferred<[string, string]>(),
-    headersDeferred: deferred<{ height: number }>(),
+    headersDeferred: deferred<{ height: unknown; hex?: string }>(),
     pingDeferred: null,
     pingShouldReject: false,
     closed: false,
     host,
     port,
   };
+  fc.connect = jest.fn().mockResolvedValue(undefined);
   fc.initElectrum = jest.fn(() => fc.initElectrumDeferred!.promise);
+  fc.server_version = jest.fn().mockResolvedValue(['Fulcrum 1.10.0', '1.4']);
+  fc.server_features = jest.fn().mockResolvedValue({
+    genesis_hash: '000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f',
+    hash_function: 'sha256',
+  });
+  fc.blockchainBlock_header = jest.fn();
   fc.blockchainHeaders_subscribe = jest.fn(() => fc.headersDeferred!.promise);
   fc.blockchainScripthash_getHistory = jest.fn();
   fc.blockchainTransaction_get = jest.fn();
@@ -83,14 +98,19 @@ function makeFakeClient(host = 'fake.host', port = 50002): FakeClient {
 }
 
 const created: FakeClient[] = [];
-(globalThis as any).__createNextFakeClient = () => {
-  const c = makeFakeClient();
-  created.push(c);
-  return c;
+const constructorArgs: unknown[][] = [];
+let configureNextClient: ((client: FakeClient) => void) | undefined;
+(globalThis as unknown as TestGlobals).__createNextFakeClient = (...args: unknown[]) => {
+  const client = makeFakeClient();
+  configureNextClient?.(client);
+  configureNextClient = undefined;
+  created.push(client);
+  constructorArgs.push(args);
+  return client;
 };
 
 const presentAlertMock = jest.fn();
-(globalThis as any).__presentAlertSpy = presentAlertMock;
+(globalThis as unknown as TestGlobals).__presentAlertSpy = presentAlertMock;
 
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
 async function flush(times = 4) {
@@ -108,6 +128,8 @@ describe('BlueElectrum lifecycle', () => {
     BlueElectrum.forceDisconnect();
     await BlueElectrum.setDisabled(false);
     created.length = 0;
+    constructorArgs.length = 0;
+    configureNextClient = undefined;
     presentAlertMock.mockClear();
   });
 
@@ -227,6 +249,160 @@ describe('BlueElectrum lifecycle', () => {
 
       expect(BlueElectrum.isConnected()).toBe(true);
       expect(BlueElectrum.getConnectionState()).toBe('connected');
+    });
+  });
+
+  describe('chain-verified handshake', () => {
+    const MAINNET_GENESIS_HEADER =
+      '0100000000000000000000000000000000000000000000000000000000000000000000003ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4a29ab5f49ffff001d1dac2b7c';
+
+    it('keeps a provisional client unavailable until features and tip are verified', async () => {
+      const connection = BlueElectrum.ensureConnected();
+      await flush();
+
+      expect(await BlueElectrum.ping()).toBe(false);
+      expect(created[0].server_ping).not.toHaveBeenCalled();
+      expect(BlueElectrum.getConnectionState()).toBe('connecting');
+
+      resolveLastConnect();
+      await connection;
+
+      expect(created[0].server_features).toHaveBeenCalledTimes(1);
+      expect(BlueElectrum.getConnectionState()).toBe('connected');
+      expect(constructorArgs[0][5]).toBeUndefined();
+    });
+
+    it('rejects an incompatible negotiated protocol before chain queries', async () => {
+      configureNextClient = client => client.server_version.mockResolvedValue(['Fulcrum 1.10.0', '1.3']);
+
+      await expect(BlueElectrum.testConnection('old-protocol.example', undefined, 50002)).resolves.toBe(false);
+      expect(created[0].server_features).not.toHaveBeenCalled();
+      expect(created[0].close).toHaveBeenCalled();
+    });
+
+    it.each([
+      [
+        'wrong genesis',
+        {
+          genesis_hash: '000000000933ea01ad0ee984209779baaec3ced90fa3f408719526f8d77f4943',
+          hash_function: 'sha256',
+        },
+      ],
+      [
+        'wrong hash function',
+        {
+          genesis_hash: '000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f',
+          hash_function: 'sha256d',
+        },
+      ],
+      [
+        'Testnet4 genesis',
+        {
+          genesis_hash: '00000000da84f2bafbbc53dee25a72ae507ff4914b867c565be350b0da8bf043',
+          hash_function: 'sha256',
+        },
+      ],
+    ])('rejects a custom peer with %s', async (_label, features) => {
+      configureNextClient = client => client.server_features.mockResolvedValue(features);
+      const connected = await BlueElectrum.testConnection('custom.example', undefined, 50002);
+
+      expect(connected).toBe(false);
+      expect(created[0].blockchainHeaders_subscribe).not.toHaveBeenCalled();
+      expect(created[0].close).toHaveBeenCalled();
+    });
+
+    it('accepts the explicit genesis-header fallback only for an unsupported features RPC', async () => {
+      configureNextClient = client => {
+        client.server_features.mockRejectedValue({ code: -32601, message: 'Method not found' });
+        client.blockchainBlock_header.mockResolvedValue(MAINNET_GENESIS_HEADER);
+      };
+      const connection = BlueElectrum.testConnection('legacy.example', undefined, 50002);
+      await flush();
+      created[0].headersDeferred.resolve({ height: 1000 });
+
+      expect(await connection).toBe(true);
+      expect(created[0].blockchainBlock_header).toHaveBeenCalledWith(0);
+      expect(created[0].server_ping).toHaveBeenCalledTimes(1);
+      expect(created[0].close).toHaveBeenCalled();
+    });
+
+    it.each([true, '1000', 0, -1, 1.5])('rejects malformed tip height %p', async height => {
+      const connection = BlueElectrum.testConnection('tipless.example', undefined, 50002);
+      await flush();
+      created[0].headersDeferred.resolve({ height });
+
+      await expect(connection).resolves.toBe(false);
+      expect(created[0].server_ping).not.toHaveBeenCalled();
+      expect(created[0].close).toHaveBeenCalled();
+    });
+
+    it('rejects an unsupported-features fallback whose exact genesis header hashes to another chain', async () => {
+      configureNextClient = client => {
+        client.server_features.mockRejectedValue({ code: -32601, message: 'Method not found' });
+        client.blockchainBlock_header.mockResolvedValue(
+          '0100000000000000000000000000000000000000000000000000000000000000000000003ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4adae5494dffff001d1aa4ae18',
+        );
+      };
+
+      await expect(BlueElectrum.testConnection('wrong-chain.example', undefined, 50002)).resolves.toBe(false);
+      expect(created[0].blockchainHeaders_subscribe).not.toHaveBeenCalled();
+      expect(created[0].close).toHaveBeenCalled();
+    });
+
+    it('times out a live handshake and ignores its completion after a replacement is ready', async () => {
+      jest.useFakeTimers();
+      const staleFeatures = deferred<{ genesis_hash: string; hash_function: string }>();
+      try {
+        configureNextClient = client => client.server_features.mockReturnValue(staleFeatures.promise);
+        const staleConnection = BlueElectrum.ensureConnected();
+        await jest.advanceTimersByTimeAsync(0);
+        expect(created).toHaveLength(1);
+        created[0].initElectrumDeferred.resolve(['Fulcrum 1.10.0', '1.4']);
+        await jest.advanceTimersByTimeAsync(0);
+        expect(created[0].server_features).toHaveBeenCalledTimes(1);
+        await jest.advanceTimersByTimeAsync(10_000);
+        expect(created[0].close).toHaveBeenCalled();
+
+        BlueElectrum.forceDisconnect();
+        await jest.advanceTimersByTimeAsync(500);
+        await expect(staleConnection).resolves.toBe(false);
+        jest.useRealTimers();
+
+        const replacement = BlueElectrum.ensureConnected();
+        await flush();
+        resolveLastConnect();
+        await expect(replacement).resolves.toBe(true);
+
+        staleFeatures.resolve({
+          genesis_hash: '000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f',
+          hash_function: 'sha256',
+        });
+        await flush();
+
+        expect(BlueElectrum.getConnectionState()).toBe('connected');
+        await expect(BlueElectrum.getCurrentBlockTip()).resolves.toBe(1000);
+        expect(created[0].blockchainHeaders_subscribe).not.toHaveBeenCalled();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('bounds the full custom version/features/tip/ping handshake and closes its exact client', async () => {
+      jest.useFakeTimers();
+      try {
+        configureNextClient = client => {
+          client.server_features.mockReturnValue(deferred<unknown>().promise);
+        };
+        const connection = BlueElectrum.testConnection('stalled.example', undefined, 50002);
+
+        await jest.advanceTimersByTimeAsync(5_000);
+
+        expect(await connection).toBe(false);
+        expect(created[0].close).toHaveBeenCalled();
+        expect(BlueElectrum.getConnectionState()).toBe('disconnected');
+      } finally {
+        jest.useRealTimers();
+      }
     });
   });
 

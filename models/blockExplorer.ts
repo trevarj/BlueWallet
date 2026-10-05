@@ -1,5 +1,6 @@
 // blockExplorer.ts
 import DefaultPreference from 'react-native-default-preference';
+import { bitcoinNetwork } from './bitcoinNetwork';
 
 export interface BlockExplorer {
   key: string;
@@ -7,12 +8,19 @@ export interface BlockExplorer {
   url: string;
 }
 
-export const BLOCK_EXPLORERS: { [key: string]: BlockExplorer } = {
+const mainnetBlockExplorers: { [key: string]: BlockExplorer } = {
   default: { key: 'default', name: 'Mempool.space', url: 'https://mempool.space' },
   blockchair: { key: 'blockchair', name: 'Blockchair', url: 'https://blockchair.com/bitcoin' },
   blockstream: { key: 'blockstream', name: 'Blockstream.info', url: 'https://blockstream.info' },
-  custom: { key: 'custom', name: 'Custom', url: '' }, // Custom URL will be handled separately
+  custom: { key: 'custom', name: 'Custom', url: '' },
 };
+
+const testnetBlockExplorers: { [key: string]: BlockExplorer } = {
+  default: { key: 'default', name: 'Blockstream.info', url: 'https://blockstream.info/testnet' },
+  custom: { key: 'custom', name: 'Custom', url: '' },
+};
+
+export const BLOCK_EXPLORERS = bitcoinNetwork === 'testnet' ? testnetBlockExplorers : mainnetBlockExplorers;
 
 export const getBlockExplorersList = (): BlockExplorer[] => {
   return Object.values(BLOCK_EXPLORERS);
@@ -27,23 +35,9 @@ export const isValidUrl = (url: string): boolean => {
   return pattern.test(url);
 };
 
-export const findMatchingExplorerByDomain = (url: string): BlockExplorer | null => {
-  const domain = getDomain(url);
-  for (const explorer of Object.values(BLOCK_EXPLORERS)) {
-    if (getDomain(explorer.url) === domain) {
-      return explorer;
-    }
-  }
-  return null;
-};
-
-export const getDomain = (url: string): string => {
-  try {
-    const hostname = new URL(url).hostname;
-    return hostname.replace(/^www\./, '');
-  } catch {
-    return '';
-  }
+export const findMatchingExplorer = (url: string): BlockExplorer | null => {
+  const normalizedUrl = normalizeUrl(url);
+  return Object.values(BLOCK_EXPLORERS).find(explorer => normalizeUrl(explorer.url) === normalizedUrl) ?? null;
 };
 
 const BLOCK_EXPLORER_STORAGE_KEY = 'blockExplorer';

@@ -1,15 +1,9 @@
 import React, { useRef, useCallback, useState, useEffect } from 'react';
 import { TextInput } from 'react-native';
 import loc from '../../loc';
+import type { BlockExplorer } from '../../models/blockExplorer';
 import { SettingsSection, SettingsListItem, SettingsScrollView } from '../../components/SettingsSection';
-import {
-  getBlockExplorersList,
-  BlockExplorer,
-  isValidUrl,
-  normalizeUrl,
-  BLOCK_EXPLORERS,
-  removeBlockExplorer,
-} from '../../models/blockExplorer';
+import { getBlockExplorersList, isValidUrl, normalizeUrl, BLOCK_EXPLORERS, removeBlockExplorer } from '../../models/blockExplorer';
 import presentAlert from '../../components/Alert';
 import triggerHapticFeedback, { HapticFeedbackTypes } from '../../blue_modules/hapticFeedback';
 import { useSettings } from '../../hooks/context/useSettings';

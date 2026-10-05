@@ -80,8 +80,8 @@ const CoinControlOutputSheet: React.FC = () => {
       timestamp = undefined;
     }
     if (timestamp && timestamp > 0) return dayjs(timestamp * 1000).format('LL');
-    if (utxo.height > 0) return dayjs(calculateBlockTime(utxo.height) * 1000).format('LL');
-    return loc.transactions.pending;
+    const blockTime = utxo.height > 0 ? calculateBlockTime(utxo.height) : 0;
+    return blockTime > 0 ? dayjs(blockTime * 1000).format('LL') : loc.transactions.pending;
   }, [utxo.height, utxo.txid, wallet]);
 
   const handleUseCoin = useCallback(async () => {

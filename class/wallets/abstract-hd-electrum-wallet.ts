@@ -839,9 +839,10 @@ export class AbstractHDElectrumWallet extends AbstractHDWallet {
     }
 
     // this belongs in `.getUtxo()`
+    const currentHeight = BlueElectrum.estimateCurrentBlockheight();
     for (const u of this._utxo) {
       u.wif = this._getWifForAddress(u.address);
-      if (!u.confirmations && u.height) u.confirmations = BlueElectrum.estimateCurrentBlockheight() - u.height;
+      if (!u.confirmations && u.height && currentHeight >= u.height) u.confirmations = currentHeight - u.height;
     }
 
     this._utxo = this._utxo.sort((a, b) => Number(a.value) - Number(b.value));
@@ -894,6 +895,7 @@ export class AbstractHDElectrumWallet extends AbstractHDWallet {
     }
 
     const txs = this.getTransactions();
+    const currentHeight = BlueElectrum.estimateCurrentBlockheight();
     for (const tx of txs) {
       for (const output of tx.outputs) {
         let address: string | false = false;
@@ -909,7 +911,7 @@ export class AbstractHDElectrumWallet extends AbstractHDWallet {
             value,
             confirmations: tx.confirmations,
             wif: false,
-            height: BlueElectrum.estimateCurrentBlockheight() - (tx.confirmations ?? 0),
+            height: Math.max(0, currentHeight - (tx.confirmations ?? 0)),
           });
         }
       }

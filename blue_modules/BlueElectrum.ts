@@ -12,10 +12,11 @@ import type { TaprootWallet as TaprootWalletT } from '../class/wallets/taproot-w
 import presentAlert from '../components/Alert';
 import loc from '../loc';
 import { GROUP_IO_BLUEWALLET } from './currency';
-import { ElectrumServerItem } from '../screen/settings/ElectrumSettings';
+import type { ElectrumServerItem } from '../screen/settings/ElectrumSettings';
 import { triggerWarningHapticFeedback } from './hapticFeedback';
-import { AlertButton } from 'react-native';
+import type { AlertButton } from 'react-native';
 import { uint8ArrayToHex, stringToUint8Array, hexToUint8Array } from './uint8array-extras/index';
+import { bitcoinNetwork, genesisHash, network } from '../models/bitcoinNetwork';
 
 const ElectrumClient = require('electrum-client');
 const net = require('net');
@@ -87,25 +88,30 @@ export const ELECTRUM_SSL_PORT = 'electrum_ssl_port';
 export const ELECTRUM_SERVER_HISTORY = 'electrum_server_history';
 const ELECTRUM_CONNECTION_DISABLED = 'electrum_disabled';
 const storageKey = 'ELECTRUM_PEERS';
-const defaultPeer = { host: 'electrum1.bluewallet.io', ssl: 443 };
-export const hardcodedPeers: Peer[] = [
+const mainnetPeers: Peer[] = [
   { host: 'mainnet.foundationdevices.com', ssl: 50002 },
   { host: 'bitcoin.lu.ke', ssl: 50002 },
   // { host: 'electrum.jochen-hoenicke.de', ssl: '50006' },
   { host: 'electrum1.bluewallet.io', ssl: 443 },
   { host: 'electrum.acinq.co', ssl: 50002 },
 ];
+const testnetPeers: Peer[] = [{ host: 'blackie.c3-soft.com', ssl: 57006 }];
+export const hardcodedPeers: Peer[] = bitcoinNetwork === 'testnet' ? testnetPeers : mainnetPeers;
+const defaultPeer = bitcoinNetwork === 'testnet' ? testnetPeers[0] : { host: 'electrum1.bluewallet.io', ssl: 443 };
 
 export const suggestedServers: Peer[] = hardcodedPeers.map(peer => ({
   ...peer,
 }));
 
 let mainClient: typeof ElectrumClient | undefined;
+let pendingClient: typeof ElectrumClient | undefined;
+let verifiedClient: typeof ElectrumClient | undefined;
 let serverName: string | false = false;
 let disableBatching: boolean = false;
 let currentPeerIndex = hardcodedPeers.findIndex(peer => peer.host === defaultPeer.host && peer.ssl === defaultPeer.ssl);
 if (currentPeerIndex < 0) currentPeerIndex = 0;
-let latestBlock: { height: number; time: number } | { height: undefined; time: undefined } = { height: undefined, time: undefined };
+type LatestBlock = { height: number; time: number; blockTime?: number } | { height: undefined; time: undefined; blockTime?: undefined };
+let latestBlock: LatestBlock = { height: undefined, time: undefined };
 
 // --- Single source of truth for connection liveness -----------------------------
 // We previously tracked `mainConnected` (boolean) separately from the client's own
@@ -153,7 +159,7 @@ export function isConnected(): boolean {
 // --- Connection lifecycle internals ---------------------------------------------
 /** One liveness check (`server_ping`) wall-time before giving up and marking the socket dead. */
 const PING_TIMEOUT_MS = 5_000;
-/** One full connect attempt (TLS + `server_version` handshake) wall-time before retrying. */
+/** One complete connect/version/chain/tip handshake wall-time before retrying. */
 const CONNECT_ATTEMPT_TIMEOUT_MS = 10_000;
 /** Reconnect attempts inside a single `ensureConnected()` call before declaring failure. */
 const CONNECT_MAX_ATTEMPTS = 5;
@@ -184,6 +190,66 @@ let _realm: Realm | undefined;
 
 function bitcoinjs_crypto_sha256(buffer: Uint8Array): Uint8Array {
   return _sha256(buffer);
+}
+
+type AssertActive = () => void;
+
+function closeClient(client: typeof ElectrumClient): void {
+  try {
+    client.close();
+  } catch {}
+}
+
+function isCompatibleProtocolVersion(version: unknown): boolean {
+  return typeof version === 'string' && /^1\.4(?:\.\d+)?$/.test(version);
+}
+
+function decodeHeader(headerHex: unknown): Uint8Array {
+  if (typeof headerHex !== 'string' || headerHex.length !== 160) {
+    throw new Error('Electrum returned an invalid block header');
+  }
+  return hexToUint8Array(headerHex);
+}
+
+function isUnsupportedFeaturesError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const code = 'code' in error ? error.code : undefined;
+  const message = 'message' in error ? error.message : undefined;
+  return Number(code) === -32601 || /method not found/i.test(String(message ?? ''));
+}
+
+async function verifyServerChain(client: typeof ElectrumClient, assertActive: AssertActive): Promise<void> {
+  let features: unknown;
+  try {
+    features = await client.server_features();
+    assertActive();
+  } catch (error) {
+    assertActive();
+    if (!isUnsupportedFeaturesError(error)) throw error;
+    const header = decodeHeader(await client.blockchainBlock_header(0));
+    assertActive();
+    const hash = uint8ArrayToHex(new Uint8Array(bitcoinjs_crypto_sha256(bitcoinjs_crypto_sha256(header))).reverse());
+    if (hash !== genesisHash) throw new Error('Electrum server is on the wrong Bitcoin chain');
+    return;
+  }
+
+  if (!features || typeof features !== 'object') throw new Error('Electrum server returned invalid chain features');
+  if (!('genesis_hash' in features) || features.genesis_hash !== genesisHash) {
+    throw new Error('Electrum server is on the wrong Bitcoin chain');
+  }
+  if (!('hash_function' in features) || features.hash_function !== 'sha256') {
+    throw new Error('Electrum server uses an incompatible hash function');
+  }
+}
+
+function parseTip(header: unknown): { height: number; headerHex?: string } {
+  if (!header || typeof header !== 'object' || !('height' in header) || typeof header.height !== 'number') {
+    throw new Error('Electrum server returned an invalid block tip');
+  }
+  if (!Number.isSafeInteger(header.height) || header.height <= 0) {
+    throw new Error('Electrum server returned an invalid block tip');
+  }
+  return { height: header.height, headerHex: 'hex' in header && typeof header.hex === 'string' ? header.hex : undefined };
 }
 
 async function _getRealm() {
@@ -282,12 +348,11 @@ export async function setDisabled(disabled = true) {
   // 'connected' after the user toggled Electrum off.
   if (disabled) {
     disconnectGeneration += 1;
-    if (mainClient) {
-      try {
-        mainClient.close();
-      } catch {}
-      mainClient = undefined;
-    }
+    if (mainClient) closeClient(mainClient);
+    if (pendingClient) closeClient(pendingClient);
+    mainClient = undefined;
+    pendingClient = undefined;
+    verifiedClient = undefined;
     setConnectionState('disabled');
   }
   return result;
@@ -339,7 +404,7 @@ async function getSavedPeer(): Promise<Peer | null> {
 async function pickPeer(): Promise<Peer> {
   let usingPeer = getNextPeer();
   const savedPeer = await getSavedPeer();
-  if (savedPeer && savedPeer.host && (savedPeer.tcp || savedPeer.ssl)) {
+  if (savedPeer && savedPeer.host && (savedPeer.ssl || (bitcoinNetwork === 'bitcoin' && savedPeer.tcp))) {
     usingPeer = savedPeer;
   }
   return usingPeer;
@@ -349,11 +414,10 @@ function scheduleReconnectFromClient(client: typeof ElectrumClient, usingPeer: P
   if (connState !== 'connected' || mainClient !== client) return;
 
   console.log(`[electrum] scheduling Electrum reconnect after ${reason}`);
-  try {
-    // Also neutralises electrum-client's own timers/reconnect hooks for this instance.
-    client.close();
-  } catch {}
+  // Also neutralises electrum-client's own timers/reconnect hooks for this instance.
+  closeClient(client);
   if (mainClient === client) mainClient = undefined;
+  if (verifiedClient === client) verifiedClient = undefined;
   setConnectionState('disconnected');
 
   const delay = usingPeer.host.endsWith('.onion') ? RECONNECT_ONION_DELAY_MS : RECONNECT_TCP_DELAY_MS;
@@ -368,110 +432,150 @@ function scheduleReconnectFromClient(client: typeof ElectrumClient, usingPeer: P
 }
 
 /**
- * One connect attempt: build a fresh `ElectrumClient`, run the version handshake,
- * subscribe to headers. No retries, no UI side effects. Returns the peer used
- * (for caller-side telemetry/alerts) and whether the attempt succeeded.
+ * One connect attempt: create a fresh client, verify its protocol and exact chain,
+ * then obtain a valid tip. One deadline covers the complete handshake.
  */
-async function attemptConnectOnce(): Promise<{ ok: boolean; peer: Peer }> {
+async function attemptConnectOnce(): Promise<{ ok: boolean; peer: Peer; client?: typeof ElectrumClient }> {
+  const generation = disconnectGeneration;
   const usingPeer = await pickPeer();
+  if (generation !== disconnectGeneration) return { ok: false, peer: usingPeer };
   console.log('[electrum] Using peer:', JSON.stringify(usingPeer));
 
-  // Drop any prior client before allocating a new one. Closing also neutralises
-  // electrum-client's internal `reconnect()` loop on the old instance.
-  if (mainClient) {
-    try {
-      mainClient.close();
-    } catch {}
-    mainClient = undefined;
+  if (mainClient) closeClient(mainClient);
+  if (pendingClient) closeClient(pendingClient);
+  mainClient = undefined;
+  pendingClient = undefined;
+  verifiedClient = undefined;
+
+  console.log('[electrum] begin connection:', JSON.stringify(usingPeer));
+  let client: typeof ElectrumClient;
+  try {
+    client =
+      bitcoinNetwork === 'testnet'
+        ? new ElectrumClient(net, tls, usingPeer.ssl, usingPeer.host, 'tls', { rejectUnauthorized: true })
+        : new ElectrumClient(net, tls, usingPeer.ssl || usingPeer.tcp, usingPeer.host, usingPeer.ssl ? 'tls' : 'tcp');
+  } catch (e) {
+    console.log('[electrum] failed to create client:', JSON.stringify(usingPeer), e);
+    return { ok: false, peer: usingPeer };
   }
+  pendingClient = client;
+  let retired = false;
+  let timeoutId: NodeJS.Timeout | undefined;
+  const assertActive = () => {
+    if (retired || generation !== disconnectGeneration || pendingClient !== client) {
+      throw new Error('Stale Electrum connection attempt');
+    }
+  };
+
+  client.onError = function (e: { message: string }) {
+    console.log('[electrum] electrum mainClient.onError():', e.message);
+    scheduleReconnectFromClient(client, usingPeer, 'socket error');
+  };
 
   try {
-    console.log('[electrum] begin connection:', JSON.stringify(usingPeer));
-    const client = new ElectrumClient(net, tls, usingPeer.ssl || usingPeer.tcp, usingPeer.host, usingPeer.ssl ? 'tls' : 'tcp');
-    mainClient = client;
-
-    // Live-socket errors after a successful handshake: schedule a single
-    // `ensureConnected()` (deduped). Errors during this attempt's own handshake
-    // are caught below — we must not double-handle them here.
-    client.onError = function (e: { message: string }) {
-      console.log('[electrum] electrum mainClient.onError():', e.message);
-      scheduleReconnectFromClient(client, usingPeer, 'socket error');
-    };
-
-    const ver = await Promise.race([
-      client.initElectrum(
+    const handshake = (async () => {
+      const version = await client.initElectrum(
         { client: 'bluewallet', version: '1.4' },
         {
           maxRetry: 0,
           callback: () => scheduleReconnectFromClient(client, usingPeer, 'socket close'),
         },
-      ),
-      new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error('connect timeout')), CONNECT_ATTEMPT_TIMEOUT_MS)),
+      );
+      assertActive();
+      if (!Array.isArray(version) || typeof version[0] !== 'string' || !isCompatibleProtocolVersion(version[1])) {
+        throw new Error('Electrum server negotiated an incompatible protocol');
+      }
+
+      await verifyServerChain(client, assertActive);
+      assertActive();
+
+      const subscribedHeader = await client.blockchainHeaders_subscribe();
+      assertActive();
+      const tip = parseTip(subscribedHeader);
+      let blockTime: number | undefined;
+      if (tip.headerHex) {
+        const header = decodeHeader(tip.headerHex);
+        blockTime = new DataView(header.buffer, header.byteOffset, header.byteLength).getUint32(68, true);
+      } else if (bitcoinNetwork === 'testnet') {
+        const header = decodeHeader(await client.blockchainBlock_header(tip.height));
+        assertActive();
+        blockTime = new DataView(header.buffer, header.byteOffset, header.byteLength).getUint32(68, true);
+      }
+      return { version, tip, blockTime };
+    })();
+
+    const result = await Promise.race([
+      handshake,
+      new Promise<never>((_resolve, reject) => {
+        timeoutId = setTimeout(() => {
+          retired = true;
+          closeClient(client);
+          reject(new Error('Electrum handshake timed out'));
+        }, CONNECT_ATTEMPT_TIMEOUT_MS);
+      }),
     ]);
+    assertActive();
 
-    if (mainClient !== client) {
-      // Caller raced `forceDisconnect()` while we were awaiting. Bail.
-      try {
-        client.close();
-      } catch {}
-      return { ok: false, peer: usingPeer };
+    const nextServerName = result.version[0];
+    let nextDisableBatching = disableBatching;
+    if (
+      nextServerName.startsWith('ElectrumPersonalServer') ||
+      nextServerName.startsWith('electrs') ||
+      nextServerName.startsWith('Fulcrum')
+    ) {
+      nextDisableBatching = true;
+      const [electrumImplementation, electrumVersion] = nextServerName.split(' ');
+      if (
+        (electrumImplementation === 'electrs' && semVerToInt(electrumVersion) >= semVerToInt('0.9.0')) ||
+        (electrumImplementation === 'Fulcrum' && semVerToInt(electrumVersion) >= semVerToInt('1.9.0'))
+      ) {
+        nextDisableBatching = false;
+      }
     }
 
-    if (ver && ver[0]) {
-      console.log('[electrum] connected to ', ver);
-      serverName = ver[0];
-      if (ver[0].startsWith('ElectrumPersonalServer') || ver[0].startsWith('electrs') || ver[0].startsWith('Fulcrum')) {
-        disableBatching = true;
-        const [electrumImplementation, electrumVersion] = ver[0].split(' ');
-        switch (electrumImplementation) {
-          case 'electrs':
-            if (semVerToInt(electrumVersion) >= semVerToInt('0.9.0')) {
-              disableBatching = false;
-            }
-            break;
-          case 'electrs-esplora':
-            break;
-          case 'Fulcrum':
-            if (semVerToInt(electrumVersion) >= semVerToInt('1.9.0')) {
-              disableBatching = false;
-            }
-            break;
-        }
-      }
-      const header = await client.blockchainHeaders_subscribe();
-      if (header && header.height) {
-        latestBlock = {
-          height: header.height,
-          time: Math.floor(+new Date() / 1000),
-        };
-      }
-      return { ok: true, peer: usingPeer };
-    }
-    return { ok: false, peer: usingPeer };
+    assertActive();
+    serverName = nextServerName;
+    disableBatching = nextDisableBatching;
+    latestBlock = {
+      height: result.tip.height,
+      time: Math.floor(Date.now() / 1000),
+      blockTime: result.blockTime,
+    };
+    pendingClient = undefined;
+    mainClient = client;
+    verifiedClient = client;
+    console.log('[electrum] connected to ', result.version);
+    return { ok: true, peer: usingPeer, client };
   } catch (e) {
+    retired = true;
     console.log('[electrum] bad connection:', JSON.stringify(usingPeer), e);
-    if (mainClient) {
-      try {
-        mainClient.close();
-      } catch {}
-      mainClient = undefined;
-    }
-    return { ok: false, peer: usingPeer };
+    closeClient(client);
+    if (pendingClient === client) pendingClient = undefined;
+    if (mainClient === client) mainClient = undefined;
+    if (verifiedClient === client) verifiedClient = undefined;
+    return { ok: false, peer: usingPeer, client };
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
 /** Single liveness check on the current `mainClient`, bounded by `PING_TIMEOUT_MS`. */
 async function pingWithTimeout(timeoutMs: number = PING_TIMEOUT_MS): Promise<boolean> {
-  if (!mainClient) return false;
+  if (!mainClient || verifiedClient !== mainClient) return false;
   const client = mainClient;
+  let timeoutId: NodeJS.Timeout | undefined;
   try {
     await Promise.race([
       client.server_ping(),
-      new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error('ping timeout')), timeoutMs)),
+      new Promise<never>((_resolve, reject) => {
+        timeoutId = setTimeout(() => reject(new Error('ping timeout')), timeoutMs);
+      }),
     ]);
-    return mainClient === client; // server replied AND client wasn't swapped while we waited
+    return mainClient === client && verifiedClient === client;
   } catch {
     return false;
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
@@ -532,9 +636,8 @@ export async function ensureConnected(opts: EnsureConnectedOptions = {}): Promis
           return true;
         }
         // Stale socket. Tear it down so the attempt loop starts fresh.
-        try {
-          mainClient.close();
-        } catch {}
+        closeClient(mainClient);
+        if (verifiedClient === mainClient) verifiedClient = undefined;
         mainClient = undefined;
         setConnectionState('disconnected');
       }
@@ -552,19 +655,16 @@ export async function ensureConnected(opts: EnsureConnectedOptions = {}): Promis
         // back to 'disconnected' here.
         if (aborted(`attempt ${i} start`)) return false;
 
-        const { ok, peer } = await attemptConnectOnce();
+        const { ok, peer, client } = await attemptConnectOnce();
         lastPeer = peer;
 
         if (aborted(`attempt ${i} end`)) {
-          if (mainClient) {
-            try {
-              mainClient.close();
-            } catch {}
-            mainClient = undefined;
-          }
+          if (client) closeClient(client);
+          if (mainClient === client) mainClient = undefined;
+          if (verifiedClient === client) verifiedClient = undefined;
           return false;
         }
-        if (ok) {
+        if (ok && client && mainClient === client && verifiedClient === client) {
           setConnectionState('connected');
           return true;
         }
@@ -746,7 +846,7 @@ async function getRandomDynamicPeer(): Promise<Peer> {
 export const getBalanceByAddress = async function (address: string): Promise<{ confirmed: number; unconfirmed: number }> {
   try {
     if (!mainClient) throw new Error('Electrum client is not connected');
-    const script = bitcoin.address.toOutputScript(address);
+    const script = bitcoin.address.toOutputScript(address, network);
     const hash = bitcoinjs_crypto_sha256(script);
     const reversedHash = new Uint8Array(hash).reverse();
     const balance = await mainClient.blockchainScripthash_getBalance(uint8ArrayToHex(reversedHash));
@@ -783,7 +883,7 @@ export const getSecondsSinceLastRequest = function () {
 
 export const getTransactionsByAddress = async function (address: string): Promise<ElectrumHistory[]> {
   if (!mainClient) throw new Error('Electrum client is not connected');
-  const script = bitcoin.address.toOutputScript(address);
+  const script = bitcoin.address.toOutputScript(address, network);
   const hash = bitcoinjs_crypto_sha256(script);
   const reversedHash = new Uint8Array(hash).reverse();
   const history = await mainClient.blockchainScripthash_getHistory(uint8ArrayToHex(reversedHash));
@@ -796,7 +896,7 @@ export const getTransactionsByAddress = async function (address: string): Promis
 
 export const getMempoolTransactionsByAddress = async function (address: string): Promise<MempoolTransaction[]> {
   if (!mainClient) throw new Error('Electrum client is not connected');
-  const script = bitcoin.address.toOutputScript(address);
+  const script = bitcoin.address.toOutputScript(address, network);
   const hash = bitcoinjs_crypto_sha256(script);
   const reversedHash = new Uint8Array(hash).reverse();
   return mainClient.blockchainScripthash_getMempool(uint8ArrayToHex(reversedHash));
@@ -844,14 +944,18 @@ export function txhexToElectrumTransaction(txhex: string): ElectrumTransactionWi
   };
 
   if (txhashHeightCache[ret.txid]) {
-    // got blockheight where this tx was confirmed
-    ret.confirmations = estimateCurrentBlockheight() - txhashHeightCache[ret.txid];
-    if (ret.confirmations < 0) {
-      // ugly fix for when estimator lags behind
-      ret.confirmations = 1;
+    const confirmationHeight = txhashHeightCache[ret.txid];
+    const currentHeight = estimateCurrentBlockheight();
+    if (currentHeight > 0) {
+      ret.confirmations = currentHeight - confirmationHeight;
+      if (ret.confirmations < 0) {
+        // Preserve the existing lag tolerance once a selected-chain tip exists.
+        ret.confirmations = 1;
+      }
     }
-    ret.time = calculateBlockTime(txhashHeightCache[ret.txid]);
-    ret.blocktime = calculateBlockTime(txhashHeightCache[ret.txid]);
+    const blockTime = calculateBlockTime(confirmationHeight);
+    ret.time = blockTime;
+    ret.blocktime = blockTime;
   }
 
   for (const inn of tx.ins) {
@@ -1007,7 +1111,7 @@ export const multiGetBalanceByAddress = async (addresses: string[], batchsize: n
     const scripthashes = [];
     const scripthash2addr: Record<string, string> = {};
     for (const addr of chunk) {
-      const script = bitcoin.address.toOutputScript(addr);
+      const script = bitcoin.address.toOutputScript(addr, network);
       const hash = bitcoinjs_crypto_sha256(script);
       const reversedHash = uint8ArrayToHex(new Uint8Array(hash).reverse());
       scripthashes.push(reversedHash);
@@ -1051,7 +1155,7 @@ export const multiGetUtxoByAddress = async function (addresses: string[], batchs
     const scripthashes = [];
     const scripthash2addr: Record<string, string> = {};
     for (const addr of chunk) {
-      const script = bitcoin.address.toOutputScript(addr);
+      const script = bitcoin.address.toOutputScript(addr, network);
       const hash = bitcoinjs_crypto_sha256(script);
       const reversedHash = uint8ArrayToHex(new Uint8Array(hash).reverse());
       scripthashes.push(reversedHash);
@@ -1101,7 +1205,7 @@ export const multiGetHistoryByAddress = async function (
     const scripthashes = [];
     const scripthash2addr: Record<string, string> = {};
     for (const addr of chunk) {
-      const script = bitcoin.address.toOutputScript(addr);
+      const script = bitcoin.address.toOutputScript(addr, network);
       const hash = bitcoinjs_crypto_sha256(script);
       const reversedHash = uint8ArrayToHex(new Uint8Array(hash).reverse());
       scripthashes.push(reversedHash);
@@ -1422,17 +1526,22 @@ export const broadcastV2 = async function (hex: string): Promise<string> {
 
 export const estimateCurrentBlockheight = function (): number {
   if (latestBlock.height) {
-    const timeDiff = Math.floor(+new Date() / 1000) - latestBlock.time;
+    if (bitcoinNetwork === 'testnet') return latestBlock.height;
+    const timeDiff = Math.floor(Date.now() / 1000) - latestBlock.time;
     const extraBlocks = Math.floor(timeDiff / (9.93 * 60));
     return latestBlock.height + extraBlocks;
   }
 
+  if (bitcoinNetwork === 'testnet') return 0;
   const baseTs = 1587570465609; // uS
   const baseHeight = 627179;
-  return Math.floor(baseHeight + (+new Date() - baseTs) / 1000 / 60 / 9.93);
+  return Math.floor(baseHeight + (Date.now() - baseTs) / 1000 / 60 / 9.93);
 };
 
 export const calculateBlockTime = function (height: number): number {
+  if (bitcoinNetwork === 'testnet') {
+    return latestBlock.height === height ? (latestBlock.blockTime ?? 0) : 0;
+  }
   if (latestBlock.height) {
     return Math.floor(latestBlock.time + (height - latestBlock.height) * 9.93 * 60);
   }
@@ -1446,30 +1555,66 @@ export const calculateBlockTime = function (height: number): number {
  * @returns {Promise<boolean>} Whether provided host:port is a valid electrum server
  */
 export const testConnection = async function (host: string, tcpPort?: number, sslPort?: number): Promise<boolean> {
-  const client = new ElectrumClient(net, tls, sslPort || tcpPort, host, sslPort ? 'tls' : 'tcp');
+  host = host.trim();
+  if (!host || (bitcoinNetwork === 'testnet' && !sslPort)) return false;
+  let client: typeof ElectrumClient;
+  try {
+    client =
+      bitcoinNetwork === 'testnet'
+        ? new ElectrumClient(net, tls, sslPort, host, 'tls', { rejectUnauthorized: true })
+        : new ElectrumClient(net, tls, sslPort || tcpPort, host, sslPort ? 'tls' : 'tcp');
+  } catch {
+    return false;
+  }
 
   client.onError = () => {}; // mute
   let timeoutId: NodeJS.Timeout | undefined;
+  let retired = false;
   const timeoutMs = host.endsWith('.onion') ? 21_000 : 5_000;
+  const assertActive = () => {
+    if (retired) throw new Error('Stale Electrum test connection');
+  };
   try {
-    const rez = await Promise.race([
-      new Promise(resolve => {
-        timeoutId = setTimeout(() => resolve('timeout'), timeoutMs);
+    const handshake = (async () => {
+      await client.connect();
+      assertActive();
+      const version = await client.server_version('2.7.11', '1.4');
+      assertActive();
+      if (!Array.isArray(version) || typeof version[0] !== 'string' || !isCompatibleProtocolVersion(version[1])) {
+        throw new Error('Electrum server negotiated an incompatible protocol');
+      }
+      await verifyServerChain(client, assertActive);
+      assertActive();
+      const tip = parseTip(await client.blockchainHeaders_subscribe());
+      assertActive();
+      if (bitcoinNetwork === 'testnet' && !tip.headerHex) {
+        decodeHeader(await client.blockchainBlock_header(tip.height));
+        assertActive();
+      } else if (tip.headerHex) {
+        decodeHeader(tip.headerHex);
+      }
+      await client.server_ping();
+      assertActive();
+      return true;
+    })();
+
+    return await Promise.race([
+      handshake,
+      new Promise<never>((_resolve, reject) => {
+        timeoutId = setTimeout(() => {
+          retired = true;
+          closeClient(client);
+          reject(new Error('Electrum test connection timed out'));
+        }, timeoutMs);
       }),
-      client.connect(),
     ]);
-    if (rez === 'timeout') return false;
-
-    await client.server_version('2.7.11', '1.4');
-    await client.server_ping();
-    return true;
-  } catch (_) {
+  } catch {
+    return false;
   } finally {
-    if (timeoutId) clearTimeout(timeoutId);
-    client.close();
+    retired = true;
+    clearTimeout(timeoutId);
+    closeClient(client);
   }
-
-  return false;
 };
 
 /**
@@ -1478,12 +1623,11 @@ export const testConnection = async function (host: string, tcpPort?: number, ss
  */
 export const forceDisconnect = (): void => {
   disconnectGeneration += 1;
-  if (mainClient) {
-    try {
-      mainClient.close();
-    } catch {}
-    mainClient = undefined;
-  }
+  if (mainClient) closeClient(mainClient);
+  if (pendingClient) closeClient(pendingClient);
+  mainClient = undefined;
+  pendingClient = undefined;
+  verifiedClient = undefined;
   setConnectionState('disconnected');
 };
 
@@ -1506,22 +1650,28 @@ const TIP_CACHE_TTL_SEC = 60;
 const MAX_CACHE_AHEAD_OF_TIP = 6;
 
 async function fetchBlockTipFromServer(): Promise<number | null> {
-  if (!mainClient) {
-    return latestBlock.height ?? null;
-  }
+  const client = mainClient;
+  if (!client || verifiedClient !== client) return latestBlock.height ?? null;
 
-  const now = Math.floor(+new Date() / 1000);
   try {
-    const header = await mainClient.blockchainHeaders_subscribe();
-    if (header && header.height) {
-      latestBlock = { height: header.height, time: now };
-      return header.height;
+    const header = await client.blockchainHeaders_subscribe();
+    if (mainClient !== client || verifiedClient !== client) return latestBlock.height ?? null;
+    const tip = parseTip(header);
+    let blockTime: number | undefined;
+    if (tip.headerHex) {
+      const bytes = decodeHeader(tip.headerHex);
+      blockTime = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(68, true);
+    } else if (bitcoinNetwork === 'testnet') {
+      const bytes = decodeHeader(await client.blockchainBlock_header(tip.height));
+      if (mainClient !== client || verifiedClient !== client) return latestBlock.height ?? null;
+      blockTime = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(68, true);
     }
+    latestBlock = { height: tip.height, time: Math.floor(Date.now() / 1000), blockTime };
+    return tip.height;
   } catch (e) {
     console.warn('getCurrentBlockTip: subscribe failed', e);
+    return latestBlock.height ?? null;
   }
-
-  return latestBlock.height ?? null;
 }
 
 export async function getCurrentBlockTip(): Promise<number> {
@@ -1530,13 +1680,14 @@ export async function getCurrentBlockTip(): Promise<number> {
     return latestBlock.height;
   }
 
-  if (!mainClient) {
+  if (!mainClient || verifiedClient !== mainClient) {
     if (latestBlock.height) return latestBlock.height;
     throw new Error('Electrum client is not connected');
   }
 
   const refreshed = await fetchBlockTipFromServer();
   if (refreshed) return refreshed;
+  if (bitcoinNetwork === 'testnet') throw new Error('Verified Testnet3 block tip is unavailable');
   return estimateCurrentBlockheight();
 }
 
@@ -1607,21 +1758,14 @@ export async function getConfirmedBlockHeight(txHash: string): Promise<Confirmed
  * Parses the 80-byte hex-encoded header to extract the 4-byte LE timestamp at byte offset 68.
  */
 export async function getBlockTimestamps(heights: number[]): Promise<Record<number, number>> {
-  if (!mainClient) throw new Error('Electrum client is not connected');
+  const client = mainClient;
+  if (!client || verifiedClient !== client) throw new Error('Electrum client is not connected');
   const result: Record<number, number> = {};
   const promises = heights.map(async height => {
     try {
-      const headerHex: string = await mainClient.blockchainBlock_header(height);
-      // timestamp is at bytes 68–71 of the 80-byte header (hex chars 136–143), little-endian uint32
-      const tsHex = headerHex.slice(136, 144);
-      /* eslint-disable no-bitwise */
-      const timestamp =
-        parseInt(tsHex.slice(0, 2), 16) |
-        (parseInt(tsHex.slice(2, 4), 16) << 8) |
-        (parseInt(tsHex.slice(4, 6), 16) << 16) |
-        ((parseInt(tsHex.slice(6, 8), 16) << 24) >>> 0);
-      /* eslint-enable no-bitwise */
-      result[height] = timestamp;
+      const header = decodeHeader(await client.blockchainBlock_header(height));
+      if (mainClient !== client || verifiedClient !== client) return;
+      result[height] = new DataView(header.buffer, header.byteOffset, header.byteLength).getUint32(68, true);
     } catch (e) {
       console.warn(`Failed to fetch block header for height ${height}:`, e);
     }
