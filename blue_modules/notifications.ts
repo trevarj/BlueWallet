@@ -1,6 +1,14 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AppState, AppStateStatus, EmitterSubscription, Platform } from 'react-native';
-import { getApplicationName, getSystemName, getSystemVersion, getVersion, hasGmsSync, hasHmsSync } from 'react-native-device-info';
+import {
+  getApplicationName,
+  getBundleId,
+  getSystemName,
+  getSystemVersion,
+  getVersion,
+  hasGmsSync,
+  hasHmsSync,
+} from 'react-native-device-info';
 import {
   Notification as RNNotification,
   NotificationBackgroundFetchResult,
@@ -17,8 +25,15 @@ const PUSH_TOKEN = 'PUSH_TOKEN';
 const NOTIFICATIONS_STORAGE = 'NOTIFICATIONS_STORAGE';
 const ANDROID_NOTIFICATION_CHANNEL_ID = 'channel_01';
 export const NOTIFICATIONS_NO_AND_DONT_ASK_FLAG = 'NOTIFICATIONS_NO_AND_DONT_ASK_FLAG';
+const androidBundleId = Platform.OS === 'android' ? getBundleId() : undefined;
+export const isNotificationsCapable =
+  Platform.OS !== 'android' ||
+  (androidBundleId !== 'io.bluewallet.bluewallet.bhwi' &&
+    androidBundleId !== 'io.bluewallet.bluewallet.bhwi.testnet' &&
+    (hasGmsSync() || hasHmsSync()));
 const baseURI = groundControlUri;
 let notificationSubscriptions: EmitterSubscription[] = [];
+let remoteNotificationSubscriptions: EmitterSubscription[] = [];
 let onProcessNotificationsHandler: undefined | (() => void | Promise<void>);
 const handledNotificationKeys = new Set<string>();
 let pendingRegistrationPromise: Promise<boolean> | null = null;
@@ -67,6 +82,7 @@ const settlePendingRegistration = (value: boolean) => {
 };
 
 const waitForRemoteRegistration = (timeoutMs = 10_000): Promise<boolean> => {
+  if (!isNotificationsCapable) return Promise.resolve(false);
   if (pendingRegistrationPromise) return pendingRegistrationPromise;
   pendingRegistrationPromise = new Promise<boolean>(resolve => {
     pendingRegistrationResolve = resolve;
@@ -160,7 +176,11 @@ const storeIncomingNotification = async (
   } finally {
     if (completion) {
       if (status.foreground) {
-        (completion as (response: NotificationCompletion) => void)({ alert: false, sound: false, badge: false });
+        (completion as (response: NotificationCompletion) => void)({
+          alert: false,
+          sound: false,
+          badge: false,
+        });
       } else {
         (completion as (response: NotificationBackgroundFetchResult) => void)(NotificationBackgroundFetchResult.NO_DATA);
       }
@@ -180,6 +200,7 @@ const checkAndroidNotificationPermission = async () => {
 };
 
 export const checkNotificationPermissionStatus = async () => {
+  if (!isNotificationsCapable) return 'unavailable';
   try {
     const { status } = await checkNotifications();
     return status;
@@ -192,6 +213,7 @@ export const checkNotificationPermissionStatus = async () => {
 // Listener to monitor notification permission status changes while app is running
 let currentPermissionStatus = 'unavailable';
 const handleAppStateChange = async (nextAppState: AppStateStatus) => {
+  if (!isNotificationsCapable) return;
   try {
     if (nextAppState === 'active') {
       const isDisabledByUser = (await AsyncStorage.getItem(NOTIFICATIONS_NO_AND_DONT_ASK_FLAG)) === 'true';
@@ -255,6 +277,7 @@ export const tryToObtainPermissions = async (): Promise<boolean> => {
 };
 
 export const enqueueTestPushNotification = async (): Promise<void> => {
+  if (!isNotificationsCapable) throw new Error('Remote push notifications are unavailable in this build');
   const pushToken = await getPushToken();
   if (!pushToken?.token || !pushToken?.os) {
     throw new Error('No push token available');
@@ -286,6 +309,7 @@ export const enqueueTestPushNotification = async (): Promise<void> => {
  * @returns {Promise<object>} Response object from API rest call
  */
 export const majorTomToGroundControl = async (addresses: string[], hashes: string[], txids: string[]) => {
+  if (!isNotificationsCapable) return;
   console.log('majorTomToGroundControl: Starting notification registration', {
     addressCount: addresses?.length,
     hashCount: hashes?.length,
@@ -358,7 +382,7 @@ export const majorTomToGroundControl = async (addresses: string[], hashes: strin
  * preimage is always stripped before leaving the device.
  */
 export const registerArkPaymentPush = async (paymentHash: string, label: string, pendingSwap: BoltzReverseSwap): Promise<void> => {
-  if (!arkadePaymentPushUri) return;
+  if (!isNotificationsCapable || !arkadePaymentPushUri) return;
   try {
     const noAndDontAskFlag = await AsyncStorage.getItem(NOTIFICATIONS_NO_AND_DONT_ASK_FLAG);
     if (noAndDontAskFlag === 'true') {
@@ -469,6 +493,7 @@ export const setLevels = async (levelAll: boolean) => {
  * @returns {Promise<void>}
  */
 export const setRedactNotifications = async (redacted: boolean) => {
+  if (!isNotificationsCapable) throw new Error('Remote push notifications are unavailable in this build');
   const pushToken = await getPushToken();
   if (!pushToken?.token || !pushToken?.os) {
     throw new Error('No push token available');
@@ -477,7 +502,11 @@ export const setRedactNotifications = async (redacted: boolean) => {
   const response = await fetch(`${baseURI}/setTokenConfiguration`, {
     method: 'POST',
     headers: _getHeaders(),
-    body: JSON.stringify({ redacted, token: pushToken.token, os: pushToken.os }),
+    body: JSON.stringify({
+      redacted,
+      token: pushToken.token,
+      os: pushToken.os,
+    }),
   });
 
   if (!response.ok) {
@@ -539,6 +568,7 @@ const postTokenConfig = async () => {
 };
 
 const _setPushToken = async (token: TPushToken) => {
+  if (!isNotificationsCapable) return;
   try {
     return await AsyncStorage.setItem(PUSH_TOKEN, JSON.stringify(token));
   } catch (error) {
@@ -547,18 +577,55 @@ const _setPushToken = async (token: TPushToken) => {
   }
 };
 
+const configureNotificationListeners = (onProcessNotifications?: () => void) => {
+  if (onProcessNotifications) {
+    onProcessNotificationsHandler = onProcessNotifications;
+  }
+  if (notificationSubscriptions.length > 0) return;
+
+  notificationSubscriptions = [
+    Notifications.events().registerNotificationReceivedForeground(async (notification, completion) => {
+      await storeIncomingNotification(notification, { foreground: true, userInteraction: false }, completion);
+    }),
+    Notifications.events().registerNotificationReceivedBackground(async (notification, completion) => {
+      await storeIncomingNotification(notification, { foreground: false, userInteraction: false }, completion);
+    }),
+    Notifications.events().registerNotificationOpened(async (notification, completion) => {
+      try {
+        await storeIncomingNotification(notification, {
+          foreground: false,
+          userInteraction: true,
+        });
+      } finally {
+        completion();
+      }
+    }),
+  ];
+
+  Notifications.getInitialNotification()
+    .then(async initialNotification => {
+      if (initialNotification) {
+        console.log('App was launched by a notification:', initialNotification);
+        await storeIncomingNotification(initialNotification, {
+          foreground: false,
+          userInteraction: true,
+        });
+      }
+    })
+    .catch(error => console.error('Failed to retrieve initial notification:', error));
+};
+
 /**
  * Configures notifications. For Android, it will show a native rationale prompt if necessary.
  *
  * @returns {Promise<boolean>} whether successfully registered for remote push notifications
  */
 const configureNotifications = async (onProcessNotifications?: () => void): Promise<boolean> => {
+  if (!isNotificationsCapable) return false;
   console.log('configureNotifications()');
-  if (onProcessNotifications) {
-    onProcessNotificationsHandler = onProcessNotifications;
-  }
 
   try {
+    configureNotificationListeners(onProcessNotifications);
     const { status } = await checkNotifications();
     if (status !== RESULTS.GRANTED) {
       console.log('configureNotifications: Permissions not granted');
@@ -567,8 +634,8 @@ const configureNotifications = async (onProcessNotifications?: () => void): Prom
 
     ensureAndroidNotificationChannel();
 
-    if (notificationSubscriptions.length === 0) {
-      notificationSubscriptions = [
+    if (remoteNotificationSubscriptions.length === 0) {
+      remoteNotificationSubscriptions = [
         Notifications.events().registerRemoteNotificationsRegistered(async event => {
           console.log('processing event', event);
           const token = createPushToken(event.deviceToken);
@@ -593,30 +660,8 @@ const configureNotifications = async (onProcessNotifications?: () => void): Prom
           console.log('Remote notification registration denied');
           settlePendingRegistration(false);
         }),
-        Notifications.events().registerNotificationReceivedForeground(async (notification, completion) => {
-          await storeIncomingNotification(notification, { foreground: true, userInteraction: false }, completion);
-        }),
-        Notifications.events().registerNotificationReceivedBackground(async (notification, completion) => {
-          await storeIncomingNotification(notification, { foreground: false, userInteraction: false }, completion);
-        }),
-        Notifications.events().registerNotificationOpened(async (notification, completion) => {
-          try {
-            await storeIncomingNotification(notification, { foreground: false, userInteraction: true });
-          } finally {
-            completion();
-          }
-        }),
       ];
     }
-
-    Notifications.getInitialNotification()
-      .then(async initialNotification => {
-        if (initialNotification) {
-          console.log('App was launched by a push notification:', initialNotification);
-          await storeIncomingNotification(initialNotification, { foreground: false, userInteraction: true });
-        }
-      })
-      .catch(error => console.error('Failed to retrieve initial notification:', error));
 
     // waiting and returning actual result of remote pushes registration: success or failure
     return await waitForRemoteRegistration();
@@ -626,9 +671,8 @@ const configureNotifications = async (onProcessNotifications?: () => void): Prom
   }
 };
 
-export const isNotificationsCapable = hasGmsSync() || hasHmsSync() || Platform.OS !== 'android';
-
-export const getPushToken = async (): Promise<TPushToken> => {
+export const getPushToken = async (): Promise<TPushToken | null> => {
+  if (!isNotificationsCapable) return null;
   try {
     const token = await AsyncStorage.getItem(PUSH_TOKEN);
     return JSON.parse(String(token)) as TPushToken;
@@ -674,6 +718,7 @@ const getLevels = async () => {
  * @returns {Promise<object>} Response object from API rest call
  */
 export const unsubscribe = async (addresses: string[], hashes: string[], txids: string[]) => {
+  if (!isNotificationsCapable) return;
   if (!Array.isArray(addresses) || !Array.isArray(hashes) || !Array.isArray(txids)) {
     throw new Error('No addresses, hashes, or txids provided');
   }
@@ -729,11 +774,14 @@ export const getDeliveredNotifications: () => Promise<Record<string, any>[]> = (
       return Promise.resolve([]);
     }
 
-    return Notifications.ios
-      .getDeliveredNotifications()
-      .then(notifications =>
-        notifications.map(notification => normalizeNotificationPayload(notification, { foreground: true, userInteraction: false })),
-      );
+    return Notifications.ios.getDeliveredNotifications().then(notifications =>
+      notifications.map(notification =>
+        normalizeNotificationPayload(notification, {
+          foreground: true,
+          userInteraction: false,
+        }),
+      ),
+    );
   } catch (error) {
     console.error('Error getting delivered notifications:', error);
     throw error;
@@ -757,6 +805,7 @@ export const removeAllDeliveredNotifications = () => {
 };
 
 export const isNotificationsEnabled = async () => {
+  if (!isNotificationsCapable) return false;
   try {
     const levels = await getLevels();
     const token = await getPushToken();
@@ -797,6 +846,8 @@ export const initializeNotifications = async (onProcessNotifications?: () => voi
   console.log('initializeNotifications: Starting initialization');
 
   try {
+    configureNotificationListeners(onProcessNotifications);
+    if (!isNotificationsCapable) return;
     const noAndDontAskFlag = await AsyncStorage.getItem(NOTIFICATIONS_NO_AND_DONT_ASK_FLAG);
     console.log('initializeNotifications: No ask flag status:', noAndDontAskFlag);
 

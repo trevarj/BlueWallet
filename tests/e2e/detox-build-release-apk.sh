@@ -28,10 +28,15 @@ if [[ "$USE_FASTLANE" == "1" ]]; then
 	RELEASE_APK=$(find android/app/build/outputs/apk/release -name "*.apk" -print0 | xargs -0 ls -t | head -n 1)
 	TEST_APK=android/app/build/outputs/apk/androidTest/release/app-release-androidTest.apk
 else
+	bash scripts/build-bhwi-android.sh
 	# Build release and androidTest APKs using Gradle (x86_64 by default for emulator speed).
 	# Override with E2E_ANDROID_ARCHS when building for real devices.
 	GRADLE_ARCH_ARGS=()
 	ARCHITECTURES=${E2E_ANDROID_ARCHS:-x86_64}
+	case "$ARCHITECTURES" in
+		arm64-v8a|x86_64|arm64-v8a,x86_64|x86_64,arm64-v8a) ;;
+		*) echo "E2E_ANDROID_ARCHS must contain only arm64-v8a and x86_64" >&2; exit 1 ;;
+	esac
 	GRADLE_ARCH_ARGS+=("-PreactNativeArchitectures=${ARCHITECTURES}")
 	(cd android && ./gradlew assembleRelease assembleReleaseAndroidTest -DtestBuildType=release "${GRADLE_ARCH_ARGS[@]}")
 	RELEASE_APK=./android/app/build/outputs/apk/release/app-release.apk
@@ -81,3 +86,5 @@ fi
 
 "$APKSIGNER_BIN" sign --ks detox.keystore --ks-pass=pass:123456 "$RELEASE_APK"
 "$APKSIGNER_BIN" sign --ks detox.keystore --ks-pass=pass:123456 "$TEST_APK"
+"$APKSIGNER_BIN" verify "$RELEASE_APK"
+"$APKSIGNER_BIN" verify "$TEST_APK"

@@ -100,6 +100,7 @@ jest.mock('react-native-permissions', () => require('react-native-permissions/mo
 jest.mock('react-native-device-info', () => {
   return {
     getUniqueId: jest.fn().mockReturnValue('uniqueId'),
+    getBundleId: jest.fn().mockReturnValue('io.bluewallet.bluewallet'),
     getSystemName: jest.fn(),
     getDeviceType: jest.fn().mockReturnValue(false),
     hasGmsSync: jest.fn().mockReturnValue(true),
@@ -248,7 +249,11 @@ jest.mock('react-native-fs', () => {
     TemporaryDirectoryPath: '/mock/Temporary',
     LibraryDirectoryPath: '/mock/Library',
     PicturesDirectoryPath: '/mock/Pictures',
-    __mockFsHelpers: { setExists, clearExists, reset: () => mockFsExisting.clear() },
+    __mockFsHelpers: {
+      setExists,
+      clearExists,
+      reset: () => mockFsExisting.clear(),
+    },
   };
 });
 
@@ -567,7 +572,10 @@ jest.mock('react-native-keychain', () => {
     // SECURE_HARDWARE in the happy path. Tests override per-case via
     // mockResolvedValueOnce when they need a downgrade scenario.
     getSecurityLevel: jest.fn(async () => 'SECURE_HARDWARE'),
-    __mockKeychainHelpers: { reset: () => mockKeychainCreds.clear(), store: mockKeychainCreds },
+    __mockKeychainHelpers: {
+      reset: () => mockKeychainCreds.clear(),
+      store: mockKeychainCreds,
+    },
   };
 });
 

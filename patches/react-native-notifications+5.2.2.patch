@@ -34,3 +34,17 @@ index c7bf71c..08022ff 100644
              Bundle tokenMap = new Bundle();
              tokenMap.putString("deviceToken", sToken);
              mJsIOHelper.sendEventToJS(TOKEN_RECEIVED_EVENT_NAME, tokenMap, reactContext);
+diff --git a/node_modules/react-native-notifications/lib/android/app/src/main/java/com/wix/reactnativenotifications/RNNotificationsModule.java b/node_modules/react-native-notifications/lib/android/app/src/main/java/com/wix/reactnativenotifications/RNNotificationsModule.java
+--- a/node_modules/react-native-notifications/lib/android/app/src/main/java/com/wix/reactnativenotifications/RNNotificationsModule.java
++++ b/node_modules/react-native-notifications/lib/android/app/src/main/java/com/wix/reactnativenotifications/RNNotificationsModule.java
+@@ -145,6 +145,10 @@ public class RNNotificationsModule extends ReactContextBaseJavaModule implements
+     protected void startFcmIntentService(String extraFlag) {
+         final Context appContext = getReactApplicationContext().getApplicationContext();
++        final String packageName = appContext.getPackageName();
++        if ("io.bluewallet.bluewallet.bhwi".equals(packageName) || "io.bluewallet.bluewallet.bhwi.testnet".equals(packageName)) {
++            return;
++        }
+         final Intent tokenFetchIntent = new Intent(appContext, FcmInstanceIdRefreshHandlerService.class);
+         tokenFetchIntent.putExtra(extraFlag, true);
+         FcmInstanceIdRefreshHandlerService.enqueueWork(appContext, tokenFetchIntent);
+     }

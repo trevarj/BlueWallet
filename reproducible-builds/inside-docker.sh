@@ -9,6 +9,7 @@ npm config set fetch-retry-mintimeout 20000
 npm config set fetch-retry-maxtimeout 120000
 
 npm ci --omit=dev
+bash scripts/build-bhwi-android.sh
 
 cd android
 ./gradlew --no-daemon --no-build-cache assembleRelease

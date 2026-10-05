@@ -27,6 +27,6 @@ docker run --platform linux/amd64 --rm \
   -e KEYSTORE_PASSWORD \
   -v "$OUT":/build \
   "$IMAGE_NAME" \
-  bash /app/inside-docker.sh
+  nix develop --no-write-lock-file path:/app -c bash /app/reproducible-builds/inside-docker.sh
 
 log "Signed APK saved in $OUT"

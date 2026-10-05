@@ -36,8 +36,22 @@ delivered.
 **Upstream:** https://github.com/wix/react-native-notifications/issues/1071 (open)
 
 Added in BlueWallet PR https://github.com/BlueWallet/BlueWallet/pull/8424
-during a React Native bump. Remove once `react-native-notifications`
-ships New-Architecture-safe token delivery.
+during a React Native bump. When `react-native-notifications` ships
+New-Architecture-safe token delivery, remove those token-delivery hunks
+but retain the experimental identity gate below.
+
+**BHWI identity isolation:** also gates `RNNotificationsModule.startFcmIntentService()`
+for exactly `io.bluewallet.bluewallet.bhwi` and `io.bluewallet.bluewallet.bhwi.testnet`.
+Without a Firebase client for those experimental IDs, the native module's automatic
+app-init refresh would otherwise call `FirebaseMessaging.getInstance().getToken()`
+and crash before the JavaScript remote-push guard runs. Local notification posting,
+drawer initialization, received/opened events and initial-notification retrieval
+remain active; other Android identities and iOS retain their existing behavior.
+
+**Upstream source:** [native initialization and refresh entry](https://github.com/wix/react-native-notifications/blob/aa5a0f3acf31f6f09b8785defc3805c1af1296db/lib/android/app/src/main/java/com/wix/reactnativenotifications/RNNotificationsModule.java),
+[explicit token retrieval](https://github.com/wix/react-native-notifications/blob/aa5a0f3acf31f6f09b8785defc3805c1af1296db/lib/android/app/src/main/java/com/wix/reactnativenotifications/fcm/FcmToken.java).
+No upstream issue is filed for this app-specific identity gate; retain it while
+these experimental IDs have no Firebase configuration.
 
 ---
 

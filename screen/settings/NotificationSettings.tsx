@@ -4,6 +4,7 @@ import {
   getPushToken,
   getStoredNotifications,
   isNotificationsEnabled,
+  isNotificationsCapable,
   setLevels,
   tryToObtainPermissions,
   cleanUserOptOutFlag,
@@ -131,6 +132,7 @@ const NotificationSettings: React.FC = () => {
   };
 
   useEffect(() => {
+    if (!isNotificationsCapable) return;
     (async () => {
       try {
         const isDisabledByUser = (await AsyncStorage.getItem(NOTIFICATIONS_NO_AND_DONT_ASK_FLAG)) === 'true';
@@ -186,6 +188,16 @@ const NotificationSettings: React.FC = () => {
       setIsLoading(false);
     }
   }, []);
+
+  if (!isNotificationsCapable) {
+    return (
+      <SettingsScrollView>
+        <SettingsSection>
+          <SettingsFootnote>{loc.notifications.unavailable}</SettingsFootnote>
+        </SettingsSection>
+      </SettingsScrollView>
+    );
+  }
 
   return (
     <SettingsScrollView>

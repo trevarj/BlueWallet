@@ -12,6 +12,8 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    env:
+      NIX_CONFIG: "experimental-features = nix-command flakes"
 
     steps:
     - name: Checkout
@@ -58,9 +60,17 @@ jobs:
       with:
         distribution: 'temurin'
         java-version: '17'
+    - name: Install pinned Nix for Android and the BHWI source producer
+      run: |
+        curl -fsS https://releases.nixos.org/nix/nix-2.31.2/nix-2.31.2-x86_64-linux.tar.xz -o /tmp/nix.tar.xz
+        echo "d1f67c86eed016214864ba08bfb9529c307aea7e8fafb74853f96fcc3bfd8a60 /tmp/nix.tar.xz" | sha256sum --check
+        tar -xJf /tmp/nix.tar.xz -C /tmp
+        /tmp/nix-2.31.2-x86_64-linux/install --no-daemon --yes
+        echo "$HOME/.nix-profile/bin" >> "$GITHUB_PATH"
+
 
     - name: Build
-      run: npm run e2e:release-build || npm run e2e:release-build
+      run: nix develop -c npm run e2e:release-build
 
     - name: Package APKs
       run: |

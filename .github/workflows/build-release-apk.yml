@@ -12,6 +12,8 @@ on:
 jobs:
   buildReleaseApk:
     runs-on: ubuntu-24.04
+    env:
+      NIX_CONFIG: "experimental-features = nix-command flakes"
 
     steps:
       - name: Checkout project
@@ -68,6 +70,14 @@ jobs:
         run: |
           yes | sdkmanager --licenses
           sdkmanager "platforms;android-36" "platform-tools" "build-tools;36.0.0" "ndk;28.2.13676358"
+      - name: Install pinned Nix for the BHWI source producer
+        run: |
+          curl -fsS https://releases.nixos.org/nix/nix-2.31.2/nix-2.31.2-x86_64-linux.tar.xz -o /tmp/nix.tar.xz
+          echo "d1f67c86eed016214864ba08bfb9529c307aea7e8fafb74853f96fcc3bfd8a60 /tmp/nix.tar.xz" | sha256sum --check
+          tar -xJf /tmp/nix.tar.xz -C /tmp
+          /tmp/nix-2.31.2-x86_64-linux/install --no-daemon --yes
+          echo "$HOME/.nix-profile/bin" >> "$GITHUB_PATH"
+
 
       - name: Install Node Modules
         run: npm ci --omit=dev --yes

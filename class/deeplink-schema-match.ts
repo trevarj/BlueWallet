@@ -3,6 +3,7 @@ import * as bitcoin from 'bitcoinjs-lib';
 import URL from 'url';
 import { readFileOutsideSandbox } from '../blue_modules/fs';
 import { Chain } from '../models/bitcoinUnits';
+import { appScheme } from '../models/appScheme';
 import { WatchOnlyWallet } from './wallets/watch-only-wallet';
 import Azteco from './azteco';
 import { ContactList } from './contact-list';
@@ -27,7 +28,7 @@ class DeeplinkSchemaMatch {
       lowercaseString.startsWith('bitcoin:') ||
       lowercaseString.startsWith('lightning:') ||
       lowercaseString.startsWith('blue:') ||
-      lowercaseString.startsWith('bluewallet:') ||
+      lowercaseString.startsWith(`${appScheme}:`) ||
       lowercaseString.startsWith('lapp:')
     );
   }
@@ -43,7 +44,12 @@ class DeeplinkSchemaMatch {
   static navigationRouteFor(
     event: { url: string },
     completionHandler: (args: TCompletionHandlerParams) => void,
-    context: TContext = { wallets: [], saveToDisk: () => {}, addWallet: () => {}, setSharedCosigner: () => {} },
+    context: TContext = {
+      wallets: [],
+      saveToDisk: () => {},
+      addWallet: () => {},
+      setSharedCosigner: () => {},
+    },
   ) {
     if (event.url === null) {
       return;
@@ -52,10 +58,14 @@ class DeeplinkSchemaMatch {
       return;
     }
 
-    if (event.url.toLowerCase().startsWith('bluewallet:bitcoin:') || event.url.toLowerCase().startsWith('bluewallet:lightning:')) {
-      event.url = event.url.substring(11);
-    } else if (event.url.toLocaleLowerCase().startsWith('bluewallet://widget?action=')) {
-      event.url = event.url.substring('bluewallet://'.length);
+    const appPrefix = `${appScheme}:`;
+    const lowercaseUrl = event.url.toLowerCase();
+    if (/^bluewallet[^:]*:/.test(lowercaseUrl) && !lowercaseUrl.startsWith(appPrefix)) return;
+
+    if (lowercaseUrl.startsWith(`${appPrefix}bitcoin:`) || lowercaseUrl.startsWith(`${appPrefix}lightning:`)) {
+      event.url = event.url.substring(appPrefix.length);
+    } else if (lowercaseUrl.startsWith(`${appScheme}://widget?action=`)) {
+      event.url = event.url.substring(`${appScheme}://`.length);
     }
 
     if (DeeplinkSchemaMatch.isWidgetAction(event.url)) {
@@ -96,7 +106,13 @@ class DeeplinkSchemaMatch {
               },
             ]);
           } else if (action === 'openReceive') {
-            completionHandler(['LNDCreateInvoiceRoot', { screen: 'LNDCreateInvoice', params: { walletID: wallet.getID() } }]);
+            completionHandler([
+              'LNDCreateInvoiceRoot',
+              {
+                screen: 'LNDCreateInvoice',
+                params: { walletID: wallet.getID() },
+              },
+            ]);
           }
         }
       }
@@ -222,7 +238,7 @@ class DeeplinkSchemaMatch {
     } else {
       const urlObject = URL.parse(event.url, true); // eslint-disable-line n/no-deprecated-api
       (async () => {
-        if (urlObject.protocol === 'bluewallet:' || urlObject.protocol === 'lapp:' || urlObject.protocol === 'blue:') {
+        if (urlObject.protocol === `${appScheme}:` || urlObject.protocol === 'lapp:' || urlObject.protocol === 'blue:') {
           switch (urlObject.host) {
             case 'setelectrumserver':
               completionHandler([
@@ -254,7 +270,7 @@ class DeeplinkSchemaMatch {
    * @return {string|boolean}
    */
   static getServerFromSetElectrumServerAction(url: string): string | false {
-    if (!url.startsWith('bluewallet:setelectrumserver') && !url.startsWith('setelectrumserver')) return false;
+    if (!url.startsWith(`${appScheme}:setelectrumserver`) && !url.startsWith('setelectrumserver')) return false;
     const splt = url.split('server=');
     if (splt[1]) return decodeURIComponent(splt[1]);
     return false;
@@ -268,7 +284,7 @@ class DeeplinkSchemaMatch {
    * @return {string|boolean}
    */
   static getUrlFromSetLndhubUrlAction(url: string): string | false {
-    if (!url.startsWith('bluewallet:setlndhuburl') && !url.startsWith('setlndhuburl')) return false;
+    if (!url.startsWith(`${appScheme}:setlndhuburl`) && !url.startsWith('setlndhuburl')) return false;
     const splt = url.split('url=');
     if (splt[1]) return decodeURIComponent(splt[1]);
     return false;

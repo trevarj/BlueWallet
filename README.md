@@ -37,7 +37,7 @@ node --version && npm --version
 * In your console:
 
 ```
-git clone https://github.com/BlueWallet/BlueWallet.git
+git clone --branch trevarj/bhwi-integration https://github.com/trevarj/BlueWallet.git
 cd BlueWallet
 npm install
 ```
@@ -45,6 +45,25 @@ npm install
 Please make sure that your console is running the most stable versions of npm and node (even-numbered versions).
 
 * To run on Android:
+
+This branch installs **BlueWallet BHWI PoC** as `io.bluewallet.bluewallet.bhwi`, separately from production BlueWallet. Android requires API 28+ and arm64-v8a or x86_64; the Kotlin namespace and React Native component are unchanged. Remote push is unavailable for this Android identity; iOS and local notifications are unchanged.
+
+Install Nix with flakes enabled, then enter the pinned consumer shell (Node 24, JDK 17, SDK/build tools 36 and NDK 28.2.13676358). Android library modules use the same NDK pin rather than AGP's default version:
+
+```sh
+nix develop --max-jobs 1 --cores 2
+bluewallet-android # Linux only: enter the private build environment
+npm ci
+bash scripts/build-bhwi-android.sh
+```
+Outside that environment, the Nix shell normalizes dependency executable shebangs before npm lifecycle commands. Inside it, npm uses `/bin/bash` directly. Neither path modifies host system files or disables install scripts. Native gem builds use pinned Bash through GNU make's `SHELL` override, with libffi and pkg-config supplied by the same shell.
+Bundler is pinned to 2.6.9 to match `Gemfile.lock`. The project records narrow native-install-script approvals in `package.json`; no blanket script trust or disabled lifecycle scripts are required.
+
+Build defaults favor desktop responsiveness over throughput: Gradle uses two workers, no parallel projects, a 3 GiB heap/768 MiB metaspace, and in-process Kotlin compilation. CMake, Cargo, Bundler, Make and Metro use two jobs; Node has a 2 GiB old-space limit and two-thread V8/libuv pools; nested JVMs see two processors. The producer applies the same limits, with Nix realization at one job/two cores; both ABIs and provenance checks remain. These limits do not hard-cap total RSS. On Linux, prefix the consumer command below with `nice -n 10 taskset -c CPU_A,CPU_B`, selecting two CPUs from your allowed affinity set.
+
+On Linux, run Android builds inside `bluewallet-android` from that shell, for example `nice -n 10 taskset -c CPU_A,CPU_B bluewallet-android -c 'bash android/gradlew -p android --no-daemon --max-workers=2 --no-parallel :app:assembleDebug'`. This private FHS environment supplies the shell/loader paths required by AGP Prefab and NDK tools without changing host system paths.
+
+The producer fetches the exact public source revision in `bhwi-ffi.commit` from canonical `https://github.com/wizardsardine/bhwi-ffi.git`, generates native bindings in its own JDK 21/SDK 35 Nix shell, and publishes `com.wizardsardine:bhwi-ffi-android:0.1.0-bluewallet.d420872fb11f6620d5d60a45ea6fdad1fe74a47b` to ignored `.bhwi-maven`. A temporary consumer-owned Gradle init script outside the clean source checkout overrides only the library's release publication version to `0.1.0-bluewallet.<full-source-SHA>`, leaving upstream files unchanged and avoiding a floating artifact coordinate. The temporary script and source checkout are removed on exit. Gradle resolves this group only there, never from a developer Maven cache or a remote fallback. The consumer producer records source/publication/lock/binding identity and verifies both published AAR ABIs against the generated native inputs; upstream no longer provides a `--provenance` command. Do not copy a sibling checkout's AAR. `.envrc` enables the same shell with direnv.
 
 You will now need to either connect an Android device to your computer or run an emulated Android device using AVD Manager which comes shipped with Android Studio. To run an emulator using AVD Manager:
 
@@ -59,10 +78,10 @@ You will now need to either connect an Android device to your computer or run an
 Once you connected an Android device or launched an emulator, run this:
 
 ```
-npx react-native run-android
+bluewallet-android -c 'npm run android' # Linux; use npm run android directly on macOS
 ```
 
-The above command will build the app and install it. Once you launch the app it will take some time for all of the dependencies to load. Once everything loads up, you should have the built app running.
+The above command builds and installs only the experimental app. Start Metro with `npm start` in another consumer-shell terminal. App-owned Android links and wallet shortcuts use `bluewallet-bhwi:`; iOS retains `bluewallet:`. Bitcoin, Lightning, file/content and legacy `blue:`/`lapp:` handlers remain shared protocols and may offer both installed apps. `android:relaunch`, `android:restart` and `android:uninstall` target only the PoC identity.
 
 * To run on iOS:
 

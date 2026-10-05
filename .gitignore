@@ -34,6 +34,9 @@ build/
 local.properties
 *.iml
 reproducible-builds/build
+.bhwi-build/
+.bhwi-maven/
+.direnv/
 
 # testing
 /coverage

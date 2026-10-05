@@ -10,6 +10,9 @@ android/app/build/
 android/.kotlin/
 android/app/.cxx/
 reproducible-builds/build
+.bhwi-build/
+.bhwi-maven/
+.direnv/
 
 # Git
 .git/

@@ -88,6 +88,7 @@ module AndroidHelpers
   end
 
   def assemble_release!(log_path:)
+    Actions.sh("bash scripts/build-bhwi-android.sh")
     Actions.sh("cd android && ./gradlew assembleRelease --no-daemon --stacktrace --console=plain | tee #{log_path}") do |status|
       UI.user_error!("Gradle assembleRelease failed") unless status.success?
     end

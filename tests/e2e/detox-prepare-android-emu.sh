@@ -4,14 +4,17 @@
 
 set -euo pipefail
 
-SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
 if [ -z "$SDK" ]; then
   echo "Error: ANDROID_HOME or ANDROID_SDK_ROOT must be set" >&2
   exit 1
 fi
 
-# Prefer cmdline-tools/latest, fall back to tools/bin
-if [ -x "$SDK/cmdline-tools/latest/bin/sdkmanager" ]; then
+# Prefer supplied tools, including Nix's versioned command-line tools.
+if command -v sdkmanager >/dev/null && command -v avdmanager >/dev/null; then
+  SDKMANAGER=$(command -v sdkmanager)
+  AVDMANAGER=$(command -v avdmanager)
+elif [ -x "$SDK/cmdline-tools/latest/bin/sdkmanager" ]; then
   SDKMANAGER="$SDK/cmdline-tools/latest/bin/sdkmanager"
   AVDMANAGER="$SDK/cmdline-tools/latest/bin/avdmanager"
 elif [ -x "$SDK/tools/bin/sdkmanager" ]; then

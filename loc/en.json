@@ -332,6 +332,7 @@
   "notifications": {
     "would_you_like_to_receive_notifications": "Would you like to receive notifications when you get incoming payments?",
     "notifications_subtitle": "Incoming payments and transaction confirmations",
+    "unavailable": "Remote push notifications are unavailable on this device or in this build.",
     "redact_notifications": "Hide payment details",
     "redact_notifications_subtitle": "Notifications won't show amounts or transaction info on your lock screen.",
     "no_and_dont_ask": "No, and do not ask me again.",

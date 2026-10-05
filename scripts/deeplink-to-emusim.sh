@@ -203,10 +203,11 @@ JSON
       xcrun simctl openurl "$udid" "$selectedLink"
     fi
   else
+    selectedLink="${selectedLink/#bluewallet:/bluewallet-bhwi:}"
     echo -e "\nSending deep link to Android emulator: $selectedLink\n"
     # Strip version info to get the emulator device ID
     emuId="${dev%% *}"
-    adb -s "$emuId" shell am start -a android.intent.action.VIEW -d "$selectedLink"
+    adb -s "$emuId" shell am start -a android.intent.action.VIEW -d "$selectedLink" -p io.bluewallet.bluewallet.bhwi
   fi
   break
 done

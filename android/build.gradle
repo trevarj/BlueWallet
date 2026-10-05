@@ -2,7 +2,7 @@
 
 buildscript {
     ext {
-        minSdkVersion = 24
+        minSdkVersion = 28
       
         buildToolsVersion = "36.0.0"
         compileSdkVersion = 36
@@ -11,7 +11,7 @@ buildscript {
         googlePlayServicesIidVersion = "16.0.1"
         firebaseVersion = "21.1.0"
         ndkVersion = "28.2.13676358"
-        kotlinVersion = '2.1.20'
+        kotlinVersion = '2.2.21'
     }
     repositories {
         google()
@@ -20,8 +20,7 @@ buildscript {
     dependencies {
         classpath("com.android.tools.build:gradle:8.13.2")
         classpath("com.facebook.react:react-native-gradle-plugin")
-        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin")
-	    classpath 'com.google.gms:google-services:4.5.0'  // Google Services plugin
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlinVersion")
         classpath("com.bugsnag:bugsnag-android-gradle-plugin:8.2.0")
     }
 }
@@ -55,6 +54,15 @@ def addJcenterShim = { repoContainer, logger ->
 
 allprojects {
     repositories {
+        exclusiveContent {
+            forRepository {
+                maven {
+                    name = "bhwiProjectLocal"
+                    url = uri("$rootDir/../.bhwi-maven")
+                }
+            }
+            filter { includeGroup "com.wizardsardine" }
+        }
         maven {
             url("$rootDir/../node_modules/detox/Detox-android")
         }
@@ -74,7 +82,13 @@ allprojects {
 	            }
 	        }
         google()
-                maven { url 'https://www.jitpack.io' }
+        maven {
+            url 'https://www.jitpack.io'
+            content {
+                includeGroup "com.github.mik3y"
+                includeGroup "com.github.limpbrains"
+            }
+        }
     }
 }
 
@@ -133,8 +147,9 @@ subprojects { project ->
             android {
                 buildToolsVersion "36.0.0"
                 compileSdkVersion 36
+                ndkVersion rootProject.ext.ndkVersion
                  defaultConfig {
-                    minSdkVersion 24
+                    minSdkVersion 28
                 }
 
                 compileOptions {
