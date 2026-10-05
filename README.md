@@ -14,15 +14,13 @@ Website: [bluewallet.io](https://bluewallet.io)
 
 Community: [telegram group](https://t.me/bluewallet)
 
-* Private keys never leave your device
-* Lightning Network supported
-* SegWit-first. Replace-By-Fee support
-* Encryption. Plausible deniability
-* And many more [features...](https://bluewallet.io/features)
-
+- Private keys never leave your device
+- Lightning Network supported
+- SegWit-first. Replace-By-Fee support
+- Encryption. Plausible deniability
+- And many more [features...](https://bluewallet.io/features)
 
 <img src="https://i.imgur.com/hHYJnMj.png" width="100%">
-
 
 ## BUILD & RUN IT
 
@@ -34,7 +32,7 @@ To view the version of Node and npm in your environment, run the following in yo
 node --version && npm --version
 ```
 
-* In your console:
+- In your console:
 
 ```
 git clone --branch trevarj/bhwi-integration https://github.com/trevarj/BlueWallet.git
@@ -44,11 +42,13 @@ npm install
 
 Please make sure that your console is running the most stable versions of npm and node (even-numbered versions).
 
-* To run on Android:
+- To run on Android:
 
 This branch has two isolated Android profiles: **BHWI PoC** (`mainnet`, `io.bluewallet.bluewallet.bhwi`) and **BHWI PoC Testnet3** (`testnet`, `io.bluewallet.bluewallet.bhwi.testnet`). Both require API 28+ and arm64-v8a or x86_64; the Kotlin namespace, React Native component and private `${applicationId}.provider` are unchanged. Remote push is unavailable for both Android identities; iOS and local notifications are unchanged.
 
 The Android BHWI module supports Ledger, BitBox02, Coldcard, Trezor and KeepKey over their exact USB packet interfaces, Jade over explicitly approved allowlisted USB serial adapters, Specter-DIY over an explicitly approved CDC adapter, and Ledger/Jade over BLE. These are source-supported transport paths, not claims of physical certification. USB host and BLE are optional device features: USB access, Android 12+ Bluetooth scan/connect, and pre-Android 12 scan location permission are requested only when a hardware-wallet action needs them. Disconnecting or backgrounding an owned session cancels its discovery, secure native prompts and transport work; hardware-wallet handles, passphrases and BitBox02 pairing material are not persisted.
+
+Import Wallet can connect through that module and persist a verified singlesig hardware public account as a watch-only wallet. Multisig vault creation uses the same connection screen for BIP48 wrapped/native SegWit public cosigners; neither flow imports private key material.
 
 The external profile selector remains `testnet`, but its internal Gradle flavor is `bitcoinTestnet`: AGP reserves flavor names starting with `test`. Tasks/modes use `BitcoinTestnet`/`bitcoinTestnet`, and generated APK directories/basenames use `bitcoinTestnet`. Mainnet is unchanged. This internal name does not change the application ID, Testnet3 label, scheme or native `testnet` value.
 
@@ -60,6 +60,7 @@ bluewallet-android # Linux only: enter the private build environment
 npm ci
 bash scripts/build-bhwi-android.sh
 ```
+
 Outside that environment, the Nix shell normalizes dependency executable shebangs before npm lifecycle commands. Inside it, npm uses `/bin/bash` directly. Neither path modifies host system files or disables install scripts. Native gem builds use pinned Bash through GNU make's `SHELL` override, with libffi and pkg-config supplied by the same shell.
 Bundler is pinned to 2.6.9 to match `Gemfile.lock`. The project records narrow native-install-script approvals in `package.json`; no blanket script trust or disabled lifecycle scripts are required.
 
@@ -75,7 +76,7 @@ You will now need to either connect an Android device to your computer or run an
 2. Click on "Open an existing Android Studio Project"
 3. Open `build.gradle` file under `BlueWallet/android/` folder
 4. Android Studio will take some time to set things up. Once everything is set up, go to `Tools` -> `AVD Manager`.
-    * 📝 This option [may take some time to appear in the menu](https://stackoverflow.com/questions/47173708/why-avd-manager-options-are-not-showing-in-android-studio) if you're opening the project in a freshly-installed version of Android Studio.
+   - 📝 This option [may take some time to appear in the menu](https://stackoverflow.com/questions/47173708/why-avd-manager-options-are-not-showing-in-android-studio) if you're opening the project in a freshly-installed version of Android Studio.
 5. Click on "Create Virtual Device..." and go through the steps to create a virtual device
 6. Launch your newly created virtual device by clicking the `Play` button under `Actions` column
 
@@ -126,8 +127,7 @@ The in-test non-emulator `device.id` rejection remains independent defense in de
 
 BrowserStack CI passes `profile:mainnet` / `profile:testnet` to `upload_to_browserstack_and_comment`, validated by the same Fastlane profile helper as builds. Its PR comment header is `### APK Successfully Uploaded to BrowserStack (<profile>)`: replacement deletes only previous comments starting with that profile-specific header. Thus a testnet upload preserves an existing mainnet result and replaces only testnet results (and vice versa), even when the two matrix jobs fetch comments at different times.
 
-
-* To run on iOS:
+- To run on iOS:
 
 ```
 npx pod-install
@@ -135,13 +135,15 @@ npm start
 ```
 
 In another terminal window within the BlueWallet folder:
+
 ```
 npx react-native run-ios
 ```
+
 **To debug BlueWallet on the iOS Simulator, you must choose a Rosetta-compatible iOS Simulator. This can be done by navigating to the Product menu in Xcode, selecting Destination Architectures, and then opting for "Show Both." This action will reveal the simulators that support Rosetta.
 **
 
-* To run on macOS using Mac Catalyst:
+- To run on macOS using Mac Catalyst:
 
 ```
 npx pod-install
@@ -156,7 +158,6 @@ Open ios/BlueWallet.xcworkspace. Once the project loads, select the scheme/targe
 npm run test
 ```
 
-
 ## LICENSE
 
 MIT
@@ -170,6 +171,7 @@ Grab an issue from [the backlog](https://github.com/BlueWallet/BlueWallet/issues
 We accept translations via [Transifex](https://explore.transifex.com/bluewallet/bluewallet/)
 
 To participate you need to:
+
 1. Sign up to Transifex
 2. Find BlueWallet project
 3. Send join request
@@ -192,7 +194,6 @@ Builds automated and tested with BrowserStack
 Bugs reported via BugSnag
 
 <a href="https://www.bugsnag.com"><img src="https://images.typeform.com/images/QKuaAssrFCq7/image/default" width="160px"></a>
-
 
 ## RESPONSIBLE DISCLOSURE
 

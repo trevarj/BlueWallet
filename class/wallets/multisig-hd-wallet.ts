@@ -21,6 +21,8 @@ import {
   isExtendedPrivateKey,
   isExtendedPublicKey,
 } from './extended-key';
+import { isBhwiSinglesigFormat, parseHardwareWalletAssociation, sameBhwiExtendedPublicKey } from '../../blue_modules/bhwi';
+import type { HardwareWalletAssociation } from '../../blue_modules/bhwi';
 
 const ECPair = ECPairFactory(ecc);
 const bip32 = BIP32Factory(ecc);
@@ -92,6 +94,52 @@ export class MultisigHDWallet extends AbstractHDElectrumWallet {
   private _cosignerXpubCache: Record<string, string> = {}; // cosigner+path+passphrase -> xpub, since deriving xpub from seed is expensive
   public _derivationPath: string = '';
   public gap_limit: number = 20;
+  private _hardwareWalletAssociations: HardwareWalletAssociation[] = [];
+
+  static override fromJson(obj: string): MultisigHDWallet {
+    const wallet = super.fromJson(obj) as unknown as MultisigHDWallet;
+    const restored = Array.isArray(wallet._hardwareWalletAssociations) ? wallet._hardwareWalletAssociations : [];
+    wallet._hardwareWalletAssociations = restored
+      .map(parseHardwareWalletAssociation)
+      .filter((association): association is HardwareWalletAssociation => !!association && wallet.hasHardwareCosigner(association));
+    return wallet;
+  }
+
+  private hasHardwareCosigner(association: HardwareWalletAssociation): boolean {
+    if (isBhwiSinglesigFormat(association.format)) return false;
+    if (association.format === 'multisig-native' && !this.isNativeSegwit()) return false;
+    if (association.format === 'multisig-wrapped' && !this.isWrappedSegwit()) return false;
+    return this._cosigners.some(
+      (cosigner, index) =>
+        this._cosignersFingerprints[index]?.toLowerCase() === association.fingerprint &&
+        (this._cosignersCustomPaths[index] || this.getDerivationPath()) === association.path &&
+        sameBhwiExtendedPublicKey(cosigner, association.xpub),
+    );
+  }
+
+  addHardwareWalletAssociation(value: HardwareWalletAssociation): void {
+    const association = parseHardwareWalletAssociation(value);
+    if (!association || !this.hasHardwareCosigner(association)) throw new Error('Invalid hardware wallet cosigner association');
+    if (
+      !this._hardwareWalletAssociations.some(
+        existing =>
+          existing.family === association.family &&
+          existing.fingerprint === association.fingerprint &&
+          existing.path === association.path &&
+          existing.xpub === association.xpub &&
+          existing.format === association.format,
+      )
+    ) {
+      this._hardwareWalletAssociations.push(association);
+    }
+  }
+
+  getHardwareWalletAssociations(): HardwareWalletAssociation[] {
+    return this._hardwareWalletAssociations
+      .map(parseHardwareWalletAssociation)
+      .filter((association): association is HardwareWalletAssociation => !!association && this.hasHardwareCosigner(association))
+      .map(association => ({ ...association }));
+  }
 
   isLegacy() {
     return this._isLegacy;
@@ -1088,6 +1136,7 @@ export class MultisigHDWallet extends AbstractHDElectrumWallet {
   }
 
   prepareForSerialization() {
+    this._hardwareWalletAssociations = this.getHardwareWalletAssociations();
     // deleting structures that cant be serialized
     // @ts-ignore I dont want to make it optional
     delete this._nodes;
@@ -1297,22 +1346,20 @@ export class MultisigHDWallet extends AbstractHDElectrumWallet {
   deleteCosigner(fp: string) {
     const foundIndex = this._cosignersFingerprints.indexOf(fp);
     if (foundIndex === -1) throw new Error('Cant find cosigner by fingerprint');
+    const deletedFingerprint = this._cosignersFingerprints[foundIndex].toLowerCase();
+    const deletedPath = this._cosignersCustomPaths[foundIndex] || this.getDerivationPath();
+    const deletedKey = this._cosigners[foundIndex];
 
-    this._cosignersFingerprints = this._cosignersFingerprints.filter((el, index) => {
-      return index !== foundIndex;
-    });
-
-    this._cosigners = this._cosigners.filter((el, index) => {
-      return index !== foundIndex;
-    });
-
-    this._cosignersCustomPaths = this._cosignersCustomPaths.filter((el, index) => {
-      return index !== foundIndex;
-    });
-
-    this._cosignersPassphrases = this._cosignersPassphrases.filter((el, index) => {
-      return index !== foundIndex;
-    });
+    this._cosignersFingerprints = this._cosignersFingerprints.filter((_el, index) => index !== foundIndex);
+    this._cosigners = this._cosigners.filter((_el, index) => index !== foundIndex);
+    this._cosignersCustomPaths = this._cosignersCustomPaths.filter((_el, index) => index !== foundIndex);
+    this._cosignersPassphrases = this._cosignersPassphrases.filter((_el, index) => index !== foundIndex);
+    this._hardwareWalletAssociations = this._hardwareWalletAssociations.filter(
+      association =>
+        association.fingerprint !== deletedFingerprint ||
+        association.path !== deletedPath ||
+        !sameBhwiExtendedPublicKey(association.xpub, deletedKey),
+    );
   }
 
   getFormat() {

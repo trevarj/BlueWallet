@@ -4,6 +4,7 @@ import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 import triggerHapticFeedback from '../../blue_modules/hapticFeedback';
 import { HDSegwitBech32Wallet } from '../../class/wallets/hd-segwit-bech32-wallet';
 import { MultisigHDWallet } from '../../class/wallets/multisig-hd-wallet';
+import { convertExtendedKey } from '../../class/wallets/extended-key';
 import type { TWallet } from '../../class/wallets/types';
 import WalletsAdd from '../../screen/wallets/Add';
 import ImportCustomDerivationPath from '../../screen/wallets/ImportCustomDerivationPath';
@@ -167,12 +168,23 @@ jest.mock('../../components/BlueTextCentered', () => 'BlueTextCentered');
 jest.mock('../../components/SafeArea', () => 'SafeArea');
 jest.mock('../../components/SafeAreaScrollView', () => 'SafeAreaScrollView');
 jest.mock('../../components/Icon', () => 'Icon');
-jest.mock('../../components/MultipleStepsListItem', () => ({
-  __esModule: true,
-  default: 'MultipleStepsListItem',
-  MultipleStepsListItemButtonType: { Full: 'Full' },
-  MultipleStepsListItemDashType: { Top: 'Top', TopAndBottom: 'TopAndBottom' },
-}));
+jest.mock('../../components/MultipleStepsListItem', () => {
+  const ReactModule = require('react');
+  const { Pressable, Text } = require('react-native');
+  return {
+    __esModule: true,
+    default: ({ button }: { button?: { disabled?: boolean; onPress?: () => void; testID?: string; text?: string } }) =>
+      button
+        ? ReactModule.createElement(
+            Pressable,
+            { disabled: button.disabled, onPress: button.onPress, testID: button.testID },
+            ReactModule.createElement(Text, null, button.text),
+          )
+        : null,
+    MultipleStepsListItemButtonType: { Full: 'Full' },
+    MultipleStepsListItemDashType: { Top: 'Top', TopAndBottom: 'TopAndBottom' },
+  };
+});
 jest.mock('../../components/BlueSpacing', () => ({
   BlueSpacing10: 'BlueSpacing10',
   BlueSpacing20: 'BlueSpacing20',
@@ -306,5 +318,55 @@ describe('wallet creation persistence gates', () => {
     fireEvent.press(view.getByTestId('CreateButton'));
     await waitFor(expectSameRetry);
     expect((mockAddAndSaveWallet.mock.calls[0][0] as MultisigHDWallet).getCosigner(1)).toBe(MNEMONIC);
+  });
+
+  it('opens the shared hardware account route only for supported BIP48 vault formats', async () => {
+    mockRouteParams = { m: 1, n: 1, format: MultisigHDWallet.FORMAT_P2WSH, walletLabel: 'Hardware vault' };
+    const native = render(<WalletsAddMultisigStep2 />);
+    fireEvent.press(await native.findByTestId('VaultHardwareCosigner1'));
+    expect(mockNavigate).toHaveBeenCalledWith('HardwareWalletAccount', {
+      mode: 'multisig-cosigner',
+      format: 'multisig-native',
+      returnTo: 'WalletsAddMultisigStep2',
+    });
+    native.unmount();
+
+    mockNavigate.mockClear();
+    mockRouteParams = { m: 1, n: 1, format: MultisigHDWallet.FORMAT_P2SH, walletLabel: 'Legacy vault' };
+    const legacy = render(<WalletsAddMultisigStep2 />);
+    expect(legacy.queryByTestId('VaultHardwareCosigner1')).toBeNull();
+  });
+
+  it('returns a hardware account into the active multisig slot and persists its exact public binding', async () => {
+    const hardwarePath = MultisigHDWallet.PATH_NATIVE_SEGWIT;
+    const hardwareXpub = convertExtendedKey(MultisigHDWallet.seedToXpub(MNEMONIC, hardwarePath), 'legacy');
+    const hardwareAccount = {
+      family: 'ledger' as const,
+      fingerprint: 'd34db33f',
+      path: hardwarePath,
+      xpub: hardwareXpub,
+      format: 'multisig-native' as const,
+    };
+    mockRouteParams = {
+      m: 1,
+      n: 1,
+      format: MultisigHDWallet.FORMAT_P2WSH,
+      walletLabel: 'Hardware vault',
+      hardwareAccount,
+    };
+    const view = render(<WalletsAddMultisigStep2 />);
+    await waitFor(() => {
+      const create = view.getByTestId('CreateButton');
+      expect(create.props.accessibilityState?.disabled ?? create.props.disabled ?? false).toBe(false);
+    });
+
+    fireEvent.press(view.getByTestId('CreateButton'));
+    await waitFor(() => expect(mockAddAndSaveWallet).toHaveBeenCalledTimes(1));
+    const staged = mockAddAndSaveWallet.mock.calls[0][0] as MultisigHDWallet;
+    expect(staged.getHardwareWalletAssociations()).toEqual([hardwareAccount]);
+
+    fireEvent.press(view.getByTestId('CreateButton'));
+    await waitFor(expectSameRetry);
+    expect(mockAddAndSaveWallet.mock.calls[1][0]).toBe(staged);
   });
 });

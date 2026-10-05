@@ -6,10 +6,18 @@ import { HDLegacyP2PKHWallet } from './hd-legacy-p2pkh-wallet';
 import { HDSegwitBech32Wallet } from './hd-segwit-bech32-wallet';
 import { HDSegwitP2SHWallet } from './hd-segwit-p2sh-wallet';
 import { LegacyWallet } from './legacy-wallet';
-import { THDWalletForWatchOnly } from './types';
+import type { THDWalletForWatchOnly } from './types';
 import { HDTaprootWallet } from './hd-taproot-wallet';
 import { WalletDescriptor } from '../wallet-descriptor.ts';
 import { convertExtendedKey, decodeExtendedKey, decodeRecognizedExtendedKey, looksLikeExtendedKey } from './extended-key';
+import type { Account, DeviceInfo } from '../../codegen/NativeBhwi';
+import {
+  isBhwiSinglesigFormat,
+  parseHardwareWalletAssociation,
+  sameBhwiExtendedPublicKey,
+  verifyBhwiAccount,
+} from '../../blue_modules/bhwi';
+import type { BhwiSinglesigFormat, HardwareWalletAssociation } from '../../blue_modules/bhwi';
 
 const bip32 = BIP32Factory(ecc);
 
@@ -25,6 +33,65 @@ export class WatchOnlyWallet extends LegacyWallet {
   public _hdWalletInstance?: THDWalletForWatchOnly;
   use_with_hardware_wallet = false;
   masterFingerprint: number = 0;
+  private hardwareWalletAssociation?: HardwareWalletAssociation;
+
+  static override fromJson(obj: string): WatchOnlyWallet {
+    const wallet = super.fromJson(obj) as unknown as WatchOnlyWallet;
+    const restoredAssociation = parseHardwareWalletAssociation(wallet.hardwareWalletAssociation);
+    if (wallet.hardwareWalletAssociation !== undefined && !restoredAssociation) wallet.use_with_hardware_wallet = false;
+    wallet.hardwareWalletAssociation = restoredAssociation;
+    return wallet;
+  }
+
+  static fromBhwiAccount(info: DeviceInfo, account: Account, requestedPath: string, requestedFormat: BhwiSinglesigFormat): WatchOnlyWallet {
+    const association = verifyBhwiAccount(info, requestedPath, requestedFormat, account);
+    if (!account.descriptor) throw new Error('Hardware account descriptor is missing');
+    const wallet = new WatchOnlyWallet();
+    wallet.setSecret(account.descriptor).init();
+    wallet.setMasterFingerprintFromHex(association.fingerprint);
+    if (
+      !wallet.valid() ||
+      !wallet.isHd() ||
+      wallet.getMasterFingerprintHex() !== association.fingerprint ||
+      wallet.getDerivationPath() !== association.path ||
+      !sameBhwiExtendedPublicKey(wallet.getSecret(), association.xpub)
+    ) {
+      throw new Error('Hardware account does not match initialized wallet');
+    }
+    wallet.setHardwareWalletAssociation(association);
+    return wallet;
+  }
+
+  private matchesHardwareWalletAssociation(association: HardwareWalletAssociation): boolean {
+    const expectedSegwitType: Record<BhwiSinglesigFormat, NonNullable<WatchOnlyWallet['segwitType']>> = {
+      legacy: 'p2pkh',
+      'nested-segwit': 'p2sh(p2wpkh)',
+      'native-segwit': 'p2wpkh',
+      taproot: 'p2tr',
+    };
+    return (
+      isBhwiSinglesigFormat(association.format) &&
+      this.valid() &&
+      this.isHd() &&
+      this.getMasterFingerprintHex() === association.fingerprint &&
+      this.getDerivationPath() === association.path &&
+      this.segwitType === expectedSegwitType[association.format] &&
+      sameBhwiExtendedPublicKey(this.getSecret(), association.xpub)
+    );
+  }
+
+  setHardwareWalletAssociation(value: HardwareWalletAssociation): this {
+    const association = parseHardwareWalletAssociation(value);
+    if (!association || !this.matchesHardwareWalletAssociation(association)) throw new Error('Invalid hardware wallet association');
+    this.hardwareWalletAssociation = association;
+    this.use_with_hardware_wallet = true;
+    return this;
+  }
+
+  getHardwareWalletAssociation(): HardwareWalletAssociation | undefined {
+    const association = parseHardwareWalletAssociation(this.hardwareWalletAssociation);
+    return association && this.matchesHardwareWalletAssociation(association) ? { ...association } : undefined;
+  }
 
   /**
    * @inheritDoc
@@ -77,6 +144,10 @@ export class WatchOnlyWallet extends LegacyWallet {
    * Creates the appropriate HD wallet class from descriptor evidence, an explicit path, or the selected-network key format.
    */
   init() {
+    const serializedAssociation = this.hardwareWalletAssociation;
+    const associationEnabled = this.use_with_hardware_wallet;
+    const restoredAssociation = parseHardwareWalletAssociation(serializedAssociation);
+    this.hardwareWalletAssociation = undefined;
     let hdWalletInstance: THDWalletForWatchOnly;
 
     // Check script type first (most reliable - parsed from descriptor)
@@ -129,11 +200,20 @@ export class WatchOnlyWallet extends LegacyWallet {
       delete hdWalletInstance._node0;
     }
     this._hdWalletInstance = hdWalletInstance;
+    if (restoredAssociation && this.matchesHardwareWalletAssociation(restoredAssociation)) {
+      this.hardwareWalletAssociation = restoredAssociation;
+      this.use_with_hardware_wallet = associationEnabled;
+    } else if (serializedAssociation !== undefined) {
+      this.use_with_hardware_wallet = false;
+    }
 
     return this;
   }
 
   prepareForSerialization() {
+    const association = this.getHardwareWalletAssociation();
+    if (this.hardwareWalletAssociation !== undefined && !association) this.use_with_hardware_wallet = false;
+    this.hardwareWalletAssociation = association;
     if (this._hdWalletInstance) {
       delete this._hdWalletInstance._node0;
       delete this._hdWalletInstance._node1;

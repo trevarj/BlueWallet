@@ -71,7 +71,7 @@ it.each([
   const selection = { walletId: 'wallet', accountId: null };
 
   expect(bhwi.isBhwiAvailable()).toBe(false);
-  await expect(bhwi.createBhwiSession(selection, () => selection)).rejects.toMatchObject({ code: 'BHWI_UNAVAILABLE' });
+  await expect(bhwi.startBhwiSession(selection, () => selection)).rejects.toMatchObject({ code: 'BHWI_UNAVAILABLE' });
   if (native) expect(native.discover).not.toHaveBeenCalled();
 });
 
@@ -79,26 +79,27 @@ it('creates one 16-byte owner and leaves network selection to the immutable nati
   const native = nativeModule();
   const bhwi = load('android', native);
   const selection = { walletId: 'wallet', accountId: 'account' };
-  const session = await bhwi.createBhwiSession(selection, () => selection);
+  const session = await bhwi.startBhwiSession(selection, () => selection);
 
   await session.discover('usb');
 
   expect(native.discover).toHaveBeenCalledWith('000102030405060708090a0b0c0d0e0f', 'usb');
   expect(native.discover.mock.calls[0]).toHaveLength(2);
-  await expect(bhwi.createBhwiSession(selection, () => selection)).rejects.toMatchObject({ code: 'BHWI_BUSY' });
+  await expect(bhwi.startBhwiSession(selection, () => selection)).rejects.toMatchObject({ code: 'BHWI_BUSY' });
   await session.disconnect();
 });
 
 it('retires the exact owner instead of publishing a stale result after selection changes', async () => {
-  let resolveDiscovery: (devices: unknown[]) => void = () => undefined;
-  const discovery = new Promise<unknown[]>(resolve => {
-    resolveDiscovery = resolve;
-  });
+  const { promise: discovery, resolve: resolveDiscovery } = (
+    Promise as typeof Promise & {
+      withResolvers<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (reason?: unknown) => void };
+    }
+  ).withResolvers<unknown[]>();
   const native = nativeModule();
   native.discover = jest.fn(() => discovery);
   const bhwi = load('android', native);
   let current = { walletId: 'wallet-a', accountId: 'account-a' };
-  const session = await bhwi.createBhwiSession(current, () => current);
+  const session = await bhwi.startBhwiSession(current, () => current);
   const pending = session.discover('usb');
 
   current = { walletId: 'wallet-b', accountId: 'account-b' };
@@ -106,7 +107,7 @@ it('retires the exact owner instead of publishing a stale result after selection
 
   await expect(pending).rejects.toMatchObject({ code: 'BHWI_CANCELLED' });
   expect(native.disconnect).toHaveBeenCalledWith('000102030405060708090a0b0c0d0e0f');
-  const replacement = await bhwi.createBhwiSession(current, () => current);
+  const replacement = await bhwi.startBhwiSession(current, () => current);
   await replacement.disconnect();
 });
 
@@ -115,7 +116,7 @@ it('uses the centralized JS permission request and never starts native BLE disco
   const native = nativeModule();
   const bhwi = load('android', native);
   const selection = { walletId: 'wallet', accountId: null };
-  const session = await bhwi.createBhwiSession(selection, () => selection);
+  const session = await bhwi.startBhwiSession(selection, () => selection);
 
   await expect(session.discover('ble')).rejects.toMatchObject({ code: 'BHWI_PERMISSION_DENIED' });
   expect(PermissionsAndroid.requestMultiple).toHaveBeenCalledWith([
@@ -132,7 +133,7 @@ it('maps native codes to redacted errors and never falls back from signing', asy
   native.signPsbt.mockRejectedValue({ code: 'BHWI_DEVICE_ERROR', message: 'secret transport payload' });
   const bhwi = load('android', native);
   const selection = { walletId: 'wallet', accountId: null };
-  const session = await bhwi.createBhwiSession(selection, () => selection);
+  const session = await bhwi.startBhwiSession(selection, () => selection);
 
   await expect(session.signPsbt('cHNidP8=', null)).rejects.toEqual(
     expect.objectContaining({ code: 'BHWI_DEVICE_ERROR', message: 'The hardware wallet reported an error.' }),

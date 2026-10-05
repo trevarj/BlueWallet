@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { useNavigation, RouteProp, useFocusEffect, useRoute } from '@react-navigation/native';
+import { useNavigation, useFocusEffect, useRoute } from '@react-navigation/native';
+import type { RouteProp } from '@react-navigation/native';
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import Animated from 'react-native-reanimated';
 import Icon from '../../components/Icon';
@@ -8,6 +9,10 @@ import { MultisigCosigner } from '../../class/multisig-cosigner';
 import { HDSegwitBech32Wallet } from '../../class/wallets/hd-segwit-bech32-wallet';
 import { MultisigHDWallet } from '../../class/wallets/multisig-hd-wallet';
 import { convertExtendedKey } from '../../class/wallets/extended-key';
+import { parseHardwareWalletAssociation, sameBhwiExtendedPublicKey } from '../../blue_modules/bhwi';
+import type { BhwiMultisigFormat, HardwareWalletAssociation } from '../../blue_modules/bhwi';
+import type { AddWalletStackParamList } from '../../navigation/AddWalletStack';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import presentAlert from '../../components/Alert';
 import Button from '../../components/Button';
 import { useTheme } from '../../components/themes';
@@ -23,18 +28,7 @@ import MultipleStepsListItem, {
 import { useScreenProtect } from '../../hooks/useScreenProtect';
 import { BlueSpacing20 } from '../../components/BlueSpacing';
 
-type MultisigStep2Params = {
-  m: number;
-  n: number;
-  format: number | string;
-  walletLabel: string;
-  onBarScanned?: { data?: string } | string;
-  sheetAction?: string;
-  sheetImportText?: string;
-  sheetAskPassphrase?: boolean;
-};
-
-type CosignerTuple = [string, string | false, string | false, string?];
+type CosignerTuple = [string, string | false, string | false, string?, HardwareWalletAssociation?];
 type StaticCache = Record<string, string>;
 
 const staticCache: StaticCache = {};
@@ -46,8 +40,8 @@ const WalletsAddMultisigStep2 = () => {
   const { enableScreenProtect, disableScreenProtect } = useScreenProtect();
   const { colors } = useTheme();
 
-  const navigation = useNavigation();
-  const route = useRoute<RouteProp<{ WalletsAddMultisigStep2: MultisigStep2Params }, 'WalletsAddMultisigStep2'>>();
+  const navigation = useNavigation<NativeStackNavigationProp<AddWalletStackParamList, 'WalletsAddMultisigStep2'>>();
+  const route = useRoute<RouteProp<AddWalletStackParamList, 'WalletsAddMultisigStep2'>>();
   const params = route.params;
   const { m, n, format, walletLabel } = params;
   const [cosigners, setCosigners] = useState<CosignerTuple[]>([]); // array of cosigners user provided. if format [cosigner, fp, path]
@@ -63,6 +57,7 @@ const WalletsAddMultisigStep2 = () => {
   const { isPrivacyBlurEnabled, isElectrumDisabled } = useSettings();
   const data = useRef(new Array(n).fill(null));
   const stagedWallet = useRef<MultisigHDWallet | undefined>(undefined);
+  const handledHardwareAccount = useRef<HardwareWalletAssociation | undefined>(undefined);
 
   useFocusEffect(
     useCallback(() => {
@@ -171,6 +166,7 @@ const WalletsAddMultisigStep2 = () => {
         const fp = (cc[1] || getFpCacheForMnemonics(cc[0], cc[3])) as string;
         const path = typeof cc[2] === 'string' && cc[2] ? cc[2] : getPath();
         w.addCosigner(cc[0], fp, path, cc[3]);
+        if (cc[4]) w.addHardwareWalletAssociation(cc[4]);
       }
       w.setLabel(walletLabel);
       if (!isElectrumDisabled) {
@@ -350,6 +346,62 @@ const WalletsAddMultisigStep2 = () => {
     },
     [cosigners, getPath],
   );
+
+  const hardwareMultisigFormat: BhwiMultisigFormat | undefined =
+    format === MultisigHDWallet.FORMAT_P2WSH
+      ? 'multisig-native'
+      : format === MultisigHDWallet.FORMAT_P2SH_P2WSH || format === MultisigHDWallet.FORMAT_P2SH_P2WSH_ALT
+        ? 'multisig-wrapped'
+        : undefined;
+
+  const addHardwareCosigner = useCallback(
+    (value: HardwareWalletAssociation) => {
+      if (stagedWallet.current || !hardwareMultisigFormat) return;
+      const association = parseHardwareWalletAssociation(value);
+      if (!association || association.format !== hardwareMultisigFormat) {
+        presentAlert({ message: loc.multisig.invalid_cosigner });
+        return;
+      }
+      if (
+        cosigners.some(existing => {
+          const existingXpub = MultisigHDWallet.isXpubValid(existing[0]) ? existing[0] : getXpubCacheForMnemonics(existing[0], existing[3]);
+          return sameBhwiExtendedPublicKey(existingXpub, association.xpub);
+        })
+      ) {
+        presentAlert({ message: loc.multisig.this_cosigner_is_already_imported });
+        return;
+      }
+      const xpub = convertExtendedKey(association.xpub, hardwareMultisigFormat === 'multisig-native' ? 'multisigNative' : 'multisigNested');
+      if (!MultisigHDWallet.isXpubForMultisig(xpub)) {
+        presentAlert({ message: loc.multisig.invalid_cosigner });
+        return;
+      }
+      const hardwareCosigner: CosignerTuple = [xpub, association.fingerprint, association.path, undefined, association];
+      setCosigners([...cosigners, hardwareCosigner]);
+    },
+    [cosigners, getXpubCacheForMnemonics, hardwareMultisigFormat],
+  );
+
+  const importHardwareCosigner = useCallback(() => {
+    if (stagedWallet.current || !hardwareMultisigFormat) return;
+    navigation.navigate('HardwareWalletAccount', {
+      mode: 'multisig-cosigner',
+      format: hardwareMultisigFormat,
+      returnTo: 'WalletsAddMultisigStep2',
+    });
+  }, [hardwareMultisigFormat, navigation]);
+
+  useEffect(() => {
+    if (!params.hardwareAccount) {
+      handledHardwareAccount.current = undefined;
+      return;
+    }
+    const account = params.hardwareAccount;
+    if (handledHardwareAccount.current === account) return;
+    handledHardwareAccount.current = account;
+    navigation.setParams({ hardwareAccount: undefined });
+    addHardwareCosigner(account);
+  }, [addHardwareCosigner, navigation, params.hardwareAccount]);
 
   const isValidMnemonicSeed = (mnemonicSeed: string) => {
     const hd = new HDSegwitBech32Wallet();
@@ -624,6 +676,19 @@ const WalletsAddMultisigStep2 = () => {
               dashes={MultipleStepsListItemDashType.TopAndBottom}
               checked={isChecked}
             />
+            {hardwareMultisigFormat && (
+              <MultipleStepsListItem
+                button={{
+                  testID: 'VaultHardwareCosigner' + String(el.index + 1),
+                  onPress: importHardwareCosigner,
+                  buttonType: MultipleStepsListItemButtonType.Full,
+                  text: loc.wallets.hardware_import,
+                  disabled: vaultKeyData.isLoading,
+                }}
+                dashes={MultipleStepsListItemDashType.TopAndBottom}
+                checked={isChecked}
+              />
+            )}
             <MultipleStepsListItem
               button={{
                 testID: 'VaultCosignerImport' + String(el.index + 1),

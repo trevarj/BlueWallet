@@ -6,6 +6,7 @@ import AndroidKeyboardAccessoryDock from '../../components/AndroidKeyboardAccess
 import BlueFormLabel from '../../components/BlueFormLabel';
 import BlueFormMultiInput from '../../components/BlueFormMultiInput';
 import Button from '../../components/Button';
+import BlueButtonLink from '../../components/BlueButtonLink';
 import {
   DoneAndDismissKeyboardInputAccessory,
   DoneAndDismissKeyboardInputAccessoryViewID,
@@ -199,6 +200,10 @@ const ImportWallet = () => {
     }
   };
 
+  const importHardwareWallet = useCallback(() => {
+    navigation.navigate('HardwareWalletAccount', { mode: 'wallet' });
+  }, [navigation]);
+
   useEffect(() => {
     if (isPrivacyBlurEnabled) {
       enableScreenProtect();
@@ -251,6 +256,8 @@ const ImportWallet = () => {
       <View style={styles.center}>
         <Button disabled={importText.trim().length === 0} title={loc.wallets.import_do_import} testID="DoImport" onPress={handleImport} />
       </View>
+      <BlueSpacing20 />
+      <BlueButtonLink testID="ImportHardwareWallet" title={loc.wallets.hardware_import} onPress={importHardwareWallet} />
       {Platform.OS === 'ios' && keyboardAccessory}
     </SafeAreaScrollView>
   );

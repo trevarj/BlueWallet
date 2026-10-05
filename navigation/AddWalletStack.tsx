@@ -19,6 +19,7 @@ import { withLazySuspense } from './LazyLoadingIndicator';
 import { ScanQRCodeParamList } from './DetailViewStackParamList';
 import { navigationGuardRouter } from './navigationGuard';
 import { mainnetServicesEnabled } from '../models/bitcoinNetwork';
+import type { BhwiMultisigFormat, HardwareWalletAssociation } from '../blue_modules/bhwi';
 
 type HeaderRightRenderer = NonNullable<NativeStackNavigationOptions['headerRight']>;
 
@@ -41,6 +42,15 @@ export type AddWalletStackParamList = {
     clearClipboardMenuState?: boolean;
     headerRight?: HeaderRightRenderer;
   };
+  HardwareWalletAccount:
+    | {
+        mode: 'wallet';
+      }
+    | {
+        mode: 'multisig-cosigner';
+        format: BhwiMultisigFormat;
+        returnTo: 'WalletsAddMultisigStep2';
+      };
   ImportWalletDiscovery: {
     importText: string;
     askPassphrase: boolean;
@@ -76,11 +86,12 @@ export type AddWalletStackParamList = {
     n: number;
     walletLabel: string;
     format: string;
-    onBarScanned?: string;
+    onBarScanned?: { data?: string } | string;
     sheetAction?: string;
     sheetImportText?: string;
     sheetAskPassphrase?: boolean;
     headerRight?: HeaderRightRenderer;
+    hardwareAccount?: HardwareWalletAssociation;
   };
   WalletsAddMultisigVaultKeySheet: {
     keyIndex: number;
@@ -106,6 +117,7 @@ const ImportCustomDerivationPath = lazy(() => import('../screen/wallets/ImportCu
 const ImportWalletDiscovery = lazy(() => import('../screen/wallets/ImportWalletDiscovery'));
 const ImportSpeed = lazy(() => import('../screen/wallets/ImportSpeed'));
 const ImportWallet = lazy(() => import('../screen/wallets/ImportWallet'));
+const HardwareWalletAccount = lazy(() => import('../screen/wallets/HardwareWalletAccount'));
 const PleaseBackup = lazy(() => import('../screen/wallets/PleaseBackup'));
 const PleaseBackupLNDHub = lazy(() => import('../screen/wallets/pleaseBackupLNDHub'));
 const ProvideEntropy = lazy(() => import('../screen/wallets/ProvideEntropy'));
@@ -122,6 +134,7 @@ const AddComponent = withLazySuspense(WalletsAdd);
 const ImportWalletDiscoveryComponent = withLazySuspense(ImportWalletDiscovery);
 const ImportCustomDerivationPathComponent = withLazySuspense(ImportCustomDerivationPath);
 const ImportWalletComponent = withLazySuspense(ImportWallet);
+const HardwareWalletAccountComponent = withLazySuspense(HardwareWalletAccount);
 const ImportSpeedComponent = withLazySuspense(ImportSpeed);
 const PleaseBackupComponent = withLazySuspense(PleaseBackup);
 const PleaseBackupLNDHubComponent = withLazySuspense(PleaseBackupLNDHub);
@@ -303,6 +316,11 @@ const AddWalletStack = () => {
         options={navigationStyle({ statusBarStyle: 'light', title: loc.wallets.import_derivation_title })(theme)}
       />
       <Stack.Screen name="ImportWallet" component={ImportWalletComponent} options={createImportWalletOptions(theme)} />
+      <Stack.Screen
+        name="HardwareWalletAccount"
+        component={HardwareWalletAccountComponent}
+        options={navigationStyle({ title: loc.wallets.hardware_title })(theme)}
+      />
       <Stack.Screen
         name="ImportSpeed"
         component={ImportSpeedComponent}
