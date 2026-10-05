@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useReducer, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Keyboard, Linking, StyleSheet, TextInput, View } from 'react-native';
 import Animated, { Layout } from 'react-native-reanimated';
 import assert from 'assert';
@@ -29,6 +29,7 @@ import { hexToUint8Array } from '../../blue_modules/uint8array-extras';
 import { LightningArkWallet } from '../../class/wallets/lightning-ark-wallet.ts';
 import { resetScanWasBBQR } from '../../helpers/scan-qr.ts';
 import { mainnetServicesEnabled } from '../../models/bitcoinNetwork';
+import type { TWallet } from '../../class/wallets/types';
 
 enum ButtonSelected {
   // @ts-ignore: Return later to update
@@ -109,6 +110,8 @@ const WalletsAdd: React.FC = () => {
   // State
   const [state, dispatch] = useReducer(walletReducer, initialState);
   const [backdoorPressed, setBackdoorPressed] = useState(0);
+  const pendingWallet = useRef<TWallet | undefined>(undefined);
+  const [hasPendingWallet, setHasPendingWallet] = useState(false);
   const isLoading = state.isLoading;
   const walletBaseURI = state.walletBaseURI;
   const label = state.label;
@@ -135,7 +138,7 @@ const WalletsAdd: React.FC = () => {
             : state.selectedWalletType;
   const entropy = entropyHex ? hexToUint8Array(entropyHex) : undefined;
   const entropyBytesProvided = providedEntropyBytes ?? 0;
-  const { navigate, goBack, setParams } = useNavigation<NavigationProps>();
+  const { navigate, setParams } = useNavigation<NavigationProps>();
   const stylesHook = {
     advancedText: {
       color: colors.feeText,
@@ -182,6 +185,7 @@ const WalletsAdd: React.FC = () => {
 
   const confirmResetEntropy = useCallback(
     (newWalletType: ButtonSelected) => {
+      if (pendingWallet.current) return;
       if (entropy || words) {
         Alert.alert(
           loc.wallets.add_entropy_reset_title,
@@ -245,6 +249,24 @@ const WalletsAdd: React.FC = () => {
   const setLabel = (value: string) => {
     dispatch({ type: 'SET_LABEL', payload: value });
   };
+  const persistCreatedWallet = async (wallet: TWallet) => {
+    if (!pendingWallet.current) {
+      pendingWallet.current = wallet;
+      setHasPendingWallet(true);
+      addWallet(wallet);
+    }
+    if (!(await saveToDisk())) {
+      setIsLoading(false);
+      return;
+    }
+
+    triggerHapticFeedback(HapticFeedbackTypes.NotificationSuccess);
+    if (wallet instanceof HDLegacyP2PKHWallet || wallet instanceof HDSegwitBech32Wallet || wallet instanceof HDTaprootWallet) {
+      navigate('PleaseBackup', { walletID: wallet.getID() });
+    } else {
+      navigate('PleaseBackupLNDHub', { walletID: wallet.getID() });
+    }
+  };
 
   const createWallet = async () => {
     if (!mainnetServicesEnabled && (selectedWalletType === ButtonSelected.OFFCHAIN || selectedWalletType === ButtonSelected.ARK)) {
@@ -253,11 +275,15 @@ const WalletsAdd: React.FC = () => {
       return;
     }
     setIsLoading(true);
+    if (pendingWallet.current) {
+      await persistCreatedWallet(pendingWallet.current);
+      return;
+    }
 
     if (selectedWalletType === ButtonSelected.OFFCHAIN) {
-      createLightningWallet();
+      await createLightningWallet();
     } else if (selectedWalletType === ButtonSelected.ARK) {
-      createLightningArkWallet();
+      await createLightningArkWallet();
     } else if (selectedWalletType === ButtonSelected.ONCHAIN) {
       let w: HDSegwitBech32Wallet | HDLegacyP2PKHWallet | HDTaprootWallet;
 
@@ -286,25 +312,16 @@ const WalletsAdd: React.FC = () => {
         if (entropy) {
           try {
             await w.generateFromEntropy(entropy);
-          } catch (e: any) {
-            console.log(e.toString());
-            presentAlert({ message: e.toString() });
+          } catch (error: unknown) {
+            console.log(String(error));
+            presentAlert({ message: error instanceof Error ? error.message : String(error) });
+            setIsLoading(false);
             return;
           }
         } else {
           await w.generate();
         }
-        addWallet(w);
-        await saveToDisk();
-
-        triggerHapticFeedback(HapticFeedbackTypes.NotificationSuccess);
-        if (w.type === HDLegacyP2PKHWallet.type || w.type === HDSegwitBech32Wallet.type || w.type === HDTaprootWallet.type) {
-          navigate('PleaseBackup', {
-            walletID: w.getID(),
-          });
-        } else {
-          goBack();
-        }
+        await persistCreatedWallet(w);
       }
     } else if (selectedWalletType === ButtonSelected.VAULT) {
       setIsLoading(false);
@@ -330,25 +347,14 @@ const WalletsAdd: React.FC = () => {
       }
       await wallet.createAccount();
       await wallet.authorize();
-    } catch (Err: any) {
+    } catch (error: unknown) {
       setIsLoading(false);
-      console.warn('lnd create failure', Err);
-      if (Err.message) {
-        return presentAlert({ message: Err.message });
-      } else {
-        return presentAlert({ message: loc.wallets.add_lndhub_error });
-      }
-      // giving app, not adding anything
+      console.warn('lnd create failure', error);
+      return presentAlert({ message: error instanceof Error && error.message ? error.message : loc.wallets.add_lndhub_error });
     }
 
     await wallet.generate();
-    addWallet(wallet);
-    await saveToDisk();
-
-    triggerHapticFeedback(HapticFeedbackTypes.NotificationSuccess);
-    navigate('PleaseBackupLNDHub', {
-      walletID: wallet.getID(),
-    });
+    await persistCreatedWallet(wallet);
   };
 
   const createLightningArkWallet = async () => {
@@ -357,23 +363,17 @@ const WalletsAdd: React.FC = () => {
     wallet.setLabel(label || loc.wallets.details_title);
     try {
       await wallet.generate();
-    } catch (Err: any) {
+    } catch (error: unknown) {
       setIsLoading(false);
-      console.warn('lightning ark create failure', Err);
-      return presentAlert({ message: Err.message ?? '' });
+      console.warn('lightning ark create failure', error);
+      return presentAlert({ message: error instanceof Error ? error.message : String(error) });
     }
 
-    addWallet(wallet);
-    await saveToDisk();
-
-    triggerHapticFeedback(HapticFeedbackTypes.NotificationSuccess);
-    navigate('PleaseBackupLNDHub', {
-      walletID: wallet.getID(),
-    });
+    await persistCreatedWallet(wallet);
   };
 
   const navigateToImportWallet = () => {
-    navigate('ImportWallet');
+    if (!pendingWallet.current) navigate('ImportWallet');
   };
 
   const handleOnVaultButtonPressed = () => {
@@ -382,6 +382,7 @@ const WalletsAdd: React.FC = () => {
   };
 
   const handleOnBitcoinButtonPressed = () => {
+    if (pendingWallet.current) return;
     setBackdoorPressed(prevState => prevState + 1);
     Keyboard.dismiss();
     setSelectedWalletType(ButtonSelected.ONCHAIN);
@@ -424,7 +425,7 @@ const WalletsAdd: React.FC = () => {
             placeholder={loc.wallets.add_placeholder}
             onChangeText={setLabel}
             style={styles.textInputCommon}
-            editable={!isLoading}
+            editable={!isLoading && !hasPendingWallet}
             underlineColorAndroid="transparent"
           />
         </View>
@@ -484,7 +485,7 @@ const WalletsAdd: React.FC = () => {
                   autoCorrect={false}
                   placeholderTextColor="#81868e"
                   style={styles.textInputCommon}
-                  editable={!isLoading}
+                  editable={!isLoading && !hasPendingWallet}
                   underlineColorAndroid="transparent"
                 />
               </View>
@@ -508,6 +509,7 @@ const WalletsAdd: React.FC = () => {
                 style={styles.import}
                 title={loc.wallets.add_import_wallet}
                 onPress={navigateToImportWallet}
+                disabled={hasPendingWallet}
               />
               <BlueSpacing40 />
             </>

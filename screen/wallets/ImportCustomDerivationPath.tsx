@@ -72,6 +72,8 @@ const ImportCustomDerivationPath: React.FC = () => {
   const [used, setUsed] = useState<TUsedByPath>({});
   const [selected, setSelected] = useState<string>('');
   const importing = useRef(false);
+  const stagedWallet = useRef<TWallet | undefined>(undefined);
+  const [isSaving, setIsSaving] = useState(false);
   const { isElectrumDisabled } = useSettings();
 
   const debouncedSavePath = useRef(
@@ -186,12 +188,20 @@ const ImportCustomDerivationPath: React.FC = () => {
     },
   });
 
-  const saveWallet = (type: string) => {
-    if (importing.current) return;
+  const saveWallet = async (type: string) => {
+    if (importing.current || wallets[path] === WRONG_PATH) return;
+    const wallet = stagedWallet.current ?? wallets[path][type];
+    if (!wallet) return;
+
     importing.current = true;
-    if (wallets[path] === WRONG_PATH) return;
-    addAndSaveWallet(wallets[path][type]);
-    navigation.getParent()?.goBack();
+    stagedWallet.current = wallet;
+    setIsSaving(true);
+    if (await addAndSaveWallet(wallet)) {
+      navigation.getParent()?.goBack();
+      return;
+    }
+    importing.current = false;
+    setIsSaving(false);
   };
 
   const renderItem = ({ item }: { item: TItem }) => {
@@ -211,10 +221,18 @@ const ImportCustomDerivationPath: React.FC = () => {
         subtitle = loc.wallets.import_derivation_loading;
     }
 
-    return <WalletToImport key={type} title={title} subtitle={subtitle} active={selected === type} onPress={() => setSelected(type)} />;
+    return (
+      <WalletToImport
+        key={type}
+        title={title}
+        subtitle={subtitle}
+        active={selected === type}
+        onPress={() => !stagedWallet.current && setSelected(type)}
+      />
+    );
   };
 
-  const disabled = wallets[path] === WRONG_PATH || wallets[path]?.[selected] === undefined;
+  const disabled = isSaving || wallets[path] === WRONG_PATH || wallets[path]?.[selected] === undefined;
 
   // normalize as typed/pasted (smart quotes, h/H → ') so the stored path is canonical
   const handlePathChange = useCallback((text: string) => {
@@ -237,6 +255,7 @@ const ImportCustomDerivationPath: React.FC = () => {
         placeholderTextColor="#81868e"
         style={[styles.pathInput, stylesHook.pathInput]}
         onChangeText={handlePathChange}
+        editable={!stagedWallet.current}
       />
       <FlatList
         data={items}

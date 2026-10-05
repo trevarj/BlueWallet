@@ -141,7 +141,7 @@ export const selectWalletHistoryNoteUpdates = (
 export const applyWalletHistoryNoteUpdates = async (
   metadata: TTXMetadata,
   updates: ReadonlyMap<string, string>,
-  persist: () => Promise<void>,
+  persist: () => Promise<unknown>,
 ): Promise<void> => {
   const previousMetadata = new Map([...updates.keys()].map(metadataKey => [metadataKey, metadata[metadataKey]]));
   for (const [metadataKey, memo] of updates) metadata[metadataKey] = { memo };

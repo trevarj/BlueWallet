@@ -14,7 +14,7 @@ const createDependencies = (): NavigationGuardDependencies => ({
   isBiometricUseEnabled: jest.fn(async () => false),
   unlockWithBiometrics: jest.fn(async () => true),
   wallets: [],
-  saveToDisk: jest.fn(async () => {}),
+  saveToDisk: jest.fn(async () => true),
   presentWalletExportReminder: jest.fn(async () => {}),
   requestCameraAuthorization: jest.fn(async () => {}),
 });

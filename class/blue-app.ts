@@ -624,49 +624,55 @@ export class BlueApp {
    *
    * @returns {Promise} Result of storage save
    */
-  async saveToDisk(): Promise<void> {
+  async saveToDisk(): Promise<boolean> {
     if (savingInProgress) {
       console.warn('saveToDisk is in progress');
       if (++savingInProgress > 10) presentAlert({ message: 'Critical error. Last actions were not saved' }); // should never happen
-      await new Promise(resolve => setTimeout(resolve, 1000 * savingInProgress)); // sleep
-      return this.saveToDisk();
+      await this.sleep(1000 * savingInProgress);
+      return await this.saveToDisk();
     }
     savingInProgress = 1;
 
     try {
-      const walletsToSave: string[] = []; // serialized wallets
-      let realm;
+      let realm: Realm;
       try {
         realm = await this.getRealmForTransactions();
-      } catch (error: any) {
-        presentAlert({ message: error.message });
+      } catch (error: unknown) {
+        presentAlert({ message: error instanceof Error ? error.message : String(error) });
+        return false;
       }
-      for (const key of this.wallets) {
-        if (typeof key === 'boolean') continue;
-        key.prepareForSerialization();
-        // @ts-ignore wtf is wallet.current? Does it even exist?
-        delete key.current;
-        const keyCloned = Object.assign({}, key); // stripped-down version of a wallet to save to secure keystore
-        if ('_hdWalletInstance' in key) {
-          const k = keyCloned as any & WatchOnlyWallet;
-          k._hdWalletInstance = Object.assign({}, key._hdWalletInstance);
-          k._hdWalletInstance._txs_by_external_index = {};
-          k._hdWalletInstance._txs_by_internal_index = {};
-        }
-        if (realm) this.offloadWalletToRealm(realm, key);
-        // stripping down:
-        if (key._txs_by_external_index) {
-          keyCloned._txs_by_external_index = {};
-          keyCloned._txs_by_internal_index = {};
-        }
 
-        if ('_bip47_instance' in keyCloned) {
-          delete keyCloned._bip47_instance; // since it wont be restored into a proper class instance
-        }
+      const walletsToSave: string[] = []; // serialized wallets
+      try {
+        for (const key of this.wallets) {
+          if (typeof key === 'boolean') continue;
+          key.prepareForSerialization();
+          // @ts-ignore wtf is wallet.current? Does it even exist?
+          delete key.current;
+          const keyCloned = Object.assign({}, key); // stripped-down version of a wallet to save to secure keystore
+          if ('_hdWalletInstance' in key && key._hdWalletInstance) {
+            const hdWalletInstance = Object.assign({}, key._hdWalletInstance);
+            hdWalletInstance._txs_by_external_index = {};
+            hdWalletInstance._txs_by_internal_index = {};
+            const k = keyCloned as unknown as WatchOnlyWallet;
+            k._hdWalletInstance = hdWalletInstance;
+          }
+          this.offloadWalletToRealm(realm, key);
+          // stripping down:
+          if (key._txs_by_external_index) {
+            keyCloned._txs_by_external_index = {};
+            keyCloned._txs_by_internal_index = {};
+          }
 
-        walletsToSave.push(JSON.stringify({ ...keyCloned, type: keyCloned.type }));
+          if ('_bip47_instance' in keyCloned) {
+            delete keyCloned._bip47_instance; // since it wont be restored into a proper class instance
+          }
+
+          walletsToSave.push(JSON.stringify({ ...keyCloned, type: keyCloned.type }));
+        }
+      } finally {
+        realm.close();
       }
-      if (realm) realm.close();
 
       let data: TBucketStorage | string[] /* either a bucket, or an array of encrypted buckets */ = {
         wallets: walletsToSave,
@@ -709,21 +715,30 @@ export class BlueApp {
         data = newData;
       }
 
-      await this.setItem('data', JSON.stringify(data));
-      await this.setItem(BlueApp.FLAG_ENCRYPTED, this.cachedPassword ? '1' : '');
+      const serializedData = JSON.stringify(data);
+      const encryptedFlag = this.cachedPassword ? '1' : '';
+      await this.setItem('data', serializedData);
+      await this.setItem(BlueApp.FLAG_ENCRYPTED, encryptedFlag);
 
-      // now, backing up same data in realm:
+      // Back up the primary secure-storage values in Realm. If this fails after
+      // the primary writes, callers retry the same staged wallet object.
       const realmkeyValue = await this.openRealmKeyValue();
-      this.saveToRealmKeyValue(realmkeyValue, 'data', JSON.stringify(data));
-      this.saveToRealmKeyValue(realmkeyValue, BlueApp.FLAG_ENCRYPTED, this.cachedPassword ? '1' : '');
-      realmkeyValue.close();
-    } catch (error: any) {
-      console.error('save to disk exception:', error.message);
-      presentAlert({ message: 'save to disk exception: ' + error.message });
-      if (error.message.includes('Realm file decryption failed')) {
+      try {
+        this.saveToRealmKeyValue(realmkeyValue, 'data', serializedData);
+        this.saveToRealmKeyValue(realmkeyValue, BlueApp.FLAG_ENCRYPTED, encryptedFlag);
+      } finally {
+        realmkeyValue.close();
+      }
+      return true;
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('save to disk exception:', message);
+      presentAlert({ message: 'save to disk exception: ' + message });
+      if (message.includes('Realm file decryption failed')) {
         console.warn('purging realm key-value database file');
         this.purgeRealmKeyValueFile();
       }
+      return false;
     } finally {
       savingInProgress = 0;
     }

@@ -3,7 +3,6 @@ import { useNavigation, RouteProp, useFocusEffect, useRoute } from '@react-navig
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import Animated from 'react-native-reanimated';
 import Icon from '../../components/Icon';
-import triggerHapticFeedback, { HapticFeedbackTypes } from '../../blue_modules/hapticFeedback';
 import { encodeUR } from '../../blue_modules/ur';
 import { MultisigCosigner } from '../../class/multisig-cosigner';
 import { HDSegwitBech32Wallet } from '../../class/wallets/hd-segwit-bech32-wallet';
@@ -63,6 +62,7 @@ const WalletsAddMultisigStep2 = () => {
   const [askPassphrase, setAskPassphrase] = useState(false);
   const { isPrivacyBlurEnabled, isElectrumDisabled } = useSettings();
   const data = useRef(new Array(n).fill(null));
+  const stagedWallet = useRef<MultisigHDWallet | undefined>(undefined);
 
   useFocusEffect(
     useCallback(() => {
@@ -77,7 +77,7 @@ const WalletsAddMultisigStep2 = () => {
 
   useEffect(() => {
     console.log(currentSharedCosigner);
-    if (currentSharedCosigner) {
+    if (currentSharedCosigner && !stagedWallet.current) {
       (async function () {
         if (await confirm(loc.multisig.shared_key_detected, loc.multisig.shared_key_detected_question)) {
           setImportText(currentSharedCosigner);
@@ -131,7 +131,10 @@ const WalletsAddMultisigStep2 = () => {
     navigation.setOptions({ headerBackVisible: false });
     await sleep(100);
     try {
-      await _onCreate(); // this can fail with "Duplicate fingerprint" error or other
+      if (!(await _onCreate())) {
+        setIsLoading(false);
+        navigation.setOptions({ headerBackVisible: true });
+      }
     } catch (e) {
       setIsLoading(false);
       navigation.setOptions({ headerBackVisible: true });
@@ -141,41 +144,44 @@ const WalletsAddMultisigStep2 = () => {
     }
   };
 
-  const _onCreate = async () => {
-    const w = new MultisigHDWallet();
-    w.setM(m);
-    switch (format) {
-      case MultisigHDWallet.FORMAT_P2WSH:
-        w.setNativeSegwit();
-        w.setDerivationPath(MultisigHDWallet.PATH_NATIVE_SEGWIT);
-        break;
-      case MultisigHDWallet.FORMAT_P2SH_P2WSH:
-      case MultisigHDWallet.FORMAT_P2SH_P2WSH_ALT:
-        w.setWrappedSegwit();
-        w.setDerivationPath(MultisigHDWallet.PATH_WRAPPED_SEGWIT);
-        break;
-      case MultisigHDWallet.FORMAT_P2SH:
-        w.setLegacy();
-        w.setDerivationPath(MultisigHDWallet.PATH_LEGACY);
-        break;
-      default:
-        console.error('Unexpected format:', format);
-        throw new Error('This should never happen');
-    }
-    for (const cc of cosigners) {
-      const fp = (cc[1] || getFpCacheForMnemonics(cc[0], cc[3])) as string;
-      const path = typeof cc[2] === 'string' && cc[2] ? cc[2] : getPath();
-      w.addCosigner(cc[0], fp, path, cc[3]);
-    }
-    w.setLabel(walletLabel);
-    if (!isElectrumDisabled) {
-      await w.fetchBalance();
+  const _onCreate = async (): Promise<boolean> => {
+    let w = stagedWallet.current;
+    if (!w) {
+      w = new MultisigHDWallet();
+      w.setM(m);
+      switch (format) {
+        case MultisigHDWallet.FORMAT_P2WSH:
+          w.setNativeSegwit();
+          w.setDerivationPath(MultisigHDWallet.PATH_NATIVE_SEGWIT);
+          break;
+        case MultisigHDWallet.FORMAT_P2SH_P2WSH:
+        case MultisigHDWallet.FORMAT_P2SH_P2WSH_ALT:
+          w.setWrappedSegwit();
+          w.setDerivationPath(MultisigHDWallet.PATH_WRAPPED_SEGWIT);
+          break;
+        case MultisigHDWallet.FORMAT_P2SH:
+          w.setLegacy();
+          w.setDerivationPath(MultisigHDWallet.PATH_LEGACY);
+          break;
+        default:
+          console.error('Unexpected format:', format);
+          throw new Error('This should never happen');
+      }
+      for (const cc of cosigners) {
+        const fp = (cc[1] || getFpCacheForMnemonics(cc[0], cc[3])) as string;
+        const path = typeof cc[2] === 'string' && cc[2] ? cc[2] : getPath();
+        w.addCosigner(cc[0], fp, path, cc[3]);
+      }
+      w.setLabel(walletLabel);
+      if (!isElectrumDisabled) {
+        await w.fetchBalance();
+      }
+      stagedWallet.current = w;
     }
 
-    addAndSaveWallet(w);
-
-    triggerHapticFeedback(HapticFeedbackTypes.NotificationSuccess);
+    if (!(await addAndSaveWallet(w))) return false;
     navigation.getParent()?.goBack();
+    return true;
   };
 
   const getPath = useCallback(() => {
@@ -231,6 +237,7 @@ const WalletsAddMultisigStep2 = () => {
   );
 
   const generateNewKey = useCallback(() => {
+    if (stagedWallet.current) return;
     const w = new HDSegwitBech32Wallet();
     w.generate().then(() => {
       const cosignersCopy = [...cosigners];
@@ -286,6 +293,7 @@ const WalletsAddMultisigStep2 = () => {
   );
 
   const iHaveMnemonics = useCallback(() => {
+    if (stagedWallet.current) return;
     navigation.navigate('WalletsAddMultisigProvideMnemonicsSheet', {
       importText,
       askPassphrase,
@@ -294,6 +302,7 @@ const WalletsAddMultisigStep2 = () => {
 
   const tryUsingXpub = useCallback(
     async (xpub: string, fp?: string, path?: string) => {
+      if (stagedWallet.current) return;
       if (!MultisigHDWallet.isXpubForMultisig(xpub)) {
         setIsLoading(false);
         setImportText('');
@@ -350,6 +359,7 @@ const WalletsAddMultisigStep2 = () => {
 
   const utilizeMnemonicPhrase = useCallback(
     async (overrideText?: string, overrideAskPassphrase?: boolean) => {
+      if (stagedWallet.current) return;
       const textToUse = overrideText ?? importText;
       const askForPassphrase = overrideAskPassphrase ?? askPassphrase;
       setIsLoading(true);
@@ -405,6 +415,7 @@ const WalletsAddMultisigStep2 = () => {
 
   const onBarScanned = useCallback(
     async (ret: { data?: string } | string) => {
+      if (stagedWallet.current) return;
       const payload = typeof ret === 'string' ? { data: ret } : ret;
       const dataString = payload.data ?? '';
 

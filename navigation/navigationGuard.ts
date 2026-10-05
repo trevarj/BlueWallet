@@ -33,7 +33,7 @@ export type NavigationGuardDependencies = {
   isBiometricUseEnabled: () => Promise<boolean>;
   unlockWithBiometrics: () => Promise<boolean>;
   wallets: readonly GuardWallet[];
-  saveToDisk: () => Promise<void>;
+  saveToDisk: () => Promise<boolean>;
   presentWalletExportReminder: () => Promise<unknown>;
   requestCameraAuthorization: () => Promise<unknown>;
 };

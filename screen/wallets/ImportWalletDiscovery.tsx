@@ -47,6 +47,8 @@ const ImportWalletDiscovery: React.FC = () => {
   const [selected, setSelected] = useState<number>(0);
   const [progress, setProgress] = useState<string | undefined>();
   const importing = useRef<boolean>(false);
+  const stagedWallet = useRef<TWallet | THDWalletForWatchOnly | undefined>(undefined);
+  const [isSaving, setIsSaving] = useState(false);
   const bip39 = useMemo(() => {
     const hd = new HDSegwitBech32Wallet();
     hd.setSecret(importText);
@@ -73,18 +75,26 @@ const ImportWalletDiscovery: React.FC = () => {
   });
 
   const saveWallet = useCallback(
-    (wallet: TWallet | THDWalletForWatchOnly) => {
+    async (wallet: TWallet | THDWalletForWatchOnly) => {
       if (importing.current) return;
       importing.current = true;
-      addAndSaveWallet(wallet);
-      navigation.getParent()?.goBack();
+      const staged = stagedWallet.current ?? wallet;
+      stagedWallet.current = staged;
+      setIsSaving(true);
+      if (await addAndSaveWallet(staged)) {
+        navigation.getParent()?.goBack();
+        return;
+      }
+      importing.current = false;
+      setIsSaving(false);
     },
     [addAndSaveWallet, navigation],
   );
 
   const handleSave = () => {
-    if (wallets.length === 0) return;
-    saveWallet(wallets[selected].wallet);
+    const wallet = stagedWallet.current ?? wallets[selected]?.wallet;
+    if (!wallet) return;
+    saveWallet(wallet);
   };
 
   useEffect(() => {
@@ -160,6 +170,7 @@ const ImportWalletDiscovery: React.FC = () => {
   }, [isPrivacyBlurEnabled, enableScreenProtect, disableScreenProtect]);
 
   const handleCustomDerivation = () => {
+    if (stagedWallet.current) return;
     task.current?.stop();
     navigation.navigate('ImportCustomDerivationPath', { importText, password });
   };
@@ -171,6 +182,7 @@ const ImportWalletDiscovery: React.FC = () => {
       subtitle={item.subtitle}
       active={selected === index}
       onPress={() => {
+        if (stagedWallet.current) return;
         setSelected(index);
         triggerHapticFeedback(HapticFeedbackTypes.Selection);
       }}
@@ -255,11 +267,17 @@ const ImportWalletDiscovery: React.FC = () => {
             title={loc.wallets.import_discovery_derivation}
             testID="CustomDerivationPathButton"
             onPress={handleCustomDerivation}
+            disabled={!!stagedWallet.current}
           />
         )}
         <BlueSpacing10 />
         <View style={styles.buttonContainer}>
-          <Button disabled={wallets?.length === 0} title={loc.wallets.import_do_import} onPress={handleSave} />
+          <Button
+            disabled={isSaving || (wallets.length === 0 && !stagedWallet.current)}
+            title={loc.wallets.import_do_import}
+            onPress={handleSave}
+            showActivityIndicator={isSaving}
+          />
         </View>
       </View>
     </SafeArea>

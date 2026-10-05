@@ -23,6 +23,7 @@ const ImportSpeed = () => {
   const [importText, setImportText] = useState<string>('');
   const [walletType, setWalletType] = useState<string>('');
   const [passphrase, setPassphrase] = useState<string>('');
+  const [stagedWallet, setStagedWallet] = useState<HDSegwitBech32Wallet | WatchOnlyWallet>();
   const { addAndSaveWallet } = useStorage();
 
   const styles = StyleSheet.create({
@@ -55,31 +56,36 @@ const ImportSpeed = () => {
   const importMnemonic = async () => {
     setLoading(true);
     try {
-      let WalletClass;
-      switch (walletType) {
-        case HDSegwitBech32Wallet.type:
-          WalletClass = HDSegwitBech32Wallet;
-          break;
-        case WatchOnlyWallet.type:
-          WalletClass = WatchOnlyWallet;
-          break;
+      let wallet = stagedWallet;
+      if (!wallet) {
+        let WalletClass;
+        switch (walletType) {
+          case HDSegwitBech32Wallet.type:
+            WalletClass = HDSegwitBech32Wallet;
+            break;
+          case WatchOnlyWallet.type:
+            WalletClass = WatchOnlyWallet;
+            break;
+        }
+
+        if (!WalletClass) {
+          throw new Error('Invalid wallet type');
+        }
+
+        wallet = new WalletClass();
+        wallet.setSecret(importText);
+        if (passphrase && wallet instanceof HDSegwitBech32Wallet) {
+          wallet.setPassphrase(passphrase);
+        }
+        await wallet.fetchBalance();
+        setStagedWallet(wallet);
       }
 
-      if (!WalletClass) {
-        throw new Error('Invalid wallet type');
+      if (await addAndSaveWallet(wallet)) {
+        navigation.getParent()?.goBack();
       }
-
-      const wallet = new WalletClass();
-      wallet.setSecret(importText);
-      // check wallet is type of HDSegwitBech32Wallet
-      if (passphrase && wallet instanceof HDSegwitBech32Wallet) {
-        wallet.setPassphrase(passphrase);
-      }
-      await wallet.fetchBalance();
-      navigation.getParent()?.goBack();
-      addAndSaveWallet(wallet);
-    } catch (e: any) {
-      presentAlert({ message: e.message });
+    } catch (e: unknown) {
+      presentAlert({ message: e instanceof Error ? e.message : String(e) });
     } finally {
       setLoading(false);
     }
@@ -90,12 +96,26 @@ const ImportSpeed = () => {
       <BlueSpacing20 />
       <BlueFormLabel>Mnemonic</BlueFormLabel>
       <BlueSpacing20 />
-      <BlueFormMultiInput testID="SpeedMnemonicInput" value={importText} onChangeText={setImportText} />
-      <BlueFormLabel>Wallet type</BlueFormLabel>
-      <TextInput testID="SpeedWalletTypeInput" value={walletType} style={styles.pathInput} onChangeText={setWalletType} />
-      <BlueFormLabel>Passphrase</BlueFormLabel>
-      <TextInput testID="SpeedPassphraseInput" value={passphrase} style={styles.pathInput} onChangeText={setPassphrase} />
-      <BlueSpacing20 />
+      <BlueFormMultiInput
+        testID="SpeedMnemonicInput"
+        value={importText}
+        onChangeText={setImportText}
+        editable={!loading && !stagedWallet}
+      />
+      <TextInput
+        testID="SpeedWalletTypeInput"
+        value={walletType}
+        style={styles.pathInput}
+        onChangeText={setWalletType}
+        editable={!loading && !stagedWallet}
+      />
+      <TextInput
+        testID="SpeedPassphraseInput"
+        value={passphrase}
+        style={styles.pathInput}
+        onChangeText={setPassphrase}
+        editable={!loading && !stagedWallet}
+      />
       <View style={styles.center}>
         {loading ? <ActivityIndicator /> : <Button testID="SpeedDoImport" title="Import" onPress={importMnemonic} />}
       </View>

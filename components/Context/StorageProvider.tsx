@@ -23,19 +23,19 @@ const BlueApp = BlueAppClass.getInstance();
 // hashmap of timestamps we _started_ refetching some wallet
 const _lastTimeTriedToRefetchWallet: { [walletID: string]: number } = {};
 
-interface StorageContextType {
+export interface StorageContextType {
   wallets: TWallet[];
   setWalletsWithNewOrder: (wallets: TWallet[]) => void;
   txMetadata: TTXMetadata;
   counterpartyMetadata: TCounterpartyMetadata;
   addressMetadata: TAddressMetadata;
-  saveToDisk: (force?: boolean) => Promise<void>;
+  saveToDisk: (force?: boolean) => Promise<boolean>;
   selectedWalletID: () => string | undefined; // Change from string|undefined to a function
   addWallet: (wallet: TWallet) => void;
   deleteWallet: (wallet: TWallet) => void;
   currentSharedCosigner: string;
   setSharedCosigner: (cosigner: string) => void;
-  addAndSaveWallet: (wallet: TWallet) => Promise<void>;
+  addAndSaveWallet: (wallet: TWallet) => Promise<boolean>;
   fetchAndSaveWalletTransactions: (walletID: string) => Promise<void>;
   walletsInitialized: boolean;
   setWalletsInitialized: (initialized: boolean) => void;
@@ -159,18 +159,19 @@ export const StorageProvider = ({ children }: { children: React.ReactNode }) => 
   };
 
   const saveToDisk = useCallback(
-    async (force: boolean = false) => {
+    async (force: boolean = false): Promise<boolean> => {
       if (!force && BlueApp.getWallets().length === 0) {
         console.debug('Not saving empty wallets array');
-        return;
+        return false;
       }
       BlueApp.tx_metadata = txMetadata.current;
       BlueApp.counterparty_metadata = counterpartyMetadata.current;
       BlueApp.address_metadata = addressMetadata.current;
-      await BlueApp.saveToDisk();
+      const saved = await BlueApp.saveToDisk();
       const w: TWallet[] = [...BlueApp.getWallets()];
       setWallets(w);
       setMetadataVersion(v => v + 1);
+      return saved;
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [txMetadata.current, counterpartyMetadata.current, addressMetadata.current],
@@ -392,47 +393,59 @@ export const StorageProvider = ({ children }: { children: React.ReactNode }) => 
   );
 
   const addAndSaveWallet = useCallback(
-    async (w: TWallet) => {
+    async (w: TWallet): Promise<boolean> => {
       if (!mainnetServicesEnabled && w instanceof LightningCustodianWallet) {
         presentAlert({ message: loc._.mainnet_services_unavailable });
-        return;
+        return false;
       }
-      if (wallets.some(i => i.getID() === w.getID())) {
+
+      const existingWallet = BlueApp.getWallets().find(wallet => wallet.getID() === w.getID());
+      if (existingWallet && existingWallet !== w) {
         triggerHapticFeedback(HapticFeedbackTypes.NotificationError);
         presentAlert({ message: 'This wallet has been previously imported.' });
-        return;
+        return false;
       }
-      const emptyWalletLabel = new LegacyWallet().getLabel();
-      if (w.getLabel() === emptyWalletLabel) w.setLabel(loc.wallets.import_imported + ' ' + w.typeReadable);
-      w.setUserHasSavedExport(true);
-      addWallet(w);
+
+      if (!existingWallet) {
+        const emptyWalletLabel = new LegacyWallet().getLabel();
+        if (w.getLabel() === emptyWalletLabel) w.setLabel(loc.wallets.import_imported + ' ' + w.typeReadable);
+        w.setUserHasSavedExport(true);
+        addWallet(w);
+      }
+
+      if (!(await saveToDisk())) return false;
+
       if (mainnetServicesEnabled && w instanceof LightningArkWallet) {
         registerArkBackgroundTask().catch(e => console.warn('[StorageProvider] Ark background task register failed:', e?.message ?? e));
       }
       if (getScanWasBBQR()) {
-        // to avoid proxying `useBBQR` through a bunch of screens during import procedure, we use a trick:
-        // on add-wallet screen we reset `lastScanWasBBQR` to false. then potentially user scans QR in BBQR format
-        // and saves his wallet to storage, in which case execution lands here, where we check last scan and save walletID
-        // internally as a marker that this wallet should display animated QR codes in this format
-        await setWalletIdMustUseBBQR(w.getID());
+        try {
+          // Mark this wallet only after the wallet itself is durable.
+          await setWalletIdMustUseBBQR(w.getID());
+        } catch (error) {
+          console.warn('Failed to save BBQR preference:', error);
+        }
       }
-      triggerHapticFeedback(HapticFeedbackTypes.NotificationSuccess);
-      await saveToDisk();
 
+      triggerHapticFeedback(HapticFeedbackTypes.NotificationSuccess);
       presentAlert({
         hapticFeedback: HapticFeedbackTypes.ImpactHeavy,
         message: w.type === WatchOnlyWallet.type ? loc.wallets.import_success_watchonly : loc.wallets.import_success,
       });
 
-      await w.fetchBalance();
+      try {
+        await w.fetchBalance();
+      } catch (error) {
+        console.warn('Failed to sync imported wallet:', error);
+      }
       try {
         await majorTomToGroundControl(w.getAllExternalAddresses(), [], []);
       } catch (error) {
         console.warn('Failed to setup notifications:', error);
-        // Consider if user should be notified of notification setup failure
       }
+      return true;
     },
-    [wallets, addWallet, saveToDisk],
+    [addWallet, saveToDisk],
   );
 
   function confirmWalletDeletion(wallet: any, onConfirmed: () => void) {
