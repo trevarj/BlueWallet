@@ -4,6 +4,13 @@ import android.app.Application
 import android.app.Activity
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.text.InputType
+import android.text.method.PasswordTransformationMethod
+import android.widget.Button
+import android.widget.EditText
+import android.widget.GridLayout
+import android.widget.LinearLayout
+import android.widget.TextView
 import android.view.WindowManager
 import androidx.appcompat.app.AlertDialog
 import androidx.core.content.ContextCompat
@@ -42,6 +49,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import uniffi.bhwi_ffi.AddressFormat
 import uniffi.bhwi_ffi.HwiException
 import uniffi.bhwi_ffi.HwiResponse
+import uniffi.bhwi_ffi.HostPassphraseHandle
 import uniffi.bhwi_ffi.MultisigAddressFormat
 import uniffi.bhwi_ffi.Network
 import uniffi.bhwi_ffi.WalletPolicy
@@ -64,6 +72,15 @@ private const val CONFIRMATION_TIMEOUT_MS = 300_000L
 private const val TRANSITION_RESUME_GRACE_MS = 1_000L
 private val FINGERPRINT_PATTERN = Regex("^[0-9a-fA-F]{8}$")
 
+internal enum class PassphraseMode { STANDARD, HOST, ON_DEVICE }
+
+internal fun passphraseModes(family: BhwiFamily, info: HwiResponse.Info): List<PassphraseMode> {
+    val modes = mutableListOf(PassphraseMode.STANDARD)
+    if (info.needsPassphraseSent == true) modes += PassphraseMode.HOST
+    if (family == BhwiFamily.TREZOR && info.onDevicePassphraseEntry == true) modes += PassphraseMode.ON_DEVICE
+    return modes
+}
+
 internal interface BhwiSessionApi {
     suspend fun unlock(network: Network): HwiResponse
     suspend fun getInfo(): HwiResponse.Info
@@ -75,6 +92,10 @@ internal interface BhwiSessionApi {
     suspend fun displayMultisig(threshold: UByte, format: MultisigAddressFormat, keys: List<String>): String
     suspend fun signPsbt(psbt: String, policy: WalletPolicy?): String
     suspend fun signMessage(path: String, message: String): String
+    fun supportsHostPin(info: HwiResponse.Info): Boolean
+    suspend fun promptPin(): Boolean
+    suspend fun sendPin(positions: String): Boolean
+    fun configurePassphrase(mode: PassphraseMode, text: String? = null)
     fun disconnect()
 }
 
@@ -91,6 +112,29 @@ private class RealBhwiSession(private val session: HwiSession) : BhwiSessionApi 
         session.displayMultisigAddress(threshold, true, format, keys)
     override suspend fun signPsbt(psbt: String, policy: WalletPolicy?) = session.signPsbt(psbt, policy)
     override suspend fun signMessage(path: String, message: String) = session.signMessage(message.toByteArray(Charsets.UTF_8), path)
+    override fun supportsHostPin(info: HwiResponse.Info) = session.supportsHostPin(info)
+    override suspend fun promptPin() = session.promptPin()
+    override suspend fun sendPin(positions: String) = session.sendPin(positions)
+    override fun configurePassphrase(mode: PassphraseMode, text: String?) {
+        when (mode) {
+            PassphraseMode.STANDARD -> session.configurePassphrase(null, false)
+            PassphraseMode.ON_DEVICE -> session.configurePassphrase(null, true)
+            PassphraseMode.HOST -> {
+                val handle = HostPassphraseHandle(text ?: throw BhwiFailure(BHWI_INVALID_INPUT))
+                var adopted = false
+                try {
+                    handle.validate()
+                    session.configurePassphrase(handle, false)
+                    adopted = true
+                } finally {
+                    if (!adopted) {
+                        runCatching { handle.clear() }
+                        runCatching { handle.close() }
+                    }
+                }
+            }
+        }
+    }
     override fun disconnect() = session.disconnect()
 }
 
@@ -101,6 +145,9 @@ internal interface BhwiFfiFactory {
     fun bitboxUsb(channel: HidChannel, network: Network, onPairingCode: (String) -> Unit): BhwiSessionApi
     fun jadeUsb(stream: SerialStream, network: Network): BhwiSessionApi
     fun jadeBle(stream: SerialStream, network: Network): BhwiSessionApi
+    fun trezorUsb(channel: HidChannel, network: Network): BhwiSessionApi
+    fun keepkeyUsb(channel: HidChannel, network: Network): BhwiSessionApi
+    fun specterUsb(stream: SerialStream, network: Network): BhwiSessionApi
     fun singlesigDescriptor(xpub: String, fingerprint: String, path: String, format: AddressFormat, network: Network): String
 }
 
@@ -114,6 +161,9 @@ private object RealBhwiFfiFactory : BhwiFfiFactory {
         RealBhwiSession(HwiSession.jadeUsb(stream, BhwiPinServerHttp(), network))
     override fun jadeBle(stream: SerialStream, network: Network) =
         RealBhwiSession(HwiSession.jadeBle(stream, BhwiPinServerHttp(), network))
+    override fun trezorUsb(channel: HidChannel, network: Network) = RealBhwiSession(HwiSession.trezorUsb(channel, network))
+    override fun keepkeyUsb(channel: HidChannel, network: Network) = RealBhwiSession(HwiSession.keepkeyUsb(channel, network))
+    override fun specterUsb(stream: SerialStream, network: Network) = RealBhwiSession(HwiSession.specterUsb(stream, network))
     override fun singlesigDescriptor(xpub: String, fingerprint: String, path: String, format: AddressFormat, network: Network) =
         buildSinglesigDescriptor(xpub, fingerprint, path, format, network)
 }
@@ -144,7 +194,7 @@ internal fun bhwiNetwork(profile: String): Network = when (profile) {
     else -> throw IllegalStateException("Invalid immutable Bitcoin network profile")
 }
 
-internal fun supportsBhwiFormat(family: BhwiFamily, format: String): Boolean = when (family) {
+internal fun supportsBhwiFormat(family: BhwiFamily, format: String, model: String? = null): Boolean = when (family) {
     BhwiFamily.LEDGER -> true
     BhwiFamily.BITBOX02 -> when (format) {
         "nested-segwit", "native-segwit", "multisig-wrapped", "multisig-native" -> true
@@ -154,16 +204,16 @@ internal fun supportsBhwiFormat(family: BhwiFamily, format: String): Boolean = w
         "legacy", "nested-segwit", "native-segwit", "multisig-wrapped", "multisig-native" -> true
         else -> false
     }
-    BhwiFamily.COLDCARD -> when (format) {
-        "legacy", "nested-segwit", "native-segwit", "multisig-legacy", "multisig-wrapped", "multisig-native" -> true
-        else -> false
-    }
-    else -> false
+    BhwiFamily.COLDCARD -> format != "taproot"
+    BhwiFamily.KEEPKEY -> format != "taproot"
+    BhwiFamily.TREZOR -> format != "taproot" || model == "T"
+    BhwiFamily.SPECTER -> format != "taproot"
 }
 
 internal fun supportsDescriptorDisplay(family: BhwiFamily, descriptor: String): Boolean {
     val policy = descriptor.trim().substringBefore('#')
     if (family == BhwiFamily.LEDGER) return true
+    if (family == BhwiFamily.SPECTER) return !policy.startsWith("tr(")
     if (family != BhwiFamily.BITBOX02 && family != BhwiFamily.JADE) return false
     if (policy.startsWith("tr(")) return false
     if (policy.startsWith("sh(multi(") || policy.startsWith("sh(sortedmulti(")) return false
@@ -171,8 +221,54 @@ internal fun supportsDescriptorDisplay(family: BhwiFamily, descriptor: String): 
     return true
 }
 
+internal fun supportsRegistration(family: BhwiFamily): Boolean =
+    family != BhwiFamily.TREZOR && family != BhwiFamily.KEEPKEY
+
+internal fun supportsRawMultisigDisplay(family: BhwiFamily): Boolean = family != BhwiFamily.SPECTER
+
+internal suspend fun runHostPinFlow(
+    promptPin: suspend () -> Boolean,
+    readPositions: () -> String,
+    sendPin: suspend (String) -> Boolean,
+) {
+    if (!promptPin()) throw BhwiFailure(BHWI_AUTH_REFUSED)
+    val positions = readPositions()
+    if (positions.isEmpty() || positions.any { it !in '1'..'9' }) throw BhwiFailure(BHWI_INVALID_INPUT)
+    if (!sendPin(positions)) throw BhwiFailure(BHWI_AUTH_REFUSED)
+}
+
+internal class PinPositionBuffer(private val maximumLength: Int = 9) {
+    private val positions = StringBuilder()
+    val size: Int get() = positions.length
+    val isEmpty: Boolean get() = positions.isEmpty()
+
+    fun add(position: Int): Boolean {
+        if (position !in 1..9 || positions.length >= maximumLength) return false
+        positions.append(('0'.code + position).toChar())
+        return true
+    }
+
+    fun backspace() {
+        if (positions.isNotEmpty()) positions.setLength(positions.length - 1)
+    }
+
+    fun take(): String {
+        val value = positions.toString()
+        clear()
+        return value
+    }
+
+    fun clear() {
+        positions.setLength(0)
+    }
+}
+
 internal fun closeBhwiResources(resources: List<Closeable>) {
     resources.asReversed().forEach { runCatching { it.close() } }
+}
+
+internal interface OwnerPrompt {
+    fun cancel()
 }
 
 internal data class BhwiOwner(
@@ -183,7 +279,8 @@ internal data class BhwiOwner(
     var session: BhwiSessionApi? = null,
     var family: BhwiFamily? = null,
     var fingerprint: String? = null,
-    var prompt: PairingPrompt? = null,
+    var model: String? = null,
+    var prompt: OwnerPrompt? = null,
     var closing: Boolean = false,
     var dropped: Boolean = false,
 )
@@ -211,7 +308,7 @@ internal class PairingPrompt(
     private val ownerCheck: (String) -> Boolean,
     private val deadlineNanos: Long = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(CONFIRMATION_TIMEOUT_MS),
     private val nanoTime: () -> Long = System::nanoTime,
-) {
+) : OwnerPrompt {
     private val settled = AtomicBoolean(false)
     private val latch = CountDownLatch(1)
     @Volatile private var accepted = false
@@ -230,6 +327,10 @@ internal class PairingPrompt(
                 .setPositiveButton(positiveLabel) { _, _ -> complete(true) }
                 .setNegativeButton(android.R.string.cancel) { _, _ -> complete(false) }
                 .create()
+            if (settled.get() || !ownerCheck(owner)) {
+                current.dismiss()
+                return@runOnUiThread
+            }
             current.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
             dialog = current
             current.show()
@@ -246,13 +347,83 @@ internal class PairingPrompt(
         if (!accepted) throw BhwiFailure(BHWI_USER_REFUSED)
     }
 
-    fun cancel() {
+    override fun cancel() {
         complete(false)
     }
 
     private fun complete(value: Boolean) {
         if (!settled.compareAndSet(false, true)) return
         accepted = value
+        val current = dialog
+        dialog = null
+        if (current != null) UiThreadUtil.runOnUiThread { current.dismiss() }
+        latch.countDown()
+    }
+}
+
+internal class BlockingValuePrompt<T : Any>(
+    private val owner: String,
+    private val ownerCheck: (String) -> Boolean,
+    private val deadlineNanos: Long,
+    private val nanoTime: () -> Long = System::nanoTime,
+) : OwnerPrompt {
+    private val settled = AtomicBoolean(false)
+    private val latch = CountDownLatch(1)
+    @Volatile private var value: T? = null
+    @Volatile private var failureCode: String? = null
+    @Volatile private var dialog: AlertDialog? = null
+
+    fun show(
+        activity: Activity,
+        build: (complete: (T) -> Unit, refuse: () -> Unit) -> AlertDialog,
+    ) {
+        UiThreadUtil.runOnUiThread {
+            if (settled.get() || !ownerCheck(owner) || activity.isFinishing || activity.isDestroyed) {
+                cancel()
+                return@runOnUiThread
+            }
+            val current = build(::complete) { fail(BHWI_USER_REFUSED) }
+            if (settled.get() || !ownerCheck(owner)) {
+                current.dismiss()
+                return@runOnUiThread
+            }
+            current.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+            dialog = current
+            current.show()
+        }
+    }
+
+    fun await(): T {
+        val remaining = deadlineNanos - nanoTime()
+        if (remaining <= 0 || !latch.await(remaining, TimeUnit.NANOSECONDS)) fail(BHWI_TIMEOUT)
+        if (!ownerCheck(owner)) {
+            value = null
+            cancel()
+            throw BhwiFailure(BHWI_CANCELLED)
+        }
+        failureCode?.let { throw BhwiFailure(it) }
+        val answer = value ?: throw BhwiFailure(BHWI_INTERNAL)
+        value = null
+        return answer
+    }
+
+    override fun cancel() {
+        fail(BHWI_CANCELLED)
+    }
+
+    private fun complete(answer: T) {
+        if (!settled.compareAndSet(false, true)) return
+        value = answer
+        finish()
+    }
+
+    private fun fail(code: String) {
+        if (!settled.compareAndSet(false, true)) return
+        failureCode = code
+        finish()
+    }
+
+    private fun finish() {
         val current = dialog
         dialog = null
         if (current != null) UiThreadUtil.runOnUiThread { current.dismiss() }
@@ -329,14 +500,14 @@ class BhwiModule internal constructor(
         launchOwned(sessionId, promise, claim = true) { state ->
             val candidates: List<BhwiCandidate> = if (transport == "usb") {
                 val discovered = BhwiUsb.discover(reactApplicationContext)
-                val selectedJade = discovered.serialAdapters.mapNotNull { adapter ->
-                    if (confirmSerialAsJade(state.id, adapter)) {
-                        UsbBhwiCandidate(adapter.device, BhwiFamily.JADE, serial = true)
+                val selectedSerial = discovered.serialAdapters.mapNotNull { adapter ->
+                    if (confirmSerialFamily(state.id, adapter)) {
+                        UsbBhwiCandidate(adapter.device, adapter.proposedFamily, serial = true)
                     } else {
                         null
                     }
                 }
-                discovered.wallets + selectedJade
+                discovered.wallets + selectedSerial
             } else {
                 requireBlePermissions()
                 checkOwner(state.id)
@@ -366,15 +537,23 @@ class BhwiModule internal constructor(
                         is BleBhwiCandidate -> openBle(state, candidate)
                     }
                     val unlock = deviceCall(state.id) { session.unlock(network) }
-                    val info = (unlock as? HwiResponse.Info) ?: deviceCall(state.id) { session.getInfo() }
-                    val fingerprint = deviceCall(state.id) { session.fingerprint() }
-                    if (!FINGERPRINT_PATTERN.matches(fingerprint)) throw BhwiFailure(BHWI_DEVICE_ERROR)
+                    val info = if (candidate.family == BhwiFamily.SPECTER) {
+                        null
+                    } else {
+                        (unlock as? HwiResponse.Info) ?: deviceCall(state.id) { session.getInfo() }
+                    }
+                    if (candidate.family == BhwiFamily.TREZOR || candidate.family == BhwiFamily.KEEPKEY) {
+                        configureTrezorAccess(state.id, candidate.family, session, requireNotNull(info), deadlineNanos)
+                    }
+                    val fingerprint = (unlock as? HwiResponse.Fingerprint)?.hex
+                        ?: deviceCall(state.id) { session.fingerprint() }
                     checkOwner(state.id)
                     synchronized(lock) {
                         val current = requireOwnerLocked(state.id)
                         current.fingerprint = fingerprint.lowercase()
+                        current.model = info?.firmware
                     }
-                    deviceInfo(candidate.family, fingerprint.lowercase(), info)
+                    deviceInfo(candidate.family, fingerprint.lowercase(), info?.version, info?.firmware)
                 }
             } catch (error: Throwable) {
                 retireTransport(state.id)
@@ -389,7 +568,7 @@ class BhwiModule internal constructor(
             val session = connectedSession(state.id)
             val family = requireNotNull(state.family)
             val fingerprint = requireNotNull(state.fingerprint)
-            requireAccountFormat(family, accountFormat)
+            requireAccountFormat(family, accountFormat, state.model)
             val xpub = deviceCall(state.id) { session.xpub(path) }
             val descriptor = accountFormat.singlesig?.let {
                 checkOwner(state.id)
@@ -408,6 +587,8 @@ class BhwiModule internal constructor(
 
     override fun registerWallet(sessionId: String, name: String, descriptor: String, promise: Promise) {
         launchOwned(sessionId, promise) { state ->
+            val family = connectedFamily(state.id)
+            if (!supportsRegistration(family)) throw BhwiFailure(BHWI_UNSUPPORTED)
             when (val registration = deviceCall(state.id) { connectedSession(state.id).register(name, descriptor) }) {
                 is WalletRegistration.Complete -> Arguments.createMap().apply {
                     putString("status", "complete")
@@ -424,7 +605,7 @@ class BhwiModule internal constructor(
     override fun displaySinglesigAddress(sessionId: String, path: String, format: String, promise: Promise) {
         launchOwned(sessionId, promise) { state ->
             val accountFormat = parseAccountFormat(format)
-            requireAccountFormat(connectedFamily(state.id), accountFormat)
+            requireAccountFormat(connectedFamily(state.id), accountFormat, connectedModel(state.id))
             val parsed = accountFormat.singlesig ?: throw BhwiFailure(BHWI_INVALID_INPUT)
             deviceCall(state.id) { connectedSession(state.id).displaySinglesig(path, parsed) }
         }
@@ -447,6 +628,7 @@ class BhwiModule internal constructor(
         promise: Promise,
     ) {
         launchOwned(sessionId, promise) { state ->
+            if (!supportsRawMultisigDisplay(connectedFamily(state.id))) throw BhwiFailure(BHWI_UNSUPPORTED)
             if (threshold < 1 || threshold > 255 || threshold % 1.0 != 0.0) throw BhwiFailure(BHWI_INVALID_INPUT)
             val parsedKeys = (0 until keys.size()).map {
                 if (keys.getType(it) != ReadableType.String) throw BhwiFailure(BHWI_INVALID_INPUT)
@@ -456,7 +638,7 @@ class BhwiModule internal constructor(
                 throw BhwiFailure(BHWI_INVALID_INPUT)
             }
             val accountFormat = parseAccountFormat(format)
-            requireAccountFormat(connectedFamily(state.id), accountFormat)
+            requireAccountFormat(connectedFamily(state.id), accountFormat, connectedModel(state.id))
             val multisig = accountFormat.multisig ?: throw BhwiFailure(BHWI_INVALID_INPUT)
             deviceCall(state.id) {
                 connectedSession(state.id).displayMultisig(threshold.toInt().toUByte(), multisig, parsedKeys)
@@ -580,9 +762,18 @@ class BhwiModule internal constructor(
         adoptResource(state.id, Closeable { connection.close() })
         try {
             val session = if (candidate.serial) {
-                val stream = JadeUsbSerialStream.open(BhwiUsb.serialPort(manager, device), connection) { owns(state.id) }
+                val stream = UsbWalletSerialStream.open(
+                    BhwiUsb.serialPort(manager, device),
+                    connection,
+                    candidate.family,
+                ) { owns(state.id) }
                 adoptResource(state.id, stream)
-                adoptSession(state.id, candidate.family, ffi.jadeUsb(stream, network))
+                val created = when (candidate.family) {
+                    BhwiFamily.JADE -> ffi.jadeUsb(stream, network)
+                    BhwiFamily.SPECTER -> ffi.specterUsb(stream, network)
+                    else -> throw BhwiFailure(BHWI_UNSUPPORTED)
+                }
+                adoptSession(state.id, candidate.family, created)
             } else {
                 val iface = BhwiUsb.selectHidInterface(connection, device, candidate.family) { owns(state.id) }
                 val channel = UsbHidChannel(
@@ -592,12 +783,17 @@ class BhwiModule internal constructor(
                     { owns(state.id) },
                 )
                 adoptResource(state.id, channel)
+                if (requiresStalePacketDrain(candidate.family)) {
+                    channel.drainStalePackets()
+                }
                 val created = when (candidate.family) {
                     BhwiFamily.LEDGER -> ffi.ledgerUsb(channel)
                     BhwiFamily.COLDCARD -> ffi.coldcardUsb(channel)
                     BhwiFamily.BITBOX02 -> ffi.bitboxUsb(channel, network) { code ->
                         showPairing(state.id, code, deadlineNanos)
                     }
+                    BhwiFamily.TREZOR -> ffi.trezorUsb(channel, network)
+                    BhwiFamily.KEEPKEY -> ffi.keepkeyUsb(channel, network)
                     else -> throw BhwiFailure(BHWI_UNSUPPORTED)
                 }
                 adoptSession(state.id, candidate.family, created)
@@ -677,15 +873,16 @@ class BhwiModule internal constructor(
         return reactApplicationContext.currentActivity?.takeUnless { it.isFinishing || it.isDestroyed }
     }
 
-    private fun confirmSerialAsJade(ownerId: String, adapter: UnclassifiedUsbSerialCandidate): Boolean {
+    private fun confirmSerialFamily(ownerId: String, adapter: UnclassifiedUsbSerialCandidate): Boolean {
         val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(CONFIRMATION_TIMEOUT_MS)
+        val family = adapter.proposedFamily.displayName
         return try {
             awaitConfirmation(
                 ownerId,
                 deadline,
-                "Use adapter for Jade?",
-                "Treat ${adapter.name} as a Jade hardware wallet. Its identity will be verified before use.",
-                "Use as Jade",
+                "Use adapter for $family?",
+                "Treat ${adapter.name} as a $family hardware wallet. Its identity will be verified before use.",
+                "Use as $family",
             )
             true
         } catch (error: BhwiFailure) {
@@ -728,6 +925,165 @@ class BhwiModule internal constructor(
         }
     }
 
+    private suspend fun configureTrezorAccess(
+        ownerId: String,
+        family: BhwiFamily,
+        session: BhwiSessionApi,
+        info: HwiResponse.Info,
+        deadlineNanos: Long,
+    ) {
+        if (family == BhwiFamily.TREZOR && info.firmware != null && info.firmware != "1" && info.firmware != "T") {
+            throw BhwiFailure(BHWI_UNSUPPORTED)
+        }
+        if (info.initialized == false) throw BhwiFailure(BHWI_UNSUPPORTED)
+        checkOwner(ownerId)
+        val supportsHostPin = session.supportsHostPin(info)
+        val modes = passphraseModes(family, info)
+        val mode = promptPassphraseMode(ownerId, modes, deadlineNanos)
+        val passphrase = if (mode == PassphraseMode.HOST) promptHostPassphrase(ownerId, deadlineNanos) else null
+        checkOwner(ownerId)
+        session.configurePassphrase(mode, passphrase)
+        checkOwner(ownerId)
+
+        if (info.needsPinSent == true && supportsHostPin) {
+            runHostPinFlow(
+                promptPin = { deviceCall(ownerId) { session.promptPin() } },
+                readPositions = { promptPinPositions(ownerId, deadlineNanos) },
+                sendPin = { positions -> deviceCall(ownerId) { session.sendPin(positions) } },
+            )
+        }
+    }
+
+    private fun promptPassphraseMode(
+        ownerId: String,
+        modes: List<PassphraseMode>,
+        deadlineNanos: Long,
+    ): PassphraseMode = awaitValuePrompt(ownerId, deadlineNanos) { activity, complete, refuse ->
+        val labels = modes.map {
+            when (it) {
+                PassphraseMode.STANDARD -> "Standard wallet (no passphrase)"
+                PassphraseMode.HOST -> "Enter passphrase on this phone"
+                PassphraseMode.ON_DEVICE -> "Enter passphrase on device"
+            }
+        }.toTypedArray()
+        AlertDialog.Builder(activity)
+            .setTitle("Choose wallet")
+            .setItems(labels) { dialog, which ->
+                complete(modes[which])
+                dialog.dismiss()
+            }
+            .setNegativeButton(android.R.string.cancel) { _, _ -> refuse() }
+            .setCancelable(false)
+            .create()
+    }
+
+    private fun promptHostPassphrase(ownerId: String, deadlineNanos: Long): String =
+        awaitValuePrompt(ownerId, deadlineNanos) { activity, complete, refuse ->
+            val input = EditText(activity).apply {
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+                transformationMethod = PasswordTransformationMethod.getInstance()
+                isSingleLine = true
+            }
+            AlertDialog.Builder(activity)
+                .setTitle("Enter wallet passphrase")
+                .setView(input)
+                .setPositiveButton("Continue") { _, _ ->
+                    val answer = input.text.toString()
+                    input.text.clear()
+                    complete(answer)
+                }
+                .setNegativeButton(android.R.string.cancel) { _, _ -> refuse() }
+                .setCancelable(false)
+                .create()
+                .also { dialog -> dialog.setOnDismissListener { input.text.clear() } }
+        }
+
+    private fun promptPinPositions(ownerId: String, deadlineNanos: Long): String =
+        awaitValuePrompt(ownerId, deadlineNanos) { activity, complete, refuse ->
+            val positions = PinPositionBuffer()
+            val count = TextView(activity).apply { text = "No positions entered" }
+            val grid = GridLayout(activity).apply { columnCount = 3 }
+            repeat(9) { index ->
+                grid.addView(Button(activity).apply {
+                    text = ""
+                    contentDescription = "PIN position ${index + 1}"
+                    setOnClickListener {
+                        positions.add(index + 1)
+                        count.text = "${positions.size} positions entered"
+                    }
+                })
+            }
+            val backspace = Button(activity).apply {
+                text = "Backspace"
+                setOnClickListener {
+                    positions.backspace()
+                    count.text = if (positions.isEmpty) "No positions entered" else "${positions.size} positions entered"
+                }
+            }
+            val layout = LinearLayout(activity).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(TextView(activity).apply { text = "Enter the positions shown on your hardware wallet." })
+                addView(grid)
+                addView(count)
+                addView(backspace)
+            }
+            AlertDialog.Builder(activity)
+                .setTitle("Enter PIN positions")
+                .setView(layout)
+                .setPositiveButton("Continue", null)
+                .setNegativeButton(android.R.string.cancel) { _, _ ->
+                    positions.clear()
+                    refuse()
+                }
+                .setCancelable(false)
+                .create()
+                .also { dialog ->
+                    dialog.setOnDismissListener { positions.clear() }
+                    dialog.setOnShowListener {
+                        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                            if (positions.isEmpty) return@setOnClickListener
+                            val answer = positions.take()
+                            complete(answer)
+                            dialog.dismiss()
+                        }
+                    }
+                }
+        }
+
+    private fun <T : Any> awaitValuePrompt(
+        ownerId: String,
+        deadlineNanos: Long,
+        build: (
+            activity: Activity,
+            complete: (T) -> Unit,
+            refuse: () -> Unit,
+        ) -> AlertDialog,
+    ): T {
+        checkOwner(ownerId)
+        val activity = foregroundActivity() ?: throw BhwiFailure(BHWI_UNAVAILABLE)
+        val prompt = BlockingValuePrompt<T>(ownerId, ::owns, deadlineNanos)
+        synchronized(lock) {
+            val state = requireOwnerLocked(ownerId)
+            if (state.prompt != null) throw BhwiFailure(BHWI_BUSY)
+            state.prompt = prompt
+        }
+        try {
+            prompt.show(activity) { complete, refuse -> build(activity, complete, refuse) }
+            val answer = prompt.await()
+            checkOwner(ownerId)
+            if (!hostResumed || resumedActivity !== activity || foregroundActivity() !== activity) {
+                throw BhwiFailure(BHWI_CANCELLED)
+            }
+            return answer
+        } finally {
+            prompt.cancel()
+            synchronized(lock) {
+                val state = owner
+                if (state?.id == ownerId && state.prompt === prompt) state.prompt = null
+            }
+        }
+    }
+
     private suspend fun <T> deviceCall(ownerId: String, block: suspend () -> T): T {
         checkOwner(ownerId)
         return try {
@@ -754,6 +1110,10 @@ class BhwiModule internal constructor(
 
     private fun connectedFamily(ownerId: String): BhwiFamily = synchronized(lock) {
         requireOwnerLocked(ownerId).family ?: throw BhwiFailure(BHWI_DISCONNECTED)
+    }
+
+    private fun connectedModel(ownerId: String): String? = synchronized(lock) {
+        requireOwnerLocked(ownerId).model
     }
 
     private fun adoptSession(ownerId: String, family: BhwiFamily, session: BhwiSessionApi): BhwiSessionApi =
@@ -882,8 +1242,8 @@ class BhwiModule internal constructor(
         return getString(key) ?: throw BhwiFailure(BHWI_INVALID_INPUT)
     }
 
-    private fun requireAccountFormat(family: BhwiFamily, format: AccountFormat) {
-        if (!supportsBhwiFormat(family, format.wireName)) throw BhwiFailure(BHWI_UNSUPPORTED)
+    private fun requireAccountFormat(family: BhwiFamily, format: AccountFormat, model: String? = null) {
+        if (!supportsBhwiFormat(family, format.wireName, model)) throw BhwiFailure(BHWI_UNSUPPORTED)
     }
 
     private fun requireDescriptorDisplay(family: BhwiFamily, descriptor: String) {
@@ -918,13 +1278,17 @@ class BhwiModule internal constructor(
         }
     }
 
-    private fun deviceInfo(family: BhwiFamily, fingerprint: String, info: HwiResponse.Info): WritableMap =
-        Arguments.createMap().apply {
-            putString("family", family.wireName)
-            putString("fingerprint", fingerprint)
-            putString("version", info.version)
-            putString("model", info.firmware)
-        }
+    private fun deviceInfo(
+        family: BhwiFamily,
+        fingerprint: String,
+        version: String?,
+        model: String?,
+    ): WritableMap = Arguments.createMap().apply {
+        putString("family", family.wireName)
+        putString("fingerprint", fingerprint)
+        putString("version", version)
+        putString("model", model)
+    }
 
     private fun reject(promise: Promise, error: Throwable) {
         val code = bhwiErrorCode(error)

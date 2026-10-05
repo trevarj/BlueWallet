@@ -62,6 +62,7 @@ internal data class UsbBhwiCandidate(
 
 internal data class UnclassifiedUsbSerialCandidate(
     val device: UsbDevice,
+    val proposedFamily: BhwiFamily,
 ) {
     val name = device.productName?.takeIf(String::isNotBlank) ?: "USB serial adapter"
 }
@@ -93,6 +94,40 @@ internal fun UsbIdentity.matches(other: UsbIdentity): Boolean =
         vendorId == other.vendorId &&
         productId == other.productId
 
+internal data class UsbEndpointIdentity(val address: Int, val type: Int, val maxPacketSize: Int)
+
+internal fun hasExactTrezorEndpoints(endpoints: List<UsbEndpointIdentity>): Boolean =
+    endpoints.size == 2 &&
+        endpoints.any {
+            it.address == TREZOR_ENDPOINT_IN &&
+                it.type == UsbConstants.USB_ENDPOINT_XFER_INT &&
+                it.maxPacketSize == HID_REPORT_SIZE
+        } &&
+        endpoints.any {
+            it.address == TREZOR_ENDPOINT_OUT &&
+                it.type == UsbConstants.USB_ENDPOINT_XFER_INT &&
+                it.maxPacketSize == HID_REPORT_SIZE
+        }
+
+internal fun usbHidFamily(vendorId: Int, productId: Int): BhwiFamily? = when {
+    vendorId == 0x2c97 -> BhwiFamily.LEDGER
+    vendorId == 0x03eb && productId == 0x2403 -> BhwiFamily.BITBOX02
+    vendorId == 0xd13e && productId == 0xcc10 -> BhwiFamily.COLDCARD
+    vendorId == VID_KEEPKEY && (productId == PID_KEEPKEY_HID || productId == PID_KEEPKEY_VENDOR) -> BhwiFamily.KEEPKEY
+    vendorId == VID_TREZOR_OLD && productId == PID_TREZOR_OLD -> BhwiFamily.TREZOR
+    vendorId == VID_TREZOR && productId == PID_TREZOR -> BhwiFamily.TREZOR
+    else -> null
+}
+
+internal fun usbSerialFamily(vendorId: Int, productId: Int): BhwiFamily? = when {
+    (vendorId to productId) in jadeSerialIds -> BhwiFamily.JADE
+    vendorId == VID_SPECTER -> BhwiFamily.SPECTER
+    else -> null
+}
+
+internal fun requiresStalePacketDrain(family: BhwiFamily): Boolean =
+    family == BhwiFamily.TREZOR || family == BhwiFamily.KEEPKEY
+
 internal object BhwiUsb {
     private val permissionSequence = AtomicInteger()
 
@@ -103,16 +138,14 @@ internal object BhwiUsb {
         val manager = manager(context)
         val serial = UsbSerialProber.getDefaultProber().findAllDrivers(manager)
             .asSequence()
-            .filter { (it.device.vendorId to it.device.productId) in jadeSerialIds && it.ports.isNotEmpty() }
-            .map { UnclassifiedUsbSerialCandidate(it.device) }
+            .filter { it.ports.isNotEmpty() }
+            .mapNotNull { driver ->
+                usbSerialFamily(driver.device.vendorId, driver.device.productId)
+                    ?.let { UnclassifiedUsbSerialCandidate(driver.device, it) }
+            }
             .toList()
         val wallets = manager.deviceList.values.mapNotNull { device ->
-            when {
-                device.vendorId == 0x2c97 -> UsbBhwiCandidate(device, BhwiFamily.LEDGER, false)
-                device.vendorId == 0x03eb && device.productId == 0x2403 -> UsbBhwiCandidate(device, BhwiFamily.BITBOX02, false)
-                device.vendorId == 0xd13e && device.productId == 0xcc10 -> UsbBhwiCandidate(device, BhwiFamily.COLDCARD, false)
-                else -> null
-            }
+            usbHidFamily(device.vendorId, device.productId)?.let { UsbBhwiCandidate(device, it, false) }
         }
         return UsbDiscoveryResult(wallets, serial)
     }
@@ -121,7 +154,11 @@ internal object BhwiUsb {
         val device = manager.deviceList[candidate.device.deviceName] ?: return null
         if (!sameDevice(device, candidate.device)) return null
         val familyMatches = if (candidate.serial) {
-            candidate.family == BhwiFamily.JADE && (device.vendorId to device.productId) in jadeSerialIds
+            when (candidate.family) {
+                BhwiFamily.JADE -> (device.vendorId to device.productId) in jadeSerialIds
+                BhwiFamily.SPECTER -> device.vendorId == VID_SPECTER
+                else -> false
+            }
         } else {
             hidFamily(device) == candidate.family
         }
@@ -198,22 +235,14 @@ internal object BhwiUsb {
         family: BhwiFamily,
         isOwner: () -> Boolean,
     ): UsbInterface {
+        if (family == BhwiFamily.TREZOR || family == BhwiFamily.KEEPKEY) {
+            return selectTrezorInterface(connection, device, family, isOwner)
+        }
         val matches = (0 until device.interfaceCount).map { device.getInterface(it) }.filter { iface ->
             if (iface.interfaceClass != UsbConstants.USB_CLASS_HID || interruptEndpoints(iface) == null) return@filter false
             if (!isOwner()) throw TransportException.Cancelled()
-            val descriptor = ByteArray(MAX_REPORT_DESCRIPTOR)
-            val count = connection.controlTransfer(
-                UsbConstants.USB_DIR_IN or UsbConstants.USB_TYPE_STANDARD or USB_RECIPIENT_INTERFACE,
-                GET_DESCRIPTOR,
-                REPORT_DESCRIPTOR_TYPE shl 8,
-                iface.id,
-                descriptor,
-                descriptor.size,
-                DESCRIPTOR_TIMEOUT_MS,
-            )
+            val pages = readUsagePages(connection, iface)
             if (!isOwner()) throw TransportException.Cancelled()
-            if (count <= 0) return@filter false
-            val pages = reportUsagePages(descriptor, count)
             when (family) {
                 BhwiFamily.LEDGER -> LEDGER_USAGE_PAGE in pages
                 BhwiFamily.BITBOX02 -> BITBOX_USAGE_PAGE in pages
@@ -225,12 +254,65 @@ internal object BhwiUsb {
         return matches.single()
     }
 
+    private fun selectTrezorInterface(
+        connection: UsbDeviceConnection,
+        device: UsbDevice,
+        family: BhwiFamily,
+        isOwner: () -> Boolean,
+    ): UsbInterface {
+        if (device.interfaceCount == 0 || !isOwner()) throw TransportException.Disconnected()
+        val iface = device.getInterface(0)
+        if (iface.id != 0 || !hasTrezorEndpoints(iface)) {
+            throw TransportException.Io("expected wallet packet interface was not found")
+        }
+        val hidVariant = when (family) {
+            BhwiFamily.KEEPKEY ->
+                device.vendorId == VID_KEEPKEY && device.productId == PID_KEEPKEY_HID
+            BhwiFamily.TREZOR ->
+                device.vendorId == VID_TREZOR_OLD && device.productId == PID_TREZOR_OLD
+            else -> false
+        }
+        val vendorVariant = when (family) {
+            BhwiFamily.KEEPKEY ->
+                device.vendorId == VID_KEEPKEY && device.productId == PID_KEEPKEY_VENDOR
+            BhwiFamily.TREZOR ->
+                device.vendorId == VID_TREZOR && device.productId == PID_TREZOR
+            else -> false
+        }
+        if (
+            (hidVariant && iface.interfaceClass != UsbConstants.USB_CLASS_HID) ||
+            (vendorVariant && iface.interfaceClass != USB_CLASS_VENDOR) ||
+            (!hidVariant && !vendorVariant)
+        ) {
+            throw TransportException.Io("expected wallet packet interface was not found")
+        }
+        if (hidVariant && TREZOR_USAGE_PAGE !in readUsagePages(connection, iface)) {
+            throw TransportException.Io("expected wallet HID usage was not found")
+        }
+        if (!isOwner()) throw TransportException.Cancelled()
+        return iface
+    }
+
+    private fun readUsagePages(connection: UsbDeviceConnection, iface: UsbInterface): Set<Int> {
+        val descriptor = ByteArray(MAX_REPORT_DESCRIPTOR)
+        val count = connection.controlTransfer(
+            UsbConstants.USB_DIR_IN or UsbConstants.USB_TYPE_STANDARD or USB_RECIPIENT_INTERFACE,
+            GET_DESCRIPTOR,
+            REPORT_DESCRIPTOR_TYPE shl 8,
+            iface.id,
+            descriptor,
+            descriptor.size,
+            DESCRIPTOR_TIMEOUT_MS,
+        )
+        return if (count > 0) reportUsagePages(descriptor, count) else emptySet()
+    }
+
     fun serialPort(manager: UsbManager, device: UsbDevice): UsbSerialPort =
         UsbSerialProber.getDefaultProber().findAllDrivers(manager)
             .firstOrNull { sameDevice(it.device, device) }
             ?.ports
             ?.firstOrNull()
-            ?: throw TransportException.Io("Jade serial interface was not found")
+            ?: throw TransportException.Io("wallet serial interface was not found")
 
     fun watchDetach(context: Context, device: UsbDevice, onDetach: () -> Unit): Closeable {
         val app = context.applicationContext
@@ -258,12 +340,7 @@ internal object BhwiUsb {
         }
     }
 
-    private fun hidFamily(device: UsbDevice): BhwiFamily? = when {
-        device.vendorId == 0x2c97 -> BhwiFamily.LEDGER
-        device.vendorId == 0x03eb && device.productId == 0x2403 -> BhwiFamily.BITBOX02
-        device.vendorId == 0xd13e && device.productId == 0xcc10 -> BhwiFamily.COLDCARD
-        else -> null
-    }
+    private fun hidFamily(device: UsbDevice): BhwiFamily? = usbHidFamily(device.vendorId, device.productId)
 }
 
 internal suspend fun completePartialWrite(
@@ -354,6 +431,26 @@ internal class UsbHidChannel internal constructor(
         ByteArray(0)
     }
 
+    suspend fun drainStalePackets(
+        timeoutMillis: Int = STALE_DRAIN_TIMEOUT_MS,
+        pollMillis: Int = STALE_DRAIN_POLL_MS,
+        nanoTime: () -> Long = System::nanoTime,
+    ) = withContext(Dispatchers.IO) {
+        val deadline = nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis.toLong())
+        val buffer = ByteArray(HID_REPORT_SIZE)
+        while (true) {
+            currentCoroutineContext().ensureActive()
+            requireOpen()
+            val remaining = TimeUnit.NANOSECONDS.toMillis(deadline - nanoTime()).toInt()
+            if (remaining <= 0) throw TransportException.Io("wallet packet channel did not quiesce")
+            val read = io.read(buffer, minOf(pollMillis, remaining))
+            currentCoroutineContext().ensureActive()
+            requireOpen()
+            if (read <= 0) return@withContext
+            if (read > buffer.size) throw TransportException.Io("wallet packet read exceeded report size")
+        }
+    }
+
     private fun requireOpen() {
         if (closed.get() || !isAttached()) throw TransportException.Disconnected()
         if (!isOwner()) throw TransportException.Cancelled()
@@ -372,10 +469,12 @@ internal class UsbHidChannel internal constructor(
         const val WRITE_TIMEOUT_MS = 5_000
         const val READ_POLL_MS = 250
         const val MAX_REPORT = 4_096
+        const val STALE_DRAIN_POLL_MS = 50
+        const val STALE_DRAIN_TIMEOUT_MS = 1_000
     }
 }
 
-internal class JadeUsbSerialStream private constructor(
+internal class UsbWalletSerialStream private constructor(
     private val port: UsbSerialPort,
     private val isOwner: () -> Boolean,
 ) : SerialStream, Closeable {
@@ -441,17 +540,27 @@ internal class JadeUsbSerialStream private constructor(
         private const val READ_POLL_MS = 250
         private const val MAX_CHUNK = 4_096
 
-        fun open(port: UsbSerialPort, connection: UsbDeviceConnection, isOwner: () -> Boolean): JadeUsbSerialStream {
+        fun open(
+            port: UsbSerialPort,
+            connection: UsbDeviceConnection,
+            family: BhwiFamily,
+            isOwner: () -> Boolean,
+        ): UsbWalletSerialStream {
+            if (family != BhwiFamily.JADE && family != BhwiFamily.SPECTER) {
+                throw TransportException.Io("unsupported serial wallet family")
+            }
             port.open(connection)
             try {
                 port.setParameters(BAUD, UsbSerialPort.DATABITS_8, UsbSerialPort.STOPBITS_1, UsbSerialPort.PARITY_NONE)
-                runCatching { port.setDTR(false) }
-                runCatching { port.setRTS(false) }
+                if (family == BhwiFamily.JADE) {
+                    runCatching { port.setDTR(false) }
+                    runCatching { port.setRTS(false) }
+                }
             } catch (error: Throwable) {
                 runCatching { port.close() }
                 throw error
             }
-            return JadeUsbSerialStream(port, isOwner)
+            return UsbWalletSerialStream(port, isOwner)
         }
     }
 }
@@ -471,6 +580,14 @@ private fun interruptEndpoints(iface: UsbInterface): Pair<UsbEndpoint, UsbEndpoi
     }
     return if (inputs.size == 1 && outputs.size == 1) inputs.single() to outputs.single() else null
 }
+
+private fun hasTrezorEndpoints(iface: UsbInterface): Boolean =
+    hasExactTrezorEndpoints(
+        (0 until iface.endpointCount).map { index ->
+            val endpoint = iface.getEndpoint(index)
+            UsbEndpointIdentity(endpoint.address, endpoint.type, endpoint.maxPacketSize)
+        },
+    )
 
 internal fun reportUsagePages(descriptor: ByteArray, length: Int = descriptor.size): Set<Int> {
     val pages = mutableSetOf<Int>()
@@ -507,3 +624,15 @@ private const val LEDGER_USAGE_PAGE = 0xffa0
 private const val BITBOX_USAGE_PAGE = 0xffff
 private const val FIDO_USAGE_PAGE = 0xf1d0
 private const val VENDOR_USAGE_MIN = 0xff00
+private const val TREZOR_USAGE_PAGE = 0xff00
+private const val USB_CLASS_VENDOR = 0xff
+private const val TREZOR_ENDPOINT_OUT = 0x01
+private const val TREZOR_ENDPOINT_IN = 0x81
+private const val VID_KEEPKEY = 0x2b24
+private const val PID_KEEPKEY_HID = 0x0001
+private const val PID_KEEPKEY_VENDOR = 0x0002
+private const val VID_TREZOR_OLD = 0x534c
+private const val PID_TREZOR_OLD = 0x0001
+private const val VID_TREZOR = 0x1209
+private const val PID_TREZOR = 0x53c1
+private const val VID_SPECTER = 0xf055
