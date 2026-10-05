@@ -4,6 +4,8 @@ import ecc from '../../blue_modules/noble_ecc';
 import * as bitcoin from 'bitcoinjs-lib';
 import { Psbt } from 'bitcoinjs-lib';
 import { CoinSelectReturnInput } from 'coinselect';
+import { coinType, network } from '../../models/bitcoinNetwork';
+import { convertExtendedKey } from './extended-key';
 
 const bip32 = BIP32Factory(ecc);
 
@@ -18,14 +20,14 @@ export class HDTaprootWallet extends AbstractHDElectrumWallet {
   // @ts-ignore: override
   public readonly typeReadable = HDTaprootWallet.typeReadable;
   public readonly segwitType = 'p2tr';
-  static readonly derivationPath = "m/86'/0'/0'";
+  static readonly derivationPath = `m/86'/${coinType}'/0'`;
 
   getXpub() {
     if (this._xpub) {
       return this._xpub; // cache hit
     }
     const seed = this._getSeed();
-    const root = bip32.fromSeed(seed);
+    const root = bip32.fromSeed(seed, network);
 
     const path = this.getDerivationPath();
     if (!path) {
@@ -35,8 +37,7 @@ export class HDTaprootWallet extends AbstractHDElectrumWallet {
     const xpub = child.toBase58();
     this._xpub = xpub;
 
-    // returning regular xpub since industry standard is to use regular xpubs for Taproot wallets without any
-    // kind of prefix change (like ypub or zpub)
+    // Taproot uses the selected network's standard BIP32 public version rather than a SLIP-132 variant.
     return xpub;
   }
 
@@ -49,6 +50,7 @@ export class HDTaprootWallet extends AbstractHDElectrumWallet {
 
     const { address } = bitcoin.payments.p2tr({
       internalPubkey: xOnlyPubkey,
+      network,
     });
 
     if (!address) {
@@ -62,22 +64,14 @@ export class HDTaprootWallet extends AbstractHDElectrumWallet {
     index = index * 1; // cast to int
 
     if (node === 0 && !this._node0) {
-      let xpub = this.getXpub();
-      if (xpub.startsWith('zpub')) {
-        // bip32.fromBase58() wont work with zpub prefix, need to swap it for the traditional one
-        xpub = this._zpubToXpub(xpub);
-      }
-      const hdNode = bip32.fromBase58(xpub);
+      const xpub = convertExtendedKey(this.getXpub(), 'legacy');
+      const hdNode = bip32.fromBase58(xpub, network);
       this._node0 = hdNode.derive(node);
     }
 
     if (node === 1 && !this._node1) {
-      let xpub = this.getXpub();
-      if (xpub.startsWith('zpub')) {
-        // bip32.fromBase58() wont work with zpub prefix, need to swap it for the traditional one
-        xpub = this._zpubToXpub(xpub);
-      }
-      const hdNode = bip32.fromBase58(xpub);
+      const xpub = convertExtendedKey(this.getXpub(), 'legacy');
+      const hdNode = bip32.fromBase58(xpub, network);
       this._node1 = hdNode.derive(node);
     }
 
@@ -104,6 +98,7 @@ export class HDTaprootWallet extends AbstractHDElectrumWallet {
 
     const p2tr = bitcoin.payments.p2tr({
       internalPubkey: pubkey,
+      network,
     });
     if (!p2tr.output) throw new Error('Could not build p2tr.output');
 

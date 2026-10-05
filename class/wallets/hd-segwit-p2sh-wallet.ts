@@ -5,6 +5,8 @@ import { CoinSelectReturnInput } from 'coinselect';
 
 import ecc from '../../blue_modules/noble_ecc';
 import { AbstractHDElectrumWallet } from './abstract-hd-electrum-wallet';
+import { coinType, network } from '../../models/bitcoinNetwork';
+import { convertExtendedKey } from './extended-key';
 
 const bip32 = BIP32Factory(ecc);
 
@@ -21,7 +23,7 @@ export class HDSegwitP2SHWallet extends AbstractHDElectrumWallet {
   // @ts-ignore: override
   public readonly typeReadable = HDSegwitP2SHWallet.typeReadable;
   public readonly segwitType = 'p2sh(p2wpkh)';
-  static readonly derivationPath = "m/49'/0'/0'";
+  static readonly derivationPath = `m/49'/${coinType}'/0'`;
 
   allowSend() {
     return true;
@@ -48,10 +50,7 @@ export class HDSegwitP2SHWallet extends AbstractHDElectrumWallet {
   }
 
   /**
-   * Returning ypub actually, not xpub. Keeping same method name
-   * for compatibility.
-   *
-   * @return {String} ypub
+   * Returns the selected network's nested-SegWit SLIP-132 public key.
    */
   getXpub() {
     if (this._xpub) {
@@ -59,7 +58,7 @@ export class HDSegwitP2SHWallet extends AbstractHDElectrumWallet {
     }
     // first, getting xpub
     const seed = this._getSeed();
-    const root = bip32.fromSeed(seed);
+    const root = bip32.fromSeed(seed, network);
 
     const path = this.getDerivationPath();
     if (!path) {
@@ -68,8 +67,8 @@ export class HDSegwitP2SHWallet extends AbstractHDElectrumWallet {
     const child = root.derivePath(path).neutered();
     const xpub = child.toBase58();
 
-    // bitcoinjs does not support ypub yet, so we just convert it from xpub
-    this._xpub = this._xpubToYpub(xpub);
+    // bitcoinjs does not support nested-SegWit SLIP-132 versions, so convert the standard public key.
+    this._xpub = convertExtendedKey(xpub, 'nested');
 
     return this._xpub;
   }
@@ -83,8 +82,8 @@ export class HDSegwitP2SHWallet extends AbstractHDElectrumWallet {
     if (!pubkey || !path) {
       throw new Error('Internal error: pubkey or path are invalid');
     }
-    const p2wpkh = bitcoin.payments.p2wpkh({ pubkey });
-    const p2sh = bitcoin.payments.p2sh({ redeem: p2wpkh });
+    const p2wpkh = bitcoin.payments.p2wpkh({ pubkey, network });
+    const p2sh = bitcoin.payments.p2sh({ redeem: p2wpkh, network });
     if (!p2sh.output) {
       throw new Error('Internal error: no p2sh.output during _addPsbtInput()');
     }

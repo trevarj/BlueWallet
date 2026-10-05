@@ -15,6 +15,7 @@ import { majorTomToGroundControl } from '../../blue_modules/notifications';
 import { scanQrHelper } from '../../helpers/scan-qr';
 import { BlueSpacing10, BlueSpacing20 } from '../../components/BlueSpacing';
 import { BlueBigCheckmark } from '../../components/BlueBigCheckmark';
+import { network } from '../../models/bitcoinNetwork';
 
 const BROADCAST_RESULT = Object.freeze({
   none: 'Input transaction hex',
@@ -38,7 +39,9 @@ const Broadcast: React.FC = () => {
 
     try {
       // should be base64 encoded PSBT
-      const validTx = bitcoin.Psbt.fromBase64(scannedData).extractTransaction();
+      const validTx = bitcoin.Psbt.fromBase64(scannedData, {
+        network,
+      }).extractTransaction();
       return handleUpdateTxHex(validTx.toHex());
     } catch (e) {}
   }, []);
@@ -113,7 +116,11 @@ const Broadcast: React.FC = () => {
               <View
                 style={[
                   styles.input,
-                  { borderColor: colors.formBorder, borderBottomColor: colors.formBorder, backgroundColor: colors.inputBackgroundColor },
+                  {
+                    borderColor: colors.formBorder,
+                    borderBottomColor: colors.formBorder,
+                    backgroundColor: colors.inputBackgroundColor,
+                  },
                 ]}
               >
                 <TextInput

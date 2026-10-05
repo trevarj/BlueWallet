@@ -28,6 +28,7 @@ import { useStorage } from '../../hooks/context/useStorage';
 import { combinePSBTs } from '../../util/combinePSBTs.ts';
 import { MultisigHDWallet } from '../../class/wallets/multisig-hd-wallet';
 import assert from 'assert';
+import { network } from '../../models/bitcoinNetwork';
 
 type RouteParams = {
   params: {
@@ -51,7 +52,7 @@ const PsbtMultisig = () => {
 
   const [psbt, setPsbt] = useState(() => {
     try {
-      const initial = bitcoin.Psbt.fromBase64(psbtBase64);
+      const initial = bitcoin.Psbt.fromBase64(psbtBase64, { network });
       return initial;
     } catch (error) {
       console.error('Error loading initial PSBT:', error);
@@ -168,7 +169,11 @@ const PsbtMultisig = () => {
   };
 
   const navigateToPSBTMultisigQRCode = () => {
-    navigate('PsbtMultisigQRCode', { walletID, psbtBase64: psbt.toBase64(), isShowOpenScanner: isConfirmEnabled() });
+    navigate('PsbtMultisigQRCode', {
+      walletID,
+      psbtBase64: psbt.toBase64(),
+      isShowOpenScanner: isConfirmEnabled(),
+    });
   };
 
   const _renderItemUnsigned = (el: ListRenderItemInfo<any>) => {
@@ -181,7 +186,9 @@ const PsbtMultisig = () => {
           </View>
           <View style={styles.vaultKeyTextWrapper}>
             <Text style={[styles.vaultKeyText, stylesHook.vaultKeyText]}>
-              {loc.formatString(loc.multisig.vault_key, { number: el.index + 1 })}
+              {loc.formatString(loc.multisig.vault_key, {
+                number: el.index + 1,
+              })}
             </Text>
           </View>
         </View>
@@ -222,7 +229,10 @@ const PsbtMultisig = () => {
   const _combinePSBT = () => {
     if (receivedPSBTBase64 && receivedPSBTBase64 !== psbt.toBase64()) {
       try {
-        const combined = combinePSBTs({ psbtBase64: psbt.toBase64(), newPSBTBase64: receivedPSBTBase64 });
+        const combined = combinePSBTs({
+          psbtBase64: psbt.toBase64(),
+          newPSBTBase64: receivedPSBTBase64,
+        });
         setPsbt(combined);
         setParams({ receivedPSBTBase64: undefined });
       } catch (error: any) {
@@ -329,7 +339,12 @@ const PsbtMultisig = () => {
 
   const footer = null;
 
-  const onLayout = (event: NativeSyntheticEvent<{ layout: LayoutRectangle; target?: NodeHandle | null }>) => {
+  const onLayout = (
+    event: NativeSyntheticEvent<{
+      layout: LayoutRectangle;
+      target?: NodeHandle | null;
+    }>,
+  ) => {
     const newHeight = event.nativeEvent.layout.height;
     setFlatListHeight(newHeight);
   };
@@ -380,9 +395,16 @@ const PsbtMultisig = () => {
             <View style={styles.bottomWrapper}>
               <View style={styles.bottomFeesWrapper}>
                 <BlueText selectable style={stylesHook.feeFiatText}>
-                  {loc.formatString(loc.multisig.fee, { number: satoshiToLocalCurrency(getFee()) })} -{' '}
+                  {loc.formatString(loc.multisig.fee, {
+                    number: satoshiToLocalCurrency(getFee()),
+                  })}{' '}
+                  -{' '}
                 </BlueText>
-                <BlueText selectable>{loc.formatString(loc.multisig.fee_btc, { number: satoshiToBTC(getFee()) })}</BlueText>
+                <BlueText selectable>
+                  {loc.formatString(loc.multisig.fee_btc, {
+                    number: satoshiToBTC(getFee()),
+                  })}
+                </BlueText>
               </View>
             </View>
           </View>
@@ -468,7 +490,11 @@ const styles = StyleSheet.create({
   },
   provideSignatureButtonText: { fontWeight: '600', fontSize: 15 },
   vaultKeyText: { fontSize: 18, fontWeight: 'bold' },
-  vaultKeyTextWrapper: { justifyContent: 'center', alignItems: 'center', paddingLeft: 16 },
+  vaultKeyTextWrapper: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingLeft: 16,
+  },
   vaultKeyCircle: {
     width: 42,
     height: 42,
@@ -485,10 +511,18 @@ const styles = StyleSheet.create({
   },
   itemUnsignedWrapper: { flexDirection: 'row', paddingTop: 16 },
   vaultKeyTextSigned: { fontSize: 18, fontWeight: 'bold' },
-  vaultKeyTextSignedWrapper: { justifyContent: 'center', alignItems: 'center', paddingLeft: 16 },
+  vaultKeyTextSignedWrapper: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingLeft: 16,
+  },
   flexDirectionRow: { flexDirection: 'row', paddingVertical: 12 },
   textBtcUnit: { justifyContent: 'flex-end' },
-  bottomFeesWrapper: { justifyContent: 'center', alignItems: 'center', flexDirection: 'row' },
+  bottomFeesWrapper: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    flexDirection: 'row',
+  },
   bottomWrapper: { marginTop: 16 },
   height80: {
     height: 80,

@@ -1,4 +1,5 @@
 import * as bitcoin from 'bitcoinjs-lib';
+import { network } from '../models/bitcoinNetwork';
 
 /**
  * Combines two PSBTs and returns the combined PSBT.
@@ -13,11 +14,11 @@ interface CombinePSBTsParams {
 
 export const combinePSBTs = ({ psbtBase64, newPSBTBase64 }: CombinePSBTsParams): bitcoin.Psbt => {
   if (psbtBase64 === newPSBTBase64) {
-    return bitcoin.Psbt.fromBase64(psbtBase64);
+    return bitcoin.Psbt.fromBase64(psbtBase64, { network });
   }
   try {
-    const psbt = bitcoin.Psbt.fromBase64(psbtBase64);
-    const newPsbt = bitcoin.Psbt.fromBase64(newPSBTBase64);
+    const psbt = bitcoin.Psbt.fromBase64(psbtBase64, { network });
+    const newPsbt = bitcoin.Psbt.fromBase64(newPSBTBase64, { network });
     psbt.combine(newPsbt);
     return psbt;
   } catch (err) {

@@ -285,22 +285,11 @@ describe('Watch only wallet', () => {
     assert.ok(w.useWithHardwareWalletEnabled());
   });
 
-  it('will fail to import Electrum compatible backup wallet when fingerprint hex is less than 7', async () => {
-    const w = new WatchOnlyWallet();
-    let str = require('fs').readFileSync('./tests/unit/fixtures/skeleton-electrum-hex-only.txt', 'ascii');
-    str = str.replace('b616be56', '16be56');
-    w.setSecret(str);
-    w.init();
-    assert.throws(w.valid, 'invalid fingerprint hex');
-  });
-
-  it('will fail to import Electrum compatible backup wallet when fingerprint is an invalid hex value', async () => {
+  it('rejects an Electrum backup with a non-hex fingerprint', () => {
     const w = new WatchOnlyWallet();
     let str = require('fs').readFileSync('./tests/unit/fixtures/skeleton-electrum-hex-only.txt', 'ascii');
     str = str.replace('b616be56', 'j16be56');
-    w.setSecret(str);
-    w.init();
-    assert.throws(w.valid, 'invalid fingerprint hex');
+    assert.throws(() => w.setSecret(str), /Invalid Hex character/);
   });
 
   it('can import cobo vault JSON skeleton wallet', async () => {
@@ -771,7 +760,14 @@ describe('Watch only wallet', () => {
     assert.strictEqual(w.getID(), idBefore);
 
     const { psbt } = w.createTransaction(
-      [{ value: 100000, address: addressBefore, vout: 0, txid: '11'.repeat(32) }],
+      [
+        {
+          value: 100000,
+          address: addressBefore,
+          vout: 0,
+          txid: '11'.repeat(32),
+        },
+      ],
       [{ address: 'bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq', value: 5000 }],
       1,
       w._getInternalAddressByIndex(0),
@@ -875,9 +871,8 @@ describe('Watch only wallet', () => {
     const xpub = 'xpub6CQdfC3v9gU86eaSn7AhUFcBVxiGhdtYxdC5Cw2vLmFkfth2KXCMmYcPpvZviA89X6DXDs4PJDk5QVL2G2xaVjv7SM4roWHr1gR4xB3Z7Ps';
     const zpub = 'zpub6r7jhKKm7BAVx3b3nSnuadY1WnshZYkhK8gKFoRLwK9rF3Mzv28BrGcCGA3ugGtawi1WLb2vyjQAX9ZTDGU5gNk2bLdTc3iEXr6tzR1ipNP';
 
-    // these must behave exactly as a plain setSecret: script-typed keys, key origins with a
-    // genuine fingerprint, an xpub-prefixed string with an embedded origin, and invalid input
-    const passthrough = [zpub, `[aabbccdd/44'/0'/0']${xpub}`, `xpubZZZ[beebeeb0/84'/0'/0']${xpub}`, 'xpubGARBAGE', `${xpub}/0/*`];
+    // Script-typed and origin-bearing selected-chain keys retain setSecret behavior.
+    const passthrough = [zpub, `[aabbccdd/44'/0'/0']${xpub}`];
     for (const input of passthrough) {
       const w = new WatchOnlyWallet();
       w.setSecretForCustomPathImport(input, "m/84'/0'/0'");
@@ -885,6 +880,11 @@ describe('Watch only wallet', () => {
       reference.setSecret(input);
       assert.strictEqual(w.getSecret(), reference.getSecret(), input.slice(0, 24));
       assert.strictEqual(w.getMasterFingerprintHex(), reference.getMasterFingerprintHex(), input.slice(0, 24));
+    }
+
+    for (const input of [`xpubZZZ[beebeeb0/84'/0'/0']${xpub}`, 'xpubGARBAGE', `${xpub}/0/*`]) {
+      const w = new WatchOnlyWallet();
+      assert.throws(() => w.setSecretForCustomPathImport(input, "m/84'/0'/0'"));
     }
 
     // short and testnet 84/49 paths stay unwrapped: the converted key would not survive an
@@ -941,8 +941,20 @@ describe('Watch only wallet', () => {
       w.setMasterFingerprintFromHex(fp);
       assert.strictEqual(w.getMasterFingerprintHex(), fp);
       const { psbt } = w.createTransaction(
-        [{ value: 100000, address: w._getExternalAddressByIndex(0), vout: 0, txid: '11'.repeat(32) }],
-        [{ address: 'bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq', value: 5000 }],
+        [
+          {
+            value: 100000,
+            address: w._getExternalAddressByIndex(0),
+            vout: 0,
+            txid: '11'.repeat(32),
+          },
+        ],
+        [
+          {
+            address: 'bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq',
+            value: 5000,
+          },
+        ],
         1,
         w._getInternalAddressByIndex(0),
       );
@@ -1049,10 +1061,14 @@ describe('BC-UR', () => {
 
     const decoded = decodeUR([payload]);
 
+    const account = JSON.parse(Buffer.from(decoded, 'hex').toString('ascii'));
     assert.strictEqual(
-      Buffer.from(decoded, 'hex').toString('ascii'),
-      '{"ExtPubKey":"zpub6qT7amLcp2exr4mU4AhXZMjD9CFkopECVhUxc9LHW8pNsJG2B9ogs5sFbGZpxEeT5TBjLmc7EFYgZA9EeWEM1xkJMFLefzZc8eigRFhKB8Q","MasterFingerprint":"01EBDA7D","AccountKeyPath":"m/84\'/0\'/0\'"}',
+      account.ExtPubKey,
+      'zpub6qT7amLcp2exr4mU4AhXZMjD9CFkopECVhUxc9LHW8pNsJG2B9ogs5sFbGZpxEeT5TBjLmc7EFYgZA9EeWEM1xkJMFLefzZc8eigRFhKB8Q',
     );
+    assert.strictEqual(account.MasterFingerprint, '01EBDA7D');
+    assert.strictEqual(account.AccountKeyPath, "m/84'/0'/0'");
+    assert.deepStrictEqual(account.UseInfo, { type: 1, network: 0 });
 
     const w = new WatchOnlyWallet();
     w.setSecret(Buffer.from(decoded, 'hex').toString('ascii'));

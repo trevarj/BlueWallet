@@ -1,10 +1,17 @@
-import b58 from 'bs58check';
+import { network, isCompatibleOrigin, coinType } from '../../models/bitcoinNetwork';
 import { sha256 } from '@noble/hashes/sha256';
 import wif from 'wif';
 
 import { BitcoinUnit, Chain } from '../../models/bitcoinUnits';
 import { CreateTransactionResult, CreateTransactionUtxo, Transaction, Utxo } from './types';
-import { hexToUint8Array, concatUint8Arrays, uint8ArrayToHex } from '../../blue_modules/uint8array-extras';
+import { hexToUint8Array, uint8ArrayToHex } from '../../blue_modules/uint8array-extras';
+import {
+  convertExtendedKey,
+  decodeExtendedKey,
+  extendedPublicKeyPrefixes,
+  findRecognizedExtendedKey,
+  type ExtendedKeyFormat,
+} from './extended-key';
 
 type WalletWithPassphrase = AbstractWallet & { getPassphrase: () => string };
 type UtxoMetadata = {
@@ -219,21 +226,19 @@ export class AbstractWallet {
   }
 
   setSecret(newSecret: string): this {
-    const origSecret = newSecret;
-
     // is it minikey https://en.bitcoin.it/wiki/Mini_private_key_format
     // Starts with S, is 22 length or larger, is base58
     if (newSecret.startsWith('S') && newSecret.length >= 22 && /^[1-9A-HJ-NP-Za-km-z]+$/.test(newSecret)) {
       // minikey + ? hashed with SHA256 starts with 0x00 byte
       if (uint8ArrayToHex(sha256(`${newSecret}?`)).startsWith('00')) {
         // it is a valid minikey
-        newSecret = wif.encode(0x80, Buffer.from(sha256(newSecret)), false);
+        newSecret = wif.encode(network.wif, Buffer.from(sha256(newSecret)), false);
       }
     }
 
     this.secret = newSecret.trim().replace('bitcoin:', '').replace('BITCOIN:', '');
 
-    if (this.secret.startsWith('BC1')) this.secret = this.secret.toLowerCase();
+    if (this.secret.toUpperCase().startsWith(network.bech32.toUpperCase() + '1')) this.secret = this.secret.toLowerCase();
 
     // is it output descriptor?
     if (
@@ -242,7 +247,9 @@ export class AbstractWallet {
       this.secret.startsWith('sh(') ||
       this.secret.startsWith('tr(')
     ) {
-      const xpubIndex = Math.max(this.secret.indexOf('xpub'), this.secret.indexOf('ypub'), this.secret.indexOf('zpub'));
+      const matchingPrefix = extendedPublicKeyPrefixes.find(prefix => this.secret.includes(prefix));
+      if (!matchingPrefix) throw new Error('Descriptor extended key is not valid for this network');
+      const xpubIndex = this.secret.indexOf(matchingPrefix);
       let fpAndPath;
       if (this.secret.includes('[')) {
         fpAndPath = this.secret.substring(this.secret.indexOf('['), xpubIndex).replace(/[[\]]/g, '');
@@ -256,6 +263,7 @@ export class AbstractWallet {
       const path = 'm' + fpAndPath.substring(pathIndex).replace(/[hH‘’]/g, "'");
       const fp = fpAndPath.substring(0, pathIndex);
 
+      if (!isCompatibleOrigin(path)) throw new Error(`Descriptor origin must use coin type ${coinType}`);
       this._derivationPath = path;
       const mfp = uint8ArrayToHex(hexToUint8Array(fp).reverse());
       this.masterFingerprint = parseInt(mfp, 16);
@@ -263,113 +271,112 @@ export class AbstractWallet {
       // Store the script type for later use
       if (this.secret.startsWith('tr(')) {
         this.segwitType = 'p2tr';
+        decodeExtendedKey(xpub, 'public');
         this.secret = xpub;
       } else if (this.secret.startsWith('wpkh(')) {
         this.segwitType = 'p2wpkh';
-        this.secret = this._xpubToZpub(xpub);
+        this.secret = convertExtendedKey(xpub, 'native');
       } else if (this.secret.startsWith('sh(wpkh(')) {
         this.segwitType = 'p2sh(p2wpkh)';
-        this.secret = this._xpubToYpub(xpub);
+        this.secret = convertExtendedKey(xpub, 'nested');
       } else if (this.secret.startsWith('pkh(')) {
         this.segwitType = 'p2pkh';
-        this.secret = xpub;
+        this.secret = convertExtendedKey(xpub, 'legacy');
       }
 
       return this;
     }
 
-    // [fingerprint/derivation]zpub
-    const re = /\[([^\]]+)\](.*)/;
-    const m = this.secret.match(re);
-    if (m && m.length === 3) {
-      let [hexFingerprint, ...derivationPathArray] = m[1].split('/');
-      // H is the same hardened bit as h; leaving it skips xpub to zpub and imports BIP84 as legacy 1...
+    // [fingerprint/derivation]extended-public-key
+    const originMatch = this.secret.match(/^\[([0-9a-fA-F]{8}\/[^\]]+)\]([1-9A-HJ-NP-Za-km-z]+)(?:\/.*)?$/);
+    if (this.secret.startsWith('[') && !originMatch && findRecognizedExtendedKey(this.secret)) {
+      throw new Error('Invalid extended key origin');
+    }
+    if (originMatch) {
+      const [hexFingerprint, ...derivationPathArray] = originMatch[1].split('/');
       const derivationPath = `m/${derivationPathArray.join('/').replace(/[hH‘’]/g, "'")}`;
-      if (hexFingerprint.length === 8) {
-        hexFingerprint = uint8ArrayToHex(hexToUint8Array(hexFingerprint).reverse());
-        this.masterFingerprint = parseInt(hexFingerprint, 16);
-        this._derivationPath = derivationPath;
-      }
-      this.secret = m[2];
+      if (!isCompatibleOrigin(derivationPath)) throw new Error(`Extended key origin must use coin type ${coinType}`);
 
-      if (derivationPath.startsWith("m/84'/0'/") && this.secret.toLowerCase().startsWith('xpub')) {
-        // need to convert xpub to zpub
-        this.secret = this._xpubToZpub(this.secret.split('/')[0]);
-      }
+      const extendedKey = originMatch[2];
+      const decodedKey = decodeExtendedKey(extendedKey, 'public');
+      const conventionalPath = derivationPath.match(new RegExp(`^m/(49|84)'/${coinType}'/\\d+'$`));
+      const format: ExtendedKeyFormat | undefined =
+        conventionalPath?.[1] === '49' ? 'nested' : conventionalPath?.[1] === '84' ? 'native' : undefined;
 
-      if (derivationPath.startsWith("m/49'/0'/") && this.secret.toLowerCase().startsWith('xpub')) {
-        // need to convert xpub to ypub
-        this.secret = this._xpubToYpub(this.secret);
-      }
+      this.secret = format && decodedKey.format === 'legacy' ? convertExtendedKey(extendedKey, format) : extendedKey;
+      this._derivationPath = derivationPath;
+      this.masterFingerprint = parseInt(uint8ArrayToHex(hexToUint8Array(hexFingerprint).reverse()), 16);
     }
 
+    let parsedSecret;
     try {
-      let parsedSecret;
-      // regex might've matched invalid data. if so, parse newSecret.
-      if (this.secret.trim().length > 0) {
-        try {
-          parsedSecret = JSON.parse(this.secret);
-        } catch (e) {
-          parsedSecret = JSON.parse(newSecret);
-        }
-      } else {
+      parsedSecret = JSON.parse(this.secret);
+    } catch {
+      try {
         parsedSecret = JSON.parse(newSecret);
-      }
-      if (parsedSecret && parsedSecret.keystore && parsedSecret.keystore.xpub) {
-        let masterFingerprint: number = 0;
-        if (parsedSecret.keystore.ckcc_xfp) {
-          // It is a ColdCard Hardware Wallet
-          masterFingerprint = Number(parsedSecret.keystore.ckcc_xfp);
-        } else if (parsedSecret.keystore.root_fingerprint) {
-          masterFingerprint = Number(parsedSecret.keystore.root_fingerprint);
-          if (!masterFingerprint) masterFingerprint = this.getMasterFingerprintFromHex(parsedSecret.keystore.root_fingerprint);
-        }
-        if (parsedSecret.keystore.label) {
-          this.setLabel(parsedSecret.keystore.label);
-        }
-        if (parsedSecret.keystore.derivation) {
-          this._derivationPath = parsedSecret.keystore.derivation;
-          this._derivationPath = this._derivationPath?.replace(/[hH‘’]/g, "'");
-        }
-        this.secret = parsedSecret.keystore.xpub;
-        this.masterFingerprint = masterFingerprint;
+      } catch {}
+    }
 
-        if (parsedSecret.keystore.type === 'hardware') this.use_with_hardware_wallet = true;
+    if (parsedSecret?.keystore?.xpub) {
+      const keystore = parsedSecret.keystore;
+      const key = String(keystore.xpub);
+      decodeExtendedKey(key, 'public');
+      const derivationPath = keystore.derivation ? String(keystore.derivation).replace(/[hH‘’]/g, "'") : undefined;
+      if (derivationPath && !isCompatibleOrigin(derivationPath)) {
+        throw new Error(`Extended key origin must use coin type ${coinType}`);
       }
-      // It is a Cobo Vault Hardware Wallet
-      if (parsedSecret && parsedSecret.ExtPubKey && parsedSecret.MasterFingerprint && parsedSecret.AccountKeyPath) {
-        this.secret = parsedSecret.ExtPubKey;
-        const mfp = uint8ArrayToHex(hexToUint8Array(parsedSecret.MasterFingerprint).reverse());
-        this.masterFingerprint = parseInt(mfp, 16);
-        this._derivationPath = parsedSecret.AccountKeyPath.startsWith('m/')
-          ? parsedSecret.AccountKeyPath
-          : `m/${parsedSecret.AccountKeyPath}`;
-        if (parsedSecret.CoboVaultFirmwareVersion) this.use_with_hardware_wallet = true;
-        return this;
+
+      let masterFingerprint = 0;
+      if (keystore.ckcc_xfp) {
+        masterFingerprint = Number(keystore.ckcc_xfp);
+      } else if (keystore.root_fingerprint) {
+        masterFingerprint = Number(keystore.root_fingerprint);
+        if (!masterFingerprint) masterFingerprint = this.getMasterFingerprintFromHex(keystore.root_fingerprint);
       }
-    } catch (_) {}
+
+      this.secret = key;
+      this._derivationPath = derivationPath;
+      this.masterFingerprint = masterFingerprint;
+      if (keystore.label) this.setLabel(keystore.label);
+      if (keystore.type === 'hardware') this.use_with_hardware_wallet = true;
+    }
+
+    if (parsedSecret?.ExtPubKey && parsedSecret.MasterFingerprint && parsedSecret.AccountKeyPath) {
+      const key = String(parsedSecret.ExtPubKey);
+      const derivationPath = String(parsedSecret.AccountKeyPath);
+      const normalizedPath = (derivationPath.startsWith('m/') ? derivationPath : `m/${derivationPath}`).replace(/[hH‘’]/g, "'");
+      decodeExtendedKey(key, 'public');
+      if (!isCompatibleOrigin(normalizedPath)) throw new Error(`Extended key origin must use coin type ${coinType}`);
+      const masterFingerprint = parseInt(uint8ArrayToHex(hexToUint8Array(String(parsedSecret.MasterFingerprint)).reverse()), 16);
+
+      this.secret = key;
+      this._derivationPath = normalizedPath;
+      this.masterFingerprint = masterFingerprint;
+      if (parsedSecret.CoboVaultFirmwareVersion) this.use_with_hardware_wallet = true;
+      return this;
+    }
 
     if (!this._derivationPath) {
-      if (this.secret.startsWith('xpub')) {
-        this._derivationPath = "m/44'/0'/0'"; // Assume default BIP44 path for legacy wallets
-      } else if (this.secret.startsWith('ypub')) {
-        this._derivationPath = "m/49'/0'/0'"; // Assume default BIP49 path for segwit wrapped wallets
-      } else if (this.secret.startsWith('zpub')) {
-        this._derivationPath = "m/84'/0'/0'"; // Assume default BIP84 for native segwit wallets
-      }
+      try {
+        const format = decodeExtendedKey(this.secret, 'public').format;
+        if (format === 'legacy') {
+          this._derivationPath = `m/44'/${coinType}'/0'`;
+        } else if (format === 'nested') {
+          this._derivationPath = `m/49'/${coinType}'/0'`;
+        } else if (format === 'native') {
+          this._derivationPath = `m/84'/${coinType}'/0'`;
+        }
+      } catch {}
     }
 
     // is it new-wasabi.json exported from coldcard?
-    try {
-      const json = JSON.parse(origSecret);
-      if (json.MasterFingerprint && json.ExtPubKey) {
-        // technically we should allow choosing which format user wants, BIP44 / BIP49 / BIP84, but meh...
-        this.secret = this._xpubToZpub(json.ExtPubKey);
-        const mfp = uint8ArrayToHex(hexToUint8Array(json.MasterFingerprint).reverse());
-        this.masterFingerprint = parseInt(mfp, 16);
-        return this;
-      }
-    } catch (_) {}
+    if (parsedSecret?.MasterFingerprint && parsedSecret.ExtPubKey) {
+      const key = convertExtendedKey(String(parsedSecret.ExtPubKey), 'native');
+      const masterFingerprint = parseInt(uint8ArrayToHex(hexToUint8Array(String(parsedSecret.MasterFingerprint)).reverse()), 16);
+      this.secret = key;
+      this.masterFingerprint = masterFingerprint;
+      return this;
+    }
 
     return this;
   }
@@ -445,50 +452,6 @@ export class AbstractWallet {
    */
   getAllExternalAddresses(): string[] {
     return [];
-  }
-
-  /*
-   * Converts zpub to xpub
-   *
-   * @param {String} zpub
-   * @returns {String} xpub
-   */
-  _zpubToXpub(zpub: string): string {
-    let data = b58.decode(zpub);
-    data = data.slice(4);
-    const concatenated = concatUint8Arrays([hexToUint8Array('0488b21e'), data]);
-
-    return b58.encode(concatenated);
-  }
-
-  /**
-   * Converts ypub to xpub
-   * @param {String} ypub - wallet ypub
-   * @returns {*}
-   */
-  static _ypubToXpub(ypub: string): string {
-    let data = b58.decode(ypub);
-    if (data.readUInt32BE() !== 0x049d7cb2) throw new Error('Not a valid ypub extended key!');
-    data = data.slice(4);
-    const concatenated = concatUint8Arrays([hexToUint8Array('0488b21e'), data]);
-
-    return b58.encode(concatenated);
-  }
-
-  _xpubToZpub(xpub: string): string {
-    let data = b58.decode(xpub);
-    data = data.slice(4);
-    const concatenated = concatUint8Arrays([hexToUint8Array('04b24746'), data]);
-
-    return b58.encode(concatenated);
-  }
-
-  _xpubToYpub(xpub: string): string {
-    let data = b58.decode(xpub);
-    data = data.slice(4);
-    const concatenated = concatUint8Arrays([hexToUint8Array('049d7cb2'), data]);
-
-    return b58.encode(concatenated);
   }
 
   prepareForSerialization(): void {}

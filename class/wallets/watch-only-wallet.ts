@@ -1,7 +1,7 @@
 import BIP32Factory from 'bip32';
 import * as bitcoin from 'bitcoinjs-lib';
 import ecc from '../../blue_modules/noble_ecc';
-import { AbstractWallet } from './abstract-wallet';
+import { bitcoinNetwork, coinType, network } from '../../models/bitcoinNetwork';
 import { HDLegacyP2PKHWallet } from './hd-legacy-p2pkh-wallet';
 import { HDSegwitBech32Wallet } from './hd-segwit-bech32-wallet';
 import { HDSegwitP2SHWallet } from './hd-segwit-p2sh-wallet';
@@ -9,6 +9,7 @@ import { LegacyWallet } from './legacy-wallet';
 import { THDWalletForWatchOnly } from './types';
 import { HDTaprootWallet } from './hd-taproot-wallet';
 import { WalletDescriptor } from '../wallet-descriptor.ts';
+import { convertExtendedKey, decodeExtendedKey, decodeRecognizedExtendedKey, looksLikeExtendedKey } from './extended-key';
 
 const bip32 = BIP32Factory(ecc);
 
@@ -62,10 +63,10 @@ export class WatchOnlyWallet extends LegacyWallet {
   }
 
   valid() {
-    if (this.secret.startsWith('xpub') || this.secret.startsWith('ypub') || this.secret.startsWith('zpub')) return this.isXpubValid();
+    if (looksLikeExtendedKey(this.secret)) return this.isXpubValid();
 
     try {
-      bitcoin.address.toOutputScript(this.getAddress());
+      bitcoin.address.toOutputScript(this.getAddress(), network);
       return true;
     } catch (_) {
       return false;
@@ -73,9 +74,7 @@ export class WatchOnlyWallet extends LegacyWallet {
   }
 
   /**
-   * this method creates appropriate HD wallet class, depending on whether we have xpub, ypub or zpub
-   * as a property of `this`, and in case such property exists - it recreates it and copies data from old one.
-   * this is needed after serialization/save/load/deserialization procedure.
+   * Creates the appropriate HD wallet class from descriptor evidence, an explicit path, or the selected-network key format.
    */
   init() {
     let hdWalletInstance: THDWalletForWatchOnly;
@@ -90,7 +89,7 @@ export class WatchOnlyWallet extends LegacyWallet {
     } else if (this.segwitType === 'p2pkh') {
       hdWalletInstance = new HDLegacyP2PKHWallet();
     }
-    // Fallback to path-based detection (for bare [fingerprint/path]xpub without descriptor wrapper)
+    // Fallback to path-based detection for an origin-bearing standard public key without a descriptor wrapper.
     else if (this._derivationPath?.startsWith("m/86'")) {
       // if path is explicit taproot path - its definately BIP86
       hdWalletInstance = new HDTaprootWallet();
@@ -99,12 +98,18 @@ export class WatchOnlyWallet extends LegacyWallet {
     } else if (this._derivationPath?.startsWith("m/49'")) {
       hdWalletInstance = new HDSegwitP2SHWallet();
     }
-    // Final fallback to xpub prefix (legacy behavior for bare xpub/ypub/zpub)
-    else if (this.secret.startsWith('xpub')) {
-      hdWalletInstance = new HDLegacyP2PKHWallet();
-    } else if (this.secret.startsWith('ypub')) hdWalletInstance = new HDSegwitP2SHWallet();
-    else if (this.secret.startsWith('zpub')) hdWalletInstance = new HDSegwitBech32Wallet();
-    else return this;
+    // Final fallback to the selected-network extended key format
+    else {
+      try {
+        const format = decodeExtendedKey(this.secret, 'public').format;
+        if (format === 'legacy') hdWalletInstance = new HDLegacyP2PKHWallet();
+        else if (format === 'nested') hdWalletInstance = new HDSegwitP2SHWallet();
+        else if (format === 'native') hdWalletInstance = new HDSegwitBech32Wallet();
+        else return this;
+      } catch {
+        return this;
+      }
+    }
     hdWalletInstance._xpub = this.secret;
 
     // if derivation path recovered from JSON file it should be moved to hdWalletInstance
@@ -260,8 +265,9 @@ export class WatchOnlyWallet extends LegacyWallet {
     );
   }
 
+  // Identify all serialized extended-key material here; isXpubValid() enforces selected-chain public-key acceptance.
   isHd() {
-    return this.secret.startsWith('xpub') || this.secret.startsWith('ypub') || this.secret.startsWith('zpub');
+    return looksLikeExtendedKey(this.secret);
   }
 
   weOwnAddress(address: string) {
@@ -270,7 +276,7 @@ export class WatchOnlyWallet extends LegacyWallet {
       throw new Error('Not initialized');
     }
 
-    if (address && address.startsWith('BC1')) address = address.toLowerCase();
+    if (address && address.toUpperCase().startsWith(network.bech32.toUpperCase() + '1')) address = address.toLowerCase();
 
     return this.getAddress() === address;
   }
@@ -296,21 +302,13 @@ export class WatchOnlyWallet extends LegacyWallet {
   }
 
   isXpubValid() {
-    let xpub;
-
     try {
-      if (this.secret.startsWith('zpub')) {
-        xpub = this._zpubToXpub(this.secret);
-      } else if (this.secret.startsWith('ypub')) {
-        xpub = AbstractWallet._ypubToXpub(this.secret);
-      } else {
-        xpub = this.secret;
-      }
-
-      const hdNode = bip32.fromBase58(xpub);
+      decodeExtendedKey(this.secret, 'public');
+      const xpub = convertExtendedKey(this.secret, 'legacy');
+      const hdNode = bip32.fromBase58(xpub, network);
       hdNode.derive(0);
       return true;
-    } catch (_) {}
+    } catch {}
 
     return false;
   }
@@ -351,21 +349,26 @@ export class WatchOnlyWallet extends LegacyWallet {
     this.masterFingerprint = this.getMasterFingerprintFromHex(hexValue);
   }
 
-  // wrap only export-safe 84/49/86 paths so setSecret's mapping applies
+  // Wrap only complete conventional selected-network account paths so partial/custom paths stay literal.
   setSecretForCustomPathImport(importText: string, path: string): this {
-    const wrapPath = path.startsWith("m/84'/0'/") || path.startsWith("m/49'/0'/") || path.startsWith("m/86'");
     const trimmed = importText.trim();
-    // skip key-origin forms; wrapping would replace their fingerprint
-    if (wrapPath && trimmed.startsWith('xpub') && !trimmed.includes('[')) {
-      this.setSecret(trimmed);
-      if (this.valid() && this.isHd()) {
-        return this.setSecret(`[00000000/${path.replace(/^m\//, '')}]${trimmed}`);
+    if (looksLikeExtendedKey(trimmed)) {
+      const decoded = decodeRecognizedExtendedKey(trimmed);
+      if (decoded.kind !== 'public') throw new Error('Watch-only imports require an extended public key');
+      if (decoded.chain !== bitcoinNetwork) throw new Error(`Extended key is not valid for ${bitcoinNetwork}`);
+
+      const wrapPath = new RegExp(`^m/(49|84|86)'/${coinType}'/\\d+'$`).test(path);
+      if (wrapPath && decoded.format === 'legacy') {
+        this.setSecret(trimmed);
+        if (this.valid() && this.isHd()) {
+          return this.setSecret(`[00000000/${path.replace(/^m\//, '')}]${trimmed}`);
+        }
       }
     }
     return this.setSecret(importText);
   }
 
-  // taproot secret is a bare xpub; export tr() so re-import is not legacy
+  // Taproot uses a standard extended public key; export tr() so re-import is not interpreted as legacy.
   getSecretForExport(): string {
     try {
       if (this.segwitType === 'p2tr' || this._hdWalletInstance instanceof HDTaprootWallet) {

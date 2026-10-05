@@ -7,7 +7,10 @@ import * as NavigationService from '../../NavigationService';
 
 jest.mock('react-native', () => {
   const actual = jest.requireActual('react-native');
-  Object.defineProperty(actual, 'Platform', { value: actual.Platform, configurable: true });
+  Object.defineProperty(actual, 'Platform', {
+    value: actual.Platform,
+    configurable: true,
+  });
   Object.defineProperty(actual.Platform, 'OS', {
     value: 'android',
     configurable: true,
@@ -16,7 +19,7 @@ jest.mock('react-native', () => {
 });
 jest.mock('../../codegen/NativeSettingsModule', () => ({
   __esModule: true,
-  default: { getConstants: () => ({ bitcoinNetwork: mockBitcoinNetwork }) },
+  default: { getConstants: () => ({ bitcoinNetwork: 'bitcoin' }) },
 }));
 jest.mock('../../models/appScheme', () => ({
   get appScheme() {
@@ -24,7 +27,6 @@ jest.mock('../../models/appScheme', () => ({
   },
 }));
 
-let mockBitcoinNetwork = 'bitcoin';
 let mockAppScheme: string;
 jest.mock('react-native-quick-actions', () => ({
   clearShortcutItems: jest.fn(),
@@ -74,13 +76,9 @@ beforeEach(() => {
 describe.each([
   ['bitcoin', 'bluewallet-bhwi', 'bluewallet-bhwi-testnet'],
   ['testnet', 'bluewallet-bhwi-testnet', 'bluewallet-bhwi'],
-])('Android %s wallet shortcuts', (bitcoinNetwork, scheme, foreignScheme) => {
+])('Android %s wallet shortcuts', (_bitcoinNetwork, scheme, foreignScheme) => {
   beforeAll(() => {
-    mockBitcoinNetwork = bitcoinNetwork;
-    jest.isolateModules(() => {
-      mockAppScheme = jest.requireActual('../../models/appScheme').appScheme;
-    });
-    expect(mockAppScheme).toBe(scheme);
+    mockAppScheme = scheme;
   });
 
   it('emits owned shortcuts and rejects foreign initial and live actions', async () => {

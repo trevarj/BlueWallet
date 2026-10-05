@@ -12,6 +12,7 @@ import TipBox from '../../components/TipBox';
 import { SendDetailsStackParamList } from '../../navigation/SendDetailsStackParamList';
 import { BlueSpacing20 } from '../../components/BlueSpacing';
 import { isHexString } from '../../blue_modules/ur';
+import { network } from '../../models/bitcoinNetwork';
 
 interface BarcodeScanResult {
   data?: string;
@@ -29,7 +30,7 @@ const PsbtMultisigQRCode: React.FC = () => {
   const dynamicQRCode = useRef<DynamicQRCode>(null);
   const isFocused = useIsFocused();
 
-  const psbt = bitcoin.Psbt.fromBase64(psbtBase64);
+  const psbt = bitcoin.Psbt.fromBase64(psbtBase64, { network });
   const stylesHook = StyleSheet.create({
     root: {
       backgroundColor: colors.elevated,
@@ -57,11 +58,13 @@ const PsbtMultisigQRCode: React.FC = () => {
       const data = result.data || '';
 
       if (data.toUpperCase().startsWith('UR')) {
-        presentAlert({ message: 'BC-UR not decoded. This should never happen' });
+        presentAlert({
+          message: 'BC-UR not decoded. This should never happen',
+        });
       } else if (isHexString(data)) {
         // psbt hex or tx hex?
         try {
-          const psbtFromHex = bitcoin.Psbt.fromHex(data);
+          const psbtFromHex = bitcoin.Psbt.fromHex(data, { network });
           // yep, it is PSBT
           const popToAction = StackActions.popTo(
             'PsbtMultisig',

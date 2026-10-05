@@ -6,6 +6,7 @@ import { BlueURDecoder, decodeUR, encodeUR } from '../../blue_modules/ur';
 import { MultisigHDWallet } from '../../class/wallets/multisig-hd-wallet';
 import { MultisigCosigner } from '../../class/multisig-cosigner';
 import { uint8ArrayToHex } from '../../blue_modules/uint8array-extras';
+import { convertExtendedKey } from '../../class/wallets/extended-key';
 
 const fp1cobo = 'D37EAD88';
 const Zpub1 = 'Zpub74ijpfhERJNjhCKXRspTdLJV5eoEmSRZdHqDvp9kVtdVEyiXk7pXxRbfZzQvsDFpfDHEHVtVpx4Dz9DGUWGn2Xk5zG5u45QTMsYS2vjohNQ';
@@ -461,7 +462,7 @@ describe('multisig-wallet (wrapped segwit)', () => {
     w.setM(2);
 
     assert.strictEqual(
-      w.convertXpubToMultisignatureXpub(MultisigHDWallet.seedToXpub(process.env.MNEMONICS_COLDCARD, path)),
+      convertExtendedKey(MultisigHDWallet.seedToXpub(process.env.MNEMONICS_COLDCARD, path), 'multisigNested'),
       'Ypub6kvtvTZpqGuWtQfg9bL5xe4vDWtwsirR8LzDvsY3vgXvyncW1NGXCUJ9Ps7CiizSSLV6NnnXSYyVDnxCu26QChWzWLg5YCAHam6cYjGtzRz',
     );
     assert.strictEqual(w.getCosignerForFingerprint(fp1cobo), w.getCosigner(1));
@@ -535,7 +536,7 @@ describe('multisig-wallet (wrapped segwit)', () => {
     w.setM(2);
 
     assert.strictEqual(
-      w.convertXpubToMultisignatureXpub(MultisigHDWallet.seedToXpub(process.env.MNEMONICS_COLDCARD, path)),
+      convertExtendedKey(MultisigHDWallet.seedToXpub(process.env.MNEMONICS_COLDCARD, path), 'multisigNested'),
       'Ypub6kvtvTZpqGuWtQfg9bL5xe4vDWtwsirR8LzDvsY3vgXvyncW1NGXCUJ9Ps7CiizSSLV6NnnXSYyVDnxCu26QChWzWLg5YCAHam6cYjGtzRz',
     );
     assert.strictEqual(w.getCosignerForFingerprint(fp1cobo), w.getCosigner(1));
@@ -700,8 +701,9 @@ describe('multisig-wallet (native segwit)', () => {
       'xpub6FCYVZAU7dofgor9fQaqyqqA9NqBAn83iQpoayuWrwBPfwiPgCXGCD7dvAG93M5MZs5VWVP7FErGA5UeiALqaPt7KV67fL9WX9bqXTyeWxb',
     );
     assert.strictEqual(
-      w.convertXpubToMultisignatureXpub(
+      convertExtendedKey(
         'xpub6FCYVZAU7dofgor9fQaqyqqA9NqBAn83iQpoayuWrwBPfwiPgCXGCD7dvAG93M5MZs5VWVP7FErGA5UeiALqaPt7KV67fL9WX9bqXTyeWxb',
+        'multisigNative',
       ),
       Zpub2,
     );
@@ -772,11 +774,12 @@ describe('multisig-wallet (native segwit)', () => {
     w.setM(2);
 
     assert.strictEqual(
-      w.convertXpubToMultisignatureXpub(
+      convertExtendedKey(
         MultisigHDWallet.seedToXpub(
           'accident olympic spawn spider cable track pluck fat code grab fine salt garment kidney crime old often worth member impulse brother smoke garden trash',
           path,
         ),
+        'multisigNative',
       ),
       'Zpub74k35j5DkSA6t6SFhPeHv8ENBHdNgAPALWodSWoWxsHo6vbAu2FUGq9QmUEvdEPzBoMswizfsAbTWQYU2ZnvCjdKsFje5TEfjLxuH8arBtp',
     );
@@ -824,7 +827,11 @@ describe('multisig-wallet (native segwit)', () => {
 
     const { psbt } = w.createTransaction(
       utxos,
-      [{ address: 'bc1qxzrzh4caw7e3genwtldtxntzj0ktfl7mhf2lh4fj8h7hnkvtvc4salvp85' }], // sendMax
+      [
+        {
+          address: 'bc1qxzrzh4caw7e3genwtldtxntzj0ktfl7mhf2lh4fj8h7hnkvtvc4salvp85',
+        },
+      ], // sendMax
       1,
       w._getInternalAddressByIndex(0), // there should be no change in this tx
       false,
@@ -873,7 +880,12 @@ describe('multisig-wallet (native segwit)', () => {
 
     const { psbt: psbt2 } = w2.createTransaction(
       utxos,
-      [{ address: 'bc1qxzrzh4caw7e3genwtldtxntzj0ktfl7mhf2lh4fj8h7hnkvtvc4salvp85', value: 10000 }],
+      [
+        {
+          address: 'bc1qxzrzh4caw7e3genwtldtxntzj0ktfl7mhf2lh4fj8h7hnkvtvc4salvp85',
+          value: 10000,
+        },
+      ],
       1,
       w2._getInternalAddressByIndex(3),
       false,
@@ -1034,7 +1046,11 @@ describe('multisig-wallet (native segwit)', () => {
 
     const { psbt } = walletWithNoKeys.createTransaction(
       utxos,
-      [{ address: 'bc1qxzrzh4caw7e3genwtldtxntzj0ktfl7mhf2lh4fj8h7hnkvtvc4salvp85' }], // sendMax
+      [
+        {
+          address: 'bc1qxzrzh4caw7e3genwtldtxntzj0ktfl7mhf2lh4fj8h7hnkvtvc4salvp85',
+        },
+      ], // sendMax
       1,
       walletWithNoKeys._getInternalAddressByIndex(0), // there should be no change in this tx
       false,
@@ -1241,7 +1257,12 @@ describe('multisig-wallet (native segwit)', () => {
 
     const { psbt: psbt2 } = w.createTransaction(
       utxos,
-      [{ address: 'bc1qxzrzh4caw7e3genwtldtxntzj0ktfl7mhf2lh4fj8h7hnkvtvc4salvp85', value: 10000 }],
+      [
+        {
+          address: 'bc1qxzrzh4caw7e3genwtldtxntzj0ktfl7mhf2lh4fj8h7hnkvtvc4salvp85',
+          value: 10000,
+        },
+      ],
       1,
       w._getInternalAddressByIndex(3),
       false,
@@ -1347,13 +1368,14 @@ describe('multisig-wallet (native segwit)', () => {
     assert.strictEqual(MultisigHDWallet.ckccXfp2fingerprint(1130956047), '0F056943');
     assert.strictEqual(MultisigHDWallet.ckccXfp2fingerprint(2293071571), 'D37EAD88');
 
+    assert.throws(() => new MultisigHDWallet().setSecret(electumJson), /coin type 0/);
     const w = new MultisigHDWallet();
-    w.setSecret(electumJson);
+    w.setSecret(electumJson.replaceAll("m/48'/1'", "m/48'/0'"));
 
     assert.strictEqual(w.getM(), 2);
     assert.strictEqual(w.getN(), 2);
-    assert.strictEqual(w.getCustomDerivationPathForCosigner(1), "m/48'/1'/0'/1'");
-    assert.strictEqual(w.getCustomDerivationPathForCosigner(2), "m/48'/1'/0'/1'");
+    assert.strictEqual(w.getCustomDerivationPathForCosigner(1), "m/48'/0'/0'/1'");
+    assert.strictEqual(w.getCustomDerivationPathForCosigner(2), "m/48'/0'/0'/1'");
     assert.strictEqual(w.getCosigner(1), Zpub1);
     assert.strictEqual(w.getCosigner(2), Zpub2);
     assert.strictEqual(w.getCosignerForFingerprint(fp1cobo), Zpub1);
@@ -1367,6 +1389,16 @@ describe('multisig-wallet (native segwit)', () => {
     assert.strictEqual(w._getExternalAddressByIndex(1), 'bc1qvwd2d7r46j7u9qyxpedfhe5p075sxuhzd0n6napuvvhq2u5nrmqs9ex90q');
     assert.strictEqual(w._getInternalAddressByIndex(0), 'bc1qtah0p50d4qlftn049k7lldcwh7cs3zkjy9g8xegv63p308hsh9zsf5567q');
     assert.strictEqual(w._getInternalAddressByIndex(1), 'bc1qv84pedzkqz2p4sd2dxm9krs0tcfatqcn73nndycaky9qttczj9qq3az9ma');
+  });
+
+  it('prefers an Electrum BIP48 origin over a standard xpub prefix', () => {
+    const json = JSON.parse(electumJson.replaceAll("m/48'/1'", "m/48'/0'"));
+    json['x1/'].xpub = convertExtendedKey(json['x1/'].xpub, 'legacy');
+    json['x2/'].xpub = convertExtendedKey(json['x2/'].xpub, 'legacy');
+    const wallet = new MultisigHDWallet();
+    wallet.setSecret(JSON.stringify(json));
+    assert.ok(wallet.isNativeSegwit());
+    assert.ok(!wallet.isLegacy());
   });
 
   it('can import electrum json file format with seeds', () => {
@@ -2083,8 +2115,9 @@ describe('multisig-wallet (native segwit)', () => {
     assert.strictEqual(w._getExternalAddressByIndex(0), 'bc1qhlxgpu8deq24p3hgyh0f9zkj3uxzg2hcs4ccfy65cr9fg8vm30tqdlssmv');
 
     assert.strictEqual(
-      w.convertXpubToMultisignatureXpub(
+      convertExtendedKey(
         MultisigHDWallet.seedToXpub(w.getCosigner(1), w.getCustomDerivationPathForCosigner(1), w.getCosignerPassphrase(1)),
+        'multisigNative',
       ),
       'Zpub74GDyQuS45cpaH8C24Mfrk3Kvrtw78ZtX918Wj4T7dBQSW5BMcxiJAYh95Upjf9ywSbzomNf1SqVrzeZLpwxBjH488uWNaFWkXv1B93HRe7',
     );
@@ -2149,15 +2182,24 @@ describe('multisig-wallet (native segwit)', () => {
 
     assert.strictEqual(
       w.getCosigner(1),
-      'xpub6DiYrfRwNnjeX4vHsWMajJVFKrbEEnu8gAW9vDuQzgTWEsEHE16sGWeXXUV1LBWQE1yCTmeprSNcqZ3W74hqVdgDbtYHUv3eM4W2TEUhpan',
+      convertExtendedKey(
+        'xpub6DiYrfRwNnjeX4vHsWMajJVFKrbEEnu8gAW9vDuQzgTWEsEHE16sGWeXXUV1LBWQE1yCTmeprSNcqZ3W74hqVdgDbtYHUv3eM4W2TEUhpan',
+        'multisigNative',
+      ),
     );
     assert.strictEqual(
       w.getCosigner(2),
-      'xpub6DnT4E1fT8VxuAZW29avMjr5i99aYTHBp9d7fiLnpL5t4JEprQqPMbTw7k7rh5tZZ2F5g8PJpssqrZoebzBChaiJrmEvWwUTEMAbHsY39Ge',
+      convertExtendedKey(
+        'xpub6DnT4E1fT8VxuAZW29avMjr5i99aYTHBp9d7fiLnpL5t4JEprQqPMbTw7k7rh5tZZ2F5g8PJpssqrZoebzBChaiJrmEvWwUTEMAbHsY39Ge',
+        'multisigNative',
+      ),
     );
     assert.strictEqual(
       w.getCosigner(3),
-      'xpub6DjrnfAyuonMaboEb3ZQZzhQ2ZEgaKV2r64BFmqymZqJqviLTe1JzMr2X2RfQF892RH7MyYUbcy77R7pPu1P71xoj8cDUMNhAMGYzKR4noZ',
+      convertExtendedKey(
+        'xpub6DjrnfAyuonMaboEb3ZQZzhQ2ZEgaKV2r64BFmqymZqJqviLTe1JzMr2X2RfQF892RH7MyYUbcy77R7pPu1P71xoj8cDUMNhAMGYzKR4noZ',
+        'multisigNative',
+      ),
     );
 
     assert.strictEqual(w._getExternalAddressByIndex(0), 'bc1q4taqq6q6l8fvguva6ftvrz3qgdjy6p3w2s0ds0nl6qrjw7t0hfhqgrqcwd');
@@ -2180,8 +2222,7 @@ describe('multisig-cosigner', () => {
   });
 
   it('can parse cobo json, if xpub is plain xpub (not Zpub or Ypub)', () => {
-    const tempWallet = new MultisigHDWallet();
-    let xpub = tempWallet._zpubToXpub(Zpub1);
+    let xpub = convertExtendedKey(Zpub1, 'legacy');
     assert.ok(xpub.startsWith('xpub'));
     let cosigner = new MultisigCosigner(`{"xfp":"${fp1cobo}","xpub":"${xpub}","path":"${MultisigHDWallet.PATH_NATIVE_SEGWIT}"}`);
     assert.ok(cosigner.isValid());
@@ -2196,7 +2237,7 @@ describe('multisig-cosigner', () => {
     //
 
     const Ypub1 = 'Ypub6jtUX12KGcqFosZWP4YcHc9qbKRTvgBpb8aE58hsYqby3SQVTr5KGfMmdMg38ekmQ9iLhCdgbAbjih7AWSkA7pgRhiLfah3zT6u1PFvVEbc';
-    xpub = tempWallet._zpubToXpub(Ypub1);
+    xpub = convertExtendedKey(Ypub1, 'legacy');
     assert.ok(xpub.startsWith('xpub'));
     cosigner = new MultisigCosigner(`{"xfp":"${fp1cobo}","xpub":"${xpub}","path":"${MultisigHDWallet.PATH_WRAPPED_SEGWIT}"}`);
     assert.ok(cosigner.isValid());
@@ -2210,7 +2251,7 @@ describe('multisig-cosigner', () => {
 
     //
 
-    xpub = tempWallet._zpubToXpub(Ypub1);
+    xpub = convertExtendedKey(Ypub1, 'legacy');
     assert.ok(xpub.startsWith('xpub'));
     cosigner = new MultisigCosigner(`{"xfp":"${fp1cobo}","xpub":"${xpub}","path":"${MultisigHDWallet.PATH_LEGACY}"}`);
     assert.ok(cosigner.isValid());
@@ -2430,7 +2471,7 @@ describe('multisig-cosigner', () => {
     const result = MultisigCosigner.exportToJson(fp1cobo, Zpub1, "m/48'/0'/0'/2'");
     assert.strictEqual(
       result,
-      '{"xfp":"D37EAD88","xpub":"Zpub74ijpfhERJNjhCKXRspTdLJV5eoEmSRZdHqDvp9kVtdVEyiXk7pXxRbfZzQvsDFpfDHEHVtVpx4Dz9DGUWGn2Xk5zG5u45QTMsYS2vjohNQ","path":"m/48\'/0\'/0\'/2\'"}',
+      '{"xfp":"D37EAD88","xpub":"Zpub74ijpfhERJNjhCKXRspTdLJV5eoEmSRZdHqDvp9kVtdVEyiXk7pXxRbfZzQvsDFpfDHEHVtVpx4Dz9DGUWGn2Xk5zG5u45QTMsYS2vjohNQ","network":"bitcoin","path":"m/48\'/0\'/0\'/2\'"}',
     );
 
     const cosigner = new MultisigCosigner(MultisigCosigner.exportToJson(fp1cobo, Zpub1, "m/48'/0'/0'/2'"));
@@ -2460,66 +2501,49 @@ describe('multisig-cosigner', () => {
   });
 
   it('can export cosigner to URv2', () => {
-    let result = encodeUR(MultisigCosigner.exportToJson(fp1cobo, Zpub1, "m/48'/0'/0'/2'"));
-    assert.deepStrictEqual(result, [
-      'ur:crypto-account/oeadcytekbpmloaolytaadmetaaddloxaxhdclaofejnolgudllagdgodyweehzsmeyasnswrpdalnwzfenbmewlrtplsklbjkvdloweaahdcxltjzjpctayfsimuogtpypffrnlisflswwzntbecabtbdwdbstojnfrahdamnpfcyamtaaddyotadlocsdyykaeykaeykaoykaocytekbpmloaxaaaycyghykhpcmkgnstevs',
-    ]);
-
-    result = encodeUR(
-      MultisigCosigner.exportToJson(
+    for (const [fingerprint, xpub, path] of [
+      [fp1cobo, Zpub1, "m/48'/0'/0'/2'"],
+      [
         '42A2460E',
         'Ypub6m2WhkZvujztfZVYWEB4Hfcq3mKfeZYMfZj2wfvgNmTDjcCncU9ua6VSxXno7FeF8P2kqp1S7N8UoYapR8YKnMLNq8bEDDd2PU6q7QCHoEb',
         "m/48'/0'/0'/1'",
-      ),
-    );
-    assert.deepStrictEqual(result, [
-      'ur:crypto-account/oeadcyfwoefgbaaolytaadmhtaadmetaaddloxaxhdclaxsblplucfptgtwywzcmnshtotqzleihrnndtoeodrfdpfoyeyqzsbenrplbhtdymuaahdcxlgbdsrcxatcmdpuokpwzvymttatphtlftplsvlgmeeflpdtanlromhfgvekbbznyamtaaddyotadlocsdyykaeykaeykadykaocyfwoefgbaaxaaaycywsutbeuyyndacaeh',
-    ]);
-
-    result = encodeUR(
-      MultisigCosigner.exportToJson(
+      ],
+      [
         'ED5C5B8A',
         'xpub69dgpFkP9mFYhaAWt6svmwd1BYsuGiyyNs8sJW1GwCn8GSK69mrCmNG6ZLcrPGvBSiJzfjXD66ntgJxdqQbhMk4j273VQYHEMc5knoqFGvt',
         "m/45'",
-      ),
-    );
-    assert.deepStrictEqual(result, [
-      'ur:crypto-account/oeadcywehhhpleaolytaadmhtaaddloxaxhdclaoamutctbahthnislelbwemnkeoefnhddienfetbpygrpaqdkemyrywyldaspyjkdtaahdcxhyneskwdhlehlfbwrpdnjlgsgakplkjtknvyttsgolnnlbwlcagoolcpfgsglkinamtaaddyotadlfcsdpykaocywehhhpleaxadaycywehhhplekpdwveih',
-    ]);
+      ],
+    ]) {
+      const parts = encodeUR(MultisigCosigner.exportToJson(fingerprint, xpub, path));
+      const decoder = new BlueURDecoder();
+      parts.forEach(part => decoder.receivePart(part));
+      const [decoded] = JSON.parse(decoder.toString());
+      assert.strictEqual(decoded.MasterFingerprint, fingerprint);
+      assert.strictEqual(decoded.AccountKeyPath, path);
+      assert.ok(MultisigHDWallet.isXpubValid(decoded.ExtPubKey));
+      assert.deepStrictEqual(decoded.UseInfo, { type: 0, network: 0 });
+    }
   });
 
   it('can export cosigner to BBQR', () => {
-    let result = encodeUR(MultisigCosigner.exportToJson(fp1cobo, Zpub1, "m/48'/0'/0'/2'"), 175, undefined, 'BBQR');
-    assert.deepStrictEqual(result, [
-      'B$ZU0100DWG52CUCGAMEBX3FG7PAJBTNVDOUKW4KSXQLJNN4JNWPRA7ZQU7SZI3XN4CAODU4TPZUCWQB3IRLU4OZRZ5B4WRBBVJWCSTO4TRLUAKVGEPMKTNVH5FD4QCWTYRECHR55NJJ5F7BRPHOBN3CFQCXXV5SOVAWUXVIPRE6NAI6IDIZBBLCCSQDCXL4DJOK5QOTSEWVSARSMGJGJZ7BSY5HHU2XOFRMM4A7FMZ643HMLH3PVD3DUHXQ6',
-    ]);
-
-    result = encodeUR(
-      MultisigCosigner.exportToJson(
+    for (const [fingerprint, xpub, path] of [
+      [fp1cobo, Zpub1, "m/48'/0'/0'/2'"],
+      [
         '42A2460E',
         'Ypub6m2WhkZvujztfZVYWEB4Hfcq3mKfeZYMfZj2wfvgNmTDjcCncU9ua6VSxXno7FeF8P2kqp1S7N8UoYapR8YKnMLNq8bEDDd2PU6q7QCHoEb',
         "m/48'/0'/0'/1'",
-      ),
-      175,
-      undefined,
-      'BBQR',
-    );
-    assert.deepStrictEqual(result, [
-      'B$ZU0100DWGU2C4CGAAEB76LFZPAE5MNXG5JKTQEKPWEG3N3VG4UJGLOUATEL7Z5BEPDY6EX64AYWUDAB4IDYQEEFUFDMYCRKO4RNNQKJOMDOHM7U73D2CU6WGOB4UJAFK6ZLINIHGFQI37BJPGM6WG6XS3HF6ZK3VGQLTVOZO6R6HF76ZEQEO5N5SVRHE3UMCC3UEAW63ISTVVEUSPPPACJRK2XG5UDQGLOWWAVMOZY5JMJRBQVU73MAN6H6',
-    ]);
-
-    result = encodeUR(
-      MultisigCosigner.exportToJson(
+      ],
+      [
         'ED5C5B8A',
         'xpub69dgpFkP9mFYhaAWt6svmwd1BYsuGiyyNs8sJW1GwCn8GSK69mrCmNG6ZLcrPGvBSiJzfjXD66ntgJxdqQbhMk4j273VQYHEMc5knoqFGvt',
         "m/45'",
-      ),
-      175,
-      undefined,
-      'BBQR',
-    );
-    assert.deepStrictEqual(result, [
-      'B$ZU0100CXG3WDUCGAAEBUL75HRGEYSQLLAY2ZYNBKAZBCFY6EEM6FALFVIDJ7V3GDO6ILXHBNCEDQIFLATDJIFONBQA6BA52P2WYQLKLZJLX5KVMLDVLISFDSYYTTFZUTDWZRHVWJ4EYYKOETQ5T2AUDTPJASQGQN4BRPPO3HQOGSIPNPTVGNCPCOQY5F4OZD5SBLO4KZXI5Z6TEOEK7FU3YG3HX5ZWT34AVU4EK4VUYDRS3SA56HY',
-    ]);
+      ],
+    ]) {
+      const payload = MultisigCosigner.exportToJson(fingerprint, xpub, path);
+      const parts = encodeUR(payload, 175, undefined, 'BBQR');
+      const decoder = new BlueURDecoder();
+      parts.forEach(part => decoder.receivePart(part));
+      assert.strictEqual(decoder.toString(), payload);
+    }
   });
 });

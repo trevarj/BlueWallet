@@ -4,6 +4,8 @@ import * as mn from 'electrum-mnemonic';
 
 import ecc from '../../blue_modules/noble_ecc';
 import { HDSegwitBech32Wallet } from './hd-segwit-bech32-wallet';
+import { network } from '../../models/bitcoinNetwork';
+import { convertExtendedKey } from './extended-key';
 
 const bip32 = BIP32Factory(ecc);
 const PREFIX = mn.PREFIXES.segwit;
@@ -46,11 +48,11 @@ export class HDSegwitElectrumSeedP2WPKHWallet extends HDSegwitBech32Wallet {
     }
     const args: SeedOpts = { prefix: PREFIX };
     if (this.passphrase) args.passphrase = this.passphrase;
-    const root = bip32.fromSeed(mn.mnemonicToSeedSync(this.secret, args));
+    const root = bip32.fromSeed(mn.mnemonicToSeedSync(this.secret, args), network);
     const xpub = root.derivePath("m/0'").neutered().toBase58();
 
     // bitcoinjs does not support zpub yet, so we just convert it from xpub
-    this._xpub = this._xpubToZpub(xpub);
+    this._xpub = convertExtendedKey(xpub, 'native');
 
     return this._xpub;
   }
@@ -59,10 +61,11 @@ export class HDSegwitElectrumSeedP2WPKHWallet extends HDSegwitBech32Wallet {
     index = index * 1; // cast to int
     if (this.internal_addresses_cache[index]) return this.internal_addresses_cache[index]; // cache hit
 
-    const xpub = this._zpubToXpub(this.getXpub());
-    const node = bip32.fromBase58(xpub);
+    const xpub = convertExtendedKey(this.getXpub(), 'legacy');
+    const node = bip32.fromBase58(xpub, network);
     const address = bitcoin.payments.p2wpkh({
       pubkey: node.derive(1).derive(index).publicKey,
+      network,
     }).address;
     if (!address) {
       throw new Error('Internal error: no address in _getInternalAddressByIndex');
@@ -75,10 +78,11 @@ export class HDSegwitElectrumSeedP2WPKHWallet extends HDSegwitBech32Wallet {
     index = index * 1; // cast to int
     if (this.external_addresses_cache[index]) return this.external_addresses_cache[index]; // cache hit
 
-    const xpub = this._zpubToXpub(this.getXpub());
-    const node = bip32.fromBase58(xpub);
+    const xpub = convertExtendedKey(this.getXpub(), 'legacy');
+    const node = bip32.fromBase58(xpub, network);
     const address = bitcoin.payments.p2wpkh({
       pubkey: node.derive(0).derive(index).publicKey,
+      network,
     }).address;
     if (!address) {
       throw new Error('Internal error: no address in _getExternalAddressByIndex');
@@ -91,7 +95,7 @@ export class HDSegwitElectrumSeedP2WPKHWallet extends HDSegwitBech32Wallet {
     if (!this.secret) return false;
     const args: SeedOpts = { prefix: PREFIX };
     if (this.passphrase) args.passphrase = this.passphrase;
-    const root = bip32.fromSeed(mn.mnemonicToSeedSync(this.secret, args));
+    const root = bip32.fromSeed(mn.mnemonicToSeedSync(this.secret, args), network);
     const path = `m/0'/${internal ? 1 : 0}/${index}`;
     const child = root.derivePath(path);
 
@@ -102,14 +106,14 @@ export class HDSegwitElectrumSeedP2WPKHWallet extends HDSegwitBech32Wallet {
     index = index * 1; // cast to int
 
     if (node === 0 && !this._node0) {
-      const xpub = this._zpubToXpub(this.getXpub());
-      const hdNode = bip32.fromBase58(xpub);
+      const xpub = convertExtendedKey(this.getXpub(), 'legacy');
+      const hdNode = bip32.fromBase58(xpub, network);
       this._node0 = hdNode.derive(node);
     }
 
     if (node === 1 && !this._node1) {
-      const xpub = this._zpubToXpub(this.getXpub());
-      const hdNode = bip32.fromBase58(xpub);
+      const xpub = convertExtendedKey(this.getXpub(), 'legacy');
+      const hdNode = bip32.fromBase58(xpub, network);
       this._node1 = hdNode.derive(node);
     }
 

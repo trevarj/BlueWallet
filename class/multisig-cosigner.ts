@@ -1,10 +1,6 @@
-import BIP32Factory from 'bip32';
-import b58 from 'bs58check';
-
-import ecc from '../blue_modules/noble_ecc';
 import { MultisigHDWallet } from './wallets/multisig-hd-wallet';
-import assert from 'assert';
-const bip32 = BIP32Factory(ecc);
+import { bitcoinNetwork, getMultisigPathFormat, isCompatibleOrigin } from '../models/bitcoinNetwork';
+import { convertExtendedKey, decodeExtendedKey } from './wallets/extended-key';
 
 export class MultisigCosigner {
   private _data: string;
@@ -12,35 +8,29 @@ export class MultisigCosigner {
   private _xpub: string = '';
   private _path: string = '';
   private _valid: boolean = false;
-  private _cosigners: any[];
+  private _cosigners: MultisigCosigner[];
 
   constructor(data: string) {
     this._data = data;
     this._cosigners = [];
 
-    // is it plain simple Zpub/Ypub/xpub?
-    if (data.startsWith('Zpub') && MultisigCosigner.isXpubValid(data)) {
-      this._fp = '00000000';
-      this._xpub = data;
-      this._path = "m/48'/0'/0'/2'";
-      this._valid = true;
-      this._cosigners = [true];
-      return;
-    } else if (data.startsWith('Ypub') && MultisigCosigner.isXpubValid(data)) {
-      this._fp = '00000000';
-      this._xpub = data;
-      this._path = "m/48'/0'/0'/1'";
-      this._valid = true;
-      this._cosigners = [true];
-      return;
-    } else if (data.startsWith('xpub') && MultisigCosigner.isXpubValid(data)) {
-      this._fp = '00000000';
-      this._xpub = data;
-      this._path = "m/45'";
-      this._valid = true;
-      this._cosigners = [true];
-      return;
-    }
+    // is it a plain selected-network multisig extended public key?
+    try {
+      const format = decodeExtendedKey(data, 'public').format;
+      if (['legacy', 'multisigNested', 'multisigNative'].includes(format)) {
+        this._fp = '00000000';
+        this._xpub = data;
+        this._path =
+          format === 'multisigNative'
+            ? MultisigHDWallet.PATH_NATIVE_SEGWIT
+            : format === 'multisigNested'
+              ? MultisigHDWallet.PATH_WRAPPED_SEGWIT
+              : MultisigHDWallet.PATH_LEGACY;
+        this._valid = true;
+        this._cosigners = [this];
+        return;
+      }
+    } catch {}
 
     // is it wallet descriptor?
     if (data.startsWith('[')) {
@@ -49,14 +39,14 @@ export class MultisigCosigner {
       this._fp = part.split('/')[0];
       const xpub = data.substr(end + 1);
 
-      if (MultisigCosigner.isXpubValid(xpub)) {
+      if (MultisigCosigner.isXpubValid(xpub) && isCompatibleOrigin('m/' + part.split('/').slice(1).join('/'))) {
         this._xpub = xpub;
         this._path = 'm';
         for (let c = 0; c < part.split('/').length; c++) {
           if (c === 0) continue;
           this._path += '/' + part.split('/')[c];
         }
-        this._cosigners = [true];
+        this._cosigners = [this];
         this._valid = true;
         return;
       }
@@ -65,24 +55,23 @@ export class MultisigCosigner {
     // is it cobo json?
     try {
       const json = JSON.parse(data);
-      if (json.xfp && json.xpub && json.path) {
+      if (
+        json.xfp &&
+        json.xpub &&
+        json.path &&
+        (!json.network || json.network === bitcoinNetwork) &&
+        MultisigCosigner.isXpubValid(json.xpub) &&
+        isCompatibleOrigin(json.path)
+      ) {
         this._fp = json.xfp;
         this._xpub = json.xpub;
         this._path = json.path;
-        this._cosigners = [true];
+        this._cosigners = [this];
         this._valid = true;
 
-        // a bit more logic here: according to the formal BIP48 spec, this xpub field _can_ start with 'xpub', but
-        // the actual type of segwit can be inferred from the path
-        assert(this._xpub);
-        if (
-          this._xpub.startsWith('xpub') &&
-          [MultisigHDWallet.PATH_NATIVE_SEGWIT, MultisigHDWallet.PATH_WRAPPED_SEGWIT].includes(this._path)
-        ) {
-          const w = new MultisigHDWallet();
-          w.addCosigner(this._xpub, '00000000', this._path);
-          w.setDerivationPath(this._path);
-          this._xpub = w.convertXpubToMultisignatureXpub(this._xpub);
+        const pathFormat = getMultisigPathFormat(this._path);
+        if (decodeExtendedKey(this._xpub, 'public').format === 'legacy' && pathFormat && pathFormat !== 'legacy') {
+          this._xpub = convertExtendedKey(this._xpub, pathFormat === 'native' ? 'multisigNative' : 'multisigNested');
         }
 
         return;
@@ -94,11 +83,18 @@ export class MultisigCosigner {
     // is it cobo crypto-account URv2 ?
     try {
       const json = JSON.parse(data);
-      if (json && json.ExtPubKey && json.MasterFingerprint && json.AccountKeyPath) {
+      if (
+        json &&
+        json.ExtPubKey &&
+        json.MasterFingerprint &&
+        json.AccountKeyPath &&
+        MultisigCosigner.isXpubValid(json.ExtPubKey) &&
+        isCompatibleOrigin(json.AccountKeyPath)
+      ) {
         this._fp = json.MasterFingerprint;
         this._xpub = json.ExtPubKey;
         this._path = json.AccountKeyPath;
-        this._cosigners = [true];
+        this._cosigners = [this];
         this._valid = true;
         return;
       }
@@ -141,7 +137,12 @@ export class MultisigCosigner {
     // is it coldcardQ json?
     try {
       const json = JSON.parse(data);
-      if (json && json.chain === 'BTC' && json.xfp && (json.bip48_1 || json.bip48_2 || json.bip45)) {
+      if (
+        json &&
+        json.chain === (bitcoinNetwork === 'testnet' ? 'XTN' : 'BTC') &&
+        json.xfp &&
+        (json.bip48_1 || json.bip48_2 || json.bip45)
+      ) {
         if (json.bip48_1) {
           const path = json.bip48_1.deriv.replace(/h/g, "'");
           const xpub = json.bip48_1._pub || json.bip48_1.xpub; // ColdcardQ provides SLIP-0132 encoded _pub (Ypub/Zpub). Prefer it when present, fallback to xpub for legacy.
@@ -176,22 +177,14 @@ export class MultisigCosigner {
   }
 
   static isXpubValid(key: string) {
-    let xpub;
-
-    try {
-      const tempWallet = new MultisigHDWallet();
-      xpub = tempWallet._zpubToXpub(key);
-      bip32.fromBase58(xpub);
-      return true;
-    } catch (_) {}
-
-    return false;
+    return MultisigHDWallet.isXpubValid(key);
   }
 
   static exportToJson(xfp: string, xpub: string, path: string) {
     return JSON.stringify({
       xfp,
       xpub,
+      network: bitcoinNetwork,
       path,
     });
   }
@@ -225,46 +218,30 @@ export class MultisigCosigner {
   }
 
   isNativeSegwit() {
-    return this.getXpub().startsWith('Zpub');
+    return decodeExtendedKey(this.getXpub(), 'public').format === 'multisigNative';
   }
 
   isWrappedSegwit() {
-    return this.getXpub().startsWith('Ypub');
+    return decodeExtendedKey(this.getXpub(), 'public').format === 'multisigNested';
   }
 
   isLegacy() {
-    return this.getXpub().startsWith('xpub');
+    return decodeExtendedKey(this.getXpub(), 'public').format === 'legacy';
   }
 
   getChainCodeHex() {
-    let data = b58.decode(this.getXpub());
-    data = data.slice(4);
-    data = data.slice(1);
-    data = data.slice(4);
-    data = data.slice(4, 36);
-    return data.toString('hex');
+    return Buffer.from(decodeExtendedKey(this.getXpub(), 'public').payload.slice(13, 45)).toString('hex');
   }
 
   getKeyHex() {
-    let data = b58.decode(this.getXpub());
-    data = data.slice(4);
-    data = data.slice(1);
-    data = data.slice(4);
-    data = data.slice(36);
-    return data.toString('hex');
+    return Buffer.from(decodeExtendedKey(this.getXpub(), 'public').payload.slice(45)).toString('hex');
   }
 
   getParentFingerprintHex() {
-    let data = b58.decode(this.getXpub());
-    data = data.slice(4);
-    data = data.slice(1);
-    data = data.slice(0, 4);
-    return data.toString('hex');
+    return Buffer.from(decodeExtendedKey(this.getXpub(), 'public').payload.slice(5, 9)).toString('hex');
   }
 
   getDepthNumber() {
-    let data = b58.decode(this.getXpub());
-    data = data.slice(4, 5);
-    return data.readInt8();
+    return decodeExtendedKey(this.getXpub(), 'public').payload[4];
   }
 }

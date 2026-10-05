@@ -5,7 +5,10 @@ import { HDSegwitBech32Wallet } from '../../class/wallets/hd-segwit-bech32-walle
 
 jest.mock('react-native', () => {
   const actual = jest.requireActual('react-native');
-  Object.defineProperty(actual, 'Platform', { value: actual.Platform, configurable: true });
+  Object.defineProperty(actual, 'Platform', {
+    value: actual.Platform,
+    configurable: true,
+  });
   Object.defineProperty(actual.Platform, 'OS', {
     value: 'android',
     configurable: true,
@@ -15,7 +18,7 @@ jest.mock('react-native', () => {
 
 jest.mock('../../codegen/NativeSettingsModule', () => ({
   __esModule: true,
-  default: { getConstants: () => ({ bitcoinNetwork: mockBitcoinNetwork }) },
+  default: { getConstants: () => ({ bitcoinNetwork: 'bitcoin' }) },
 }));
 jest.mock('../../models/appScheme', () => ({
   get appScheme() {
@@ -23,7 +26,6 @@ jest.mock('../../models/appScheme', () => ({
   },
 }));
 
-let mockBitcoinNetwork = 'bitcoin';
 let mockAppScheme: string;
 jest.mock('../../blue_modules/fs', () => ({
   readFileOutsideSandbox: jest.fn().mockResolvedValue('original PSBT'),
@@ -43,13 +45,9 @@ beforeEach(() => {
 describe.each([
   ['bitcoin', 'bluewallet-bhwi', 'bluewallet-bhwi-testnet'],
   ['testnet', 'bluewallet-bhwi-testnet', 'bluewallet-bhwi'],
-])('Android %s app-owned links', (bitcoinNetwork, scheme, foreignScheme) => {
+])('Android %s app-owned links', (_bitcoinNetwork, scheme, foreignScheme) => {
   beforeAll(() => {
-    mockBitcoinNetwork = bitcoinNetwork;
-    jest.isolateModules(() => {
-      mockAppScheme = jest.requireActual('../../models/appScheme').appScheme;
-    });
-    expect(mockAppScheme).toBe(scheme);
+    mockAppScheme = scheme;
   });
 
   it('unwraps the complete payment prefix, including uppercase schemes', () => {

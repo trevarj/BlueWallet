@@ -4,6 +4,7 @@ import URL from 'url';
 import { readFileOutsideSandbox } from '../blue_modules/fs';
 import { Chain } from '../models/bitcoinUnits';
 import { appScheme } from '../models/appScheme';
+import { network } from '../models/bitcoinNetwork';
 import { WatchOnlyWallet } from './wallets/watch-only-wallet';
 import Azteco from './azteco';
 import { ContactList } from './contact-list';
@@ -332,7 +333,7 @@ class DeeplinkSchemaMatch {
     address = address.replace('://', ':').replace('bitcoin:', '').replace('BITCOIN:', '').replace('bitcoin=', '').split('?')[0];
     let isValidBitcoinAddress = false;
     try {
-      bitcoin.address.toOutputScript(address);
+      bitcoin.address.toOutputScript(address, network);
       isValidBitcoinAddress = true;
     } catch (err) {
       isValidBitcoinAddress = false;
@@ -424,7 +425,7 @@ class DeeplinkSchemaMatch {
 
   static bip21encode(address: string, options?: TOptions): string {
     // uppercase address if bech32 to satisfy BIP_0173
-    const isBech32 = address.startsWith('bc1');
+    const isBech32 = address.toLowerCase().startsWith(network.bech32 + '1');
     if (isBech32) {
       address = address.toUpperCase();
     }

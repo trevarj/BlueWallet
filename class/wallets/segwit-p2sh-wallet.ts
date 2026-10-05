@@ -6,6 +6,7 @@ import ecc from '../../blue_modules/noble_ecc';
 import { LegacyWallet } from './legacy-wallet';
 import { CreateTransactionResult, CreateTransactionUtxo } from './types';
 import { hexToUint8Array } from '../../blue_modules/uint8array-extras';
+import { network } from '../../models/bitcoinNetwork';
 
 const ECPair = ECPairFactory(ecc);
 
@@ -17,7 +18,8 @@ const ECPair = ECPairFactory(ecc);
  */
 function pubkeyToP2shSegwitAddress(pubkey: Uint8Array): string | false {
   const { address } = bitcoin.payments.p2sh({
-    redeem: bitcoin.payments.p2wpkh({ pubkey }),
+    redeem: bitcoin.payments.p2wpkh({ pubkey, network }),
+    network,
   });
   return address ?? false;
 }
@@ -52,7 +54,7 @@ export class SegwitP2SHWallet extends LegacyWallet {
       return (
         bitcoin.payments.p2sh({
           output: scriptPubKey2,
-          network: bitcoin.networks.bitcoin,
+          network,
         }).address ?? false
       );
     } catch (_) {
@@ -64,7 +66,7 @@ export class SegwitP2SHWallet extends LegacyWallet {
     if (this._address) return this._address;
     let address;
     try {
-      const keyPair = ECPair.fromWIF(this.secret);
+      const keyPair = ECPair.fromWIF(this.secret, network);
       const pubKey = keyPair.publicKey;
       if (!keyPair.compressed) {
         console.warn('only compressed public keys are good for segwit');
@@ -102,16 +104,16 @@ export class SegwitP2SHWallet extends LegacyWallet {
     if (targets.length === 0) throw new Error('No destination provided');
     const { inputs, outputs, fee } = this.coinselect(utxos, targets, feeRate);
     sequence = sequence || 0xffffffff; // disable RBF by default
-    const psbt = new bitcoin.Psbt();
+    const psbt = new bitcoin.Psbt({ network });
     let c = 0;
-    const keyPair = ECPair.fromWIF(this.secret);
+    const keyPair = ECPair.fromWIF(this.secret, network);
 
     inputs.forEach(input => {
       c++;
 
       const pubkey = keyPair.publicKey;
-      const p2wpkh = bitcoin.payments.p2wpkh({ pubkey });
-      const p2sh = bitcoin.payments.p2sh({ redeem: p2wpkh });
+      const p2wpkh = bitcoin.payments.p2wpkh({ pubkey, network });
+      const p2sh = bitcoin.payments.p2sh({ redeem: p2wpkh, network });
       if (!p2sh.output) {
         throw new Error('Internal error: no p2sh.output during createTransaction()');
       }

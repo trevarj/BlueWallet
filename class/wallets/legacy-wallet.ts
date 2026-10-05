@@ -12,6 +12,7 @@ import type { HDSegwitBech32Wallet as HDSegwitBech32WalletT } from './hd-segwit-
 import { randomBytes } from '../rng';
 import { AbstractWallet } from './abstract-wallet';
 import { CreateTransactionResult, CreateTransactionTarget, CreateTransactionUtxo, Transaction, Utxo } from './types';
+import { network } from '../../models/bitcoinNetwork';
 const ECPair: ECPairAPI = ECPairFactory(ecc);
 bitcoin.initEccLib(ecc);
 
@@ -66,23 +67,24 @@ export class LegacyWallet extends AbstractWallet {
 
   async generate(): Promise<void> {
     const buf = await randomBytes(32);
-    this.secret = ECPair.makeRandom({ rng: () => buf }).toWIF();
+    this.secret = ECPair.makeRandom({ rng: () => buf, network }).toWIF();
   }
 
   async generateFromEntropy(user: Uint8Array): Promise<void> {
     if (user.length !== 32) {
       throw new Error('Entropy should be 32 bytes');
     }
-    this.secret = ECPair.fromPrivateKey(user).toWIF();
+    this.secret = ECPair.fromPrivateKey(user, { network }).toWIF();
   }
 
   getAddress(): string | false {
     if (this._address) return this._address;
     let address;
     try {
-      const keyPair = ECPair.fromWIF(this.secret);
+      const keyPair = ECPair.fromWIF(this.secret, network);
       address = bitcoin.payments.p2pkh({
         pubkey: keyPair.publicKey,
+        network,
       }).address;
     } catch (err) {
       return false;
@@ -394,7 +396,7 @@ export class LegacyWallet extends AbstractWallet {
     let isUncompressedKey = false;
     if (!this.segwitType || this.segwitType === 'p2pkh') {
       try {
-        isUncompressedKey = !ECPair.fromWIF(this.secret).compressed;
+        isUncompressedKey = !ECPair.fromWIF(this.secret, network).compressed;
       } catch (e) {}
     }
 
@@ -423,9 +425,11 @@ export class LegacyWallet extends AbstractWallet {
     }
 
     for (const t of _targets) {
-      if (t.address?.startsWith('bc1')) {
+      if (t.address?.toLowerCase().startsWith(network.bech32 + '1')) {
         // in case address is non-typical and takes more bytes than coinselect library anticipates by default
-        t.script = { length: bitcoin.address.toOutputScript(t.address).length + 3 };
+        t.script = {
+          length: bitcoin.address.toOutputScript(t.address, network).length + 3,
+        };
       }
 
       if (t.script?.hex) {
@@ -467,13 +471,13 @@ export class LegacyWallet extends AbstractWallet {
     if (targets.length === 0) throw new Error('No destination provided');
     const { inputs, outputs, fee } = this.coinselect(utxos, targets, feeRate);
     sequence = sequence || 0xffffffff; // disable RBF by default
-    const psbt = new bitcoin.Psbt();
+    const psbt = new bitcoin.Psbt({ network });
     let c = 0;
     let keyPair: Signer | null = null;
 
     if (!skipSigning) {
       // skiping signing related stuff
-      keyPair = ECPair.fromWIF(this.secret); // secret is WIF
+      keyPair = ECPair.fromWIF(this.secret, network); // secret is WIF
     }
 
     inputs.forEach(input => {
@@ -544,9 +548,9 @@ export class LegacyWallet extends AbstractWallet {
    */
   isAddressValid(address: string): boolean {
     try {
-      bitcoin.address.toOutputScript(address); // throws, no?
+      bitcoin.address.toOutputScript(address, network); // throws, no?
 
-      if (!address.toLowerCase().startsWith('bc1')) return true;
+      if (!address.toLowerCase().startsWith(network.bech32 + '1')) return true;
       const decoded = bitcoin.address.fromBech32(address);
       if (decoded.version === 0) return true;
       if (decoded.version === 1 && decoded.data.length !== 32) return false;
@@ -571,7 +575,7 @@ export class LegacyWallet extends AbstractWallet {
       return (
         bitcoin.payments.p2pkh({
           output: scriptPubKey2,
-          network: bitcoin.networks.bitcoin,
+          network,
         }).address ?? false
       );
     } catch (_) {
@@ -633,7 +637,7 @@ export class LegacyWallet extends AbstractWallet {
   signMessage(message: string, address: string, useSegwit = true): string {
     const wif = this._getWIFbyAddress(address);
     if (!wif) throw new Error('Invalid address');
-    const keyPair = ECPair.fromWIF(wif);
+    const keyPair = ECPair.fromWIF(wif, network);
     const privateKey = keyPair.privateKey;
     if (!privateKey) throw new Error('Invalid private key');
     let segwitType: 'p2wpkh' | 'p2sh(p2wpkh)';
@@ -659,6 +663,7 @@ export class LegacyWallet extends AbstractWallet {
    * @returns {boolean} base64 encoded signature
    */
   verifyMessage(message: string, address: string, signature: string): boolean {
+    if (!this.isAddressValid(address)) return false;
     // undefined, true so it can verify Electrum signatures without errors
     try {
       return bitcoinMessage.verify(message, address, signature, undefined, true);

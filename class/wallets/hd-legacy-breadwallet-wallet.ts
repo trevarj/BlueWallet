@@ -8,6 +8,7 @@ import { ElectrumHistory } from '../../blue_modules/BlueElectrum';
 import ecc from '../../blue_modules/noble_ecc';
 import { AbstractHDElectrumWallet } from './abstract-hd-electrum-wallet';
 import { HDLegacyP2PKHWallet } from './hd-legacy-p2pkh-wallet';
+import { network } from '../../models/bitcoinNetwork';
 
 const bip32 = BIP32Factory(ecc);
 
@@ -32,10 +33,10 @@ export class HDLegacyBreadwalletWallet extends HDLegacyP2PKHWallet {
   _calcNodeAddressByIndex(node: number, index: number, p2wpkh: boolean = false) {
     let _node: BIP32Interface | undefined;
     if (node === 0) {
-      _node = this._node0 || (this._node0 = bip32.fromBase58(this.getXpub()).derive(node));
+      _node = this._node0 || (this._node0 = bip32.fromBase58(this.getXpub(), network).derive(node));
     }
     if (node === 1) {
-      _node = this._node1 || (this._node1 = bip32.fromBase58(this.getXpub()).derive(node));
+      _node = this._node1 || (this._node1 = bip32.fromBase58(this.getXpub(), network).derive(node));
     }
 
     if (!_node) {
@@ -43,7 +44,7 @@ export class HDLegacyBreadwalletWallet extends HDLegacyP2PKHWallet {
     }
 
     const pubkey = _node.derive(index).publicKey;
-    const address = p2wpkh ? bitcoinjs.payments.p2wpkh({ pubkey }).address : bitcoinjs.payments.p2pkh({ pubkey }).address;
+    const address = p2wpkh ? bitcoinjs.payments.p2wpkh({ pubkey, network }).address : bitcoinjs.payments.p2pkh({ pubkey, network }).address;
 
     if (!address) {
       throw new Error('Internal error: no address in _calcNodeAddressByIndex');
@@ -161,7 +162,7 @@ export class HDLegacyBreadwalletWallet extends HDLegacyP2PKHWallet {
   _addPsbtInput(psbt: Psbt, input: CoinSelectReturnInput, sequence: number, masterFingerprintBuffer: Uint8Array) {
     // AbstractHDElectrumWallet._addPsbtInput for bech32 address
     // HDLegacyP2PKHWallet._addPsbtInput for legacy address
-    if (input?.address?.startsWith('bc1')) {
+    if (input?.address?.startsWith(network.bech32 + '1')) {
       return AbstractHDElectrumWallet.prototype._addPsbtInput.call(this, psbt, input, sequence, masterFingerprintBuffer);
     }
     return super._addPsbtInput(psbt, input, sequence, masterFingerprintBuffer);

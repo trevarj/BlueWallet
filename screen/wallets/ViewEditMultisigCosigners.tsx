@@ -8,6 +8,7 @@ import BlueCard from '../../components/BlueCard';
 import { MultisigCosigner } from '../../class/multisig-cosigner';
 import { HDSegwitBech32Wallet } from '../../class/wallets/hd-segwit-bech32-wallet';
 import { MultisigHDWallet } from '../../class/wallets/multisig-hd-wallet';
+import { convertExtendedKey } from '../../class/wallets/extended-key';
 import presentAlert from '../../components/Alert';
 import Button from '../../components/Button';
 import MultipleStepsListItem, {
@@ -49,7 +50,15 @@ const ViewEditMultisigCosigners: React.FC = () => {
   const [isSaveButtonDisabled, setIsSaveButtonDisabled] = useState(true);
   const [currentlyEditingCosignerNum, setCurrentlyEditingCosignerNum] = useState<number | false>(false);
   const [importText, setImportText] = useState('');
-  const [vaultKeyData, setVaultKeyData] = useState({ keyIndex: 1, xpub: '', seed: '', passphrase: '', path: '', fp: '', isLoading: false }); // string rendered in modal
+  const [vaultKeyData, setVaultKeyData] = useState({
+    keyIndex: 1,
+    xpub: '',
+    seed: '',
+    passphrase: '',
+    path: '',
+    fp: '',
+    isLoading: false,
+  }); // string rendered in modal
   const [isVaultKeyIndexDataLoading, setIsVaultKeyIndexDataLoading] = useState<number | undefined>(undefined);
   const [askPassphrase, setAskPassphrase] = useState(false);
   const [walletData, setWalletData] = useState<TWallet[]>([]);
@@ -224,7 +233,9 @@ const ViewEditMultisigCosigners: React.FC = () => {
       <View>
         <MultipleStepsListItem
           checked
-          leftText={loc.formatString(loc.multisig.vault_key, { number: el.index + 1 })}
+          leftText={loc.formatString(loc.multisig.vault_key, {
+            number: el.index + 1,
+          })}
           dashes={el.index === length - 1 ? MultipleStepsListItemDashType.Bottom : MultipleStepsListItemDashType.TopAndBottom}
         />
 
@@ -247,7 +258,9 @@ const ViewEditMultisigCosigners: React.FC = () => {
                       const fp = wallet.getFingerprint(keyIndex);
                       const path = wallet.getCustomDerivationPathForCosigner(keyIndex);
                       if (!path) {
-                        presentAlert({ message: 'Cannot find derivation path for this cosigner' });
+                        presentAlert({
+                          message: 'Cannot find derivation path for this cosigner',
+                        });
                         return;
                       }
                       const exportJson = MultisigCosigner.exportToJson(fp, xpub, path);
@@ -333,10 +346,15 @@ const ViewEditMultisigCosigners: React.FC = () => {
                       const fp = wallet.getFingerprint(keyIndex);
                       const path = wallet.getCustomDerivationPathForCosigner(keyIndex);
                       if (!path) {
-                        presentAlert({ message: 'Cannot find derivation path for this cosigner' });
+                        presentAlert({
+                          message: 'Cannot find derivation path for this cosigner',
+                        });
                         return;
                       }
-                      const xpub = wallet.convertXpubToMultisignatureXpub(MultisigHDWallet.seedToXpub(seed, path, passphrase));
+                      const xpub = convertExtendedKey(
+                        MultisigHDWallet.seedToXpub(seed, path, passphrase),
+                        wallet.isNativeSegwit() ? 'multisigNative' : wallet.isWrappedSegwit() ? 'multisigNested' : 'legacy',
+                      );
                       const exportJson = MultisigCosigner.exportToJson(fp, xpub, path);
                       const exportFilenameValue = 'bw-cosigner-' + fp + '.json';
                       const exportUr = encodeUR(exportJson, 175, null)[0];
@@ -438,7 +456,11 @@ const ViewEditMultisigCosigners: React.FC = () => {
       mnemonicOverride,
       askPassphraseOverride,
       cosignerNumOverride,
-    }: { mnemonicOverride?: string; askPassphraseOverride?: boolean; cosignerNumOverride?: number } = {}) => {
+    }: {
+      mnemonicOverride?: string;
+      askPassphraseOverride?: boolean;
+      cosignerNumOverride?: number;
+    } = {}) => {
       const mnemonicToUse = (mnemonicOverride ?? importText).trim();
       if (!mnemonicToUse) return;
       const shouldAskPassphrase = askPassphraseOverride ?? askPassphrase;
@@ -528,8 +550,12 @@ const ViewEditMultisigCosigners: React.FC = () => {
       <View>
         <BlueSpacing20 />
         <Text style={[styles.tipKeys, stylesHook.tipKeys]}>
-          {loc.formatString(loc.multisig.signatures_required_to_spend, { number: howMany })}
-          {loc.formatString(loc.multisig.signatures_we_can_make, { number: andHere })}
+          {loc.formatString(loc.multisig.signatures_required_to_spend, {
+            number: howMany,
+          })}
+          {loc.formatString(loc.multisig.signatures_we_can_make, {
+            number: andHere,
+          })}
         </Text>
         <BlueSpacing10 />
         <BlueSpacing20 />

@@ -12,6 +12,7 @@ import { HDTaprootWallet } from '../../class/wallets/hd-taproot-wallet';
 import { WatchOnlyWallet } from '../../class/wallets/watch-only-wallet';
 import { normalizeDerivationPath, validateBip32 } from '../../class/wallet-import';
 import { TWallet } from '../../class/wallets/types';
+import { decodeExtendedKey, findRecognizedExtendedKey } from '../../class/wallets/extended-key';
 import Button from '../../components/Button';
 import SafeArea from '../../components/SafeArea';
 import { useTheme } from '../../components/themes';
@@ -47,7 +48,10 @@ const ImportCustomDerivationPath: React.FC = () => {
   const { importText, password } = useRoute<RouteProps>().params;
   const { addAndSaveWallet } = useStorage();
   const watchOnlyImport = useMemo(() => {
-    const fallback = { isWatchOnlyHd: false, defaultPath: "m/84'/0'/0'" };
+    const fallback = {
+      isWatchOnlyHd: false,
+      defaultPath: HDSegwitBech32Wallet.derivationPath,
+    };
     try {
       const wallet = new WatchOnlyWallet();
       wallet.setSecret(importText);
@@ -55,7 +59,10 @@ const ImportCustomDerivationPath: React.FC = () => {
       wallet.init();
       // belt and braces: keep the field canonical whatever getDerivationPath returns, so importing
       // without editing never stores a raw h/H path
-      return { isWatchOnlyHd: true, defaultPath: normalizeDerivationPath(wallet.getDerivationPath() || fallback.defaultPath) };
+      return {
+        isWatchOnlyHd: true,
+        defaultPath: normalizeDerivationPath(wallet.getDerivationPath() || fallback.defaultPath),
+      };
     } catch {
       return fallback;
     }
@@ -72,6 +79,16 @@ const ImportCustomDerivationPath: React.FC = () => {
       if (!validateBip32(newPath)) {
         setWallets(ws => ({ ...ws, [newPath]: WRONG_PATH }));
         return;
+      }
+
+      const extendedKey = findRecognizedExtendedKey(importText);
+      if (extendedKey) {
+        try {
+          decodeExtendedKey(extendedKey, 'public');
+        } catch {
+          setWallets(ws => ({ ...ws, [newPath]: WRONG_PATH }));
+          return;
+        }
       }
 
       // create wallets
@@ -104,7 +121,10 @@ const ImportCustomDerivationPath: React.FC = () => {
       if (isElectrumDisabled) {
         // do not check if electrum is disabled
         Object.values(newWallets).forEach(w => {
-          setUsed(u => ({ ...u, [newPath]: { ...u[newPath], [w.type]: STATUS.WALLET_UNKNOWN } }));
+          setUsed(u => ({
+            ...u,
+            [newPath]: { ...u[newPath], [w.type]: STATUS.WALLET_UNKNOWN },
+          }));
         });
         return;
       }
@@ -113,14 +133,20 @@ const ImportCustomDerivationPath: React.FC = () => {
       const promises = Object.values(newWallets).map(w => {
         return w.wasEverUsed().then(v => {
           const status = v ? STATUS.WALLET_FOUND : STATUS.WALLET_NOTFOUND;
-          setUsed(u => ({ ...u, [newPath]: { ...u[newPath], [w.type]: status } }));
+          setUsed(u => ({
+            ...u,
+            [newPath]: { ...u[newPath], [w.type]: status },
+          }));
         });
       });
       try {
         await Promise.all(promises);
       } catch (e) {
         Object.values(newWallets).forEach(w => {
-          setUsed(u => ({ ...u, [newPath]: { ...u[newPath], [w.type]: STATUS.WALLET_UNKNOWN } }));
+          setUsed(u => ({
+            ...u,
+            [newPath]: { ...u[newPath], [w.type]: STATUS.WALLET_UNKNOWN },
+          }));
         });
       }
     }, 500),

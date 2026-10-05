@@ -1,4 +1,5 @@
 import { AbstractHDElectrumWallet } from './abstract-hd-electrum-wallet';
+import { coinType } from '../../models/bitcoinNetwork';
 
 /**
  * HD Wallet (BIP39).
@@ -13,7 +14,7 @@ export class HDSegwitBech32Wallet extends AbstractHDElectrumWallet {
   // @ts-ignore: override
   public readonly typeReadable = HDSegwitBech32Wallet.typeReadable;
   public readonly segwitType = 'p2wpkh';
-  static readonly derivationPath = "m/84'/0'/0'";
+  static readonly derivationPath = `m/84'/${coinType}'/0'`;
 
   allowSend() {
     return true;

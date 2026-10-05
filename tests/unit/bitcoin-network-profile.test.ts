@@ -4,7 +4,10 @@ import type * as BitcoinProfile from '../../models/bitcoinNetwork';
 
 jest.mock('react-native', () => {
   const actual = jest.requireActual('react-native');
-  Object.defineProperty(actual, 'Platform', { value: actual.Platform, configurable: true });
+  Object.defineProperty(actual, 'Platform', {
+    value: actual.Platform,
+    configurable: true,
+  });
   return actual;
 });
 jest.mock('../../codegen/NativeSettingsModule', () => ({
@@ -30,10 +33,18 @@ function loadProfile(os: 'android' | 'ios' | 'web', nativeModule: unknown): type
 it('binds address encoding, coin type and genesis to each immutable native profile', () => {
   const mainnetConstants = jest.fn(() => ({ bitcoinNetwork: 'bitcoin' }));
   const mainnet = loadProfile('android', { getConstants: mainnetConstants });
-  const testnet = loadProfile('android', { getConstants: jest.fn(() => ({ bitcoinNetwork: 'testnet' })) });
+  const testnet = loadProfile('android', {
+    getConstants: jest.fn(() => ({ bitcoinNetwork: 'testnet' })),
+  });
   const hash = Buffer.alloc(20, 1);
-  const mainnetAddress = payments.p2wpkh({ hash, network: mainnet.network }).address!;
-  const testnetAddress = payments.p2wpkh({ hash, network: testnet.network }).address!;
+  const mainnetAddress = payments.p2wpkh({
+    hash,
+    network: mainnet.network,
+  }).address!;
+  const testnetAddress = payments.p2wpkh({
+    hash,
+    network: testnet.network,
+  }).address!;
 
   expect(mainnetAddress).toMatch(/^bc1/);
   expect(testnetAddress).toMatch(/^tb1/);
@@ -50,6 +61,17 @@ it('binds address encoding, coin type and genesis to each immutable native profi
     1,
     '000000000933ea01ad0ee984209779baaec3ced90fa3f408719526f8d77f4943',
   ]);
+
+  expect(mainnet.mapStandardAccountPath("m/84'/0'/7'")).toBe("m/84'/0'/7'");
+  expect(testnet.mapStandardAccountPath("m/84'/0'/7'")).toBe("m/84'/1'/7'");
+  expect(testnet.mapStandardAccountPath("m/0'")).toBe("m/0'");
+  expect(testnet.mapStandardAccountPath("m/123'/0'/0'")).toBe("m/123'/0'/0'");
+  expect(testnet.isCompatibleOrigin("m/45'")).toBe(true);
+  expect(testnet.isCompatibleOrigin("m/84'/1'/0'")).toBe(true);
+  expect(testnet.isCompatibleOrigin("m/84'/0'/0'")).toBe(false);
+  expect(testnet.getMultisigPathFormat("m/48'/1'/7'/2'")).toBe('native');
+  expect(testnet.getMultisigPathFormat("m/48'/1'/7'/1'")).toBe('wrapped');
+  expect(testnet.getMultisigPathFormat("m/45'")).toBe('legacy');
 
   mainnetConstants.mockReturnValue({ bitcoinNetwork: 'testnet' });
   expect(payments.p2wpkh({ hash, network: mainnet.network }).address).toBe(mainnetAddress);

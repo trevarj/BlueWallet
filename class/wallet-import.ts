@@ -22,6 +22,8 @@ import { WatchOnlyWallet } from './wallets/watch-only-wallet';
 import bip39WalletFormatsElectrum from './bip39_wallet_formats.json'; // https://github.com/spesmilo/electrum/blob/master/electrum/bip39_wallet_formats.json
 import bip39WalletFormatsBlueWallet from './bip39_wallet_formats_bluewallet.json';
 import type { TWallet } from './wallets/types';
+import { bitcoinNetwork, coinType, mapStandardAccountPath, network } from '../models/bitcoinNetwork';
+import { convertExtendedKey, decodeExtendedKey } from './wallets/extended-key';
 
 // Canonicalize a user-typed derivation path: trim, iOS smart quotes and h/H hardened notation
 // become ', a leading M becomes m. The stored form must use ' because bitcoinjs derivePath
@@ -37,7 +39,7 @@ export const validateBip32 = (path: string) => normalizeDerivationPath(path).mat
 // because original file bip39WalletFormatsElectrum is from Electrum X and doesn't contain p2tr wallets, we need to add it
 bip39WalletFormatsElectrum.push({
   description: 'Standard BIP86 native taproot',
-  derivation_path: "m/86'/0'/0'",
+  derivation_path: `m/86'/${coinType}'/0'`,
   script_type: 'p2tr',
   iterate_accounts: true,
 });
@@ -186,7 +188,7 @@ const startImport = (
       const decryptedKey = await bip38.decryptAsync(text, password);
 
       if (decryptedKey) {
-        text = wif.encode(0x80, decryptedKey.privateKey, decryptedKey.compressed);
+        text = wif.encode(network.wif, decryptedKey.privateKey, decryptedKey.compressed);
       }
     }
 
@@ -299,8 +301,9 @@ const startImport = (
           if (password) {
             wallet.setPassphrase(password);
           }
-          wallet.setDerivationPath(path);
-          yield { progress: `bip39 ${i.script_type} ${path}` };
+          const selectedPath = mapStandardAccountPath(path);
+          wallet.setDerivationPath(selectedPath);
+          yield { progress: `bip39 ${i.script_type} ${selectedPath}` };
           if (await wasUsed(wallet)) {
             yield { wallet };
             walletFound = true;
@@ -434,9 +437,8 @@ const startImport = (
     if (rawKeyBuffer && rawKeyBuffer.length === 32) {
       let walletFound = false;
 
-      // convert the bytes to Wallet import format, 0x80 for mainnet,
       // start with uncompressed p2pkh
-      privateKey = wif.encode(0x80, rawKeyBuffer, false);
+      privateKey = wif.encode(network.wif, rawKeyBuffer, false);
 
       yield { progress: 'p2pkh uncompressed' };
       const legacyWalletUncompressed = new LegacyWallet('Legacy (P2PKH) - Uncompressed');
@@ -449,7 +451,7 @@ const startImport = (
       }
 
       // compressed is true for other wallet types
-      privateKey = wif.encode(0x80, rawKeyBuffer, true);
+      privateKey = wif.encode(network.wif, rawKeyBuffer, true);
 
       yield { progress: 'p2wpkh' };
       const segwitBech32Wallet = new SegwitBech32Wallet();
@@ -505,24 +507,29 @@ const startImport = (
     wo1.setSecret(text);
     if (wo1.valid()) {
       wo1.init();
-      if (text.startsWith('xpub')) {
-        // for xpub we also check ypub and zpub. If any of them was used, we import it.
-        let found = false;
-        const pubs = [text, wo1._xpubToYpub(text), wo1._xpubToZpub(text)];
-        for (const pub of pubs) {
-          const wo2 = new WatchOnlyWallet();
-          wo2.setSecret(pub);
-          wo2.init();
-          if (await wasUsed(wo2)) {
-            yield { wallet: wo2 };
-            found = true;
+      try {
+        if (decodeExtendedKey(text, 'public').format === 'legacy') {
+          // For a standard public key also probe the selected network's nested and native encodings.
+          let found = false;
+          const pubs = [text, convertExtendedKey(text, 'nested'), convertExtendedKey(text, 'native')];
+          for (const pub of pubs) {
+            const wo2 = new WatchOnlyWallet();
+            wo2.setSecret(pub);
+            wo2.init();
+            if (await wasUsed(wo2)) {
+              yield { wallet: wo2 };
+              found = true;
+            }
           }
-        }
-        if (!found) {
+          if (!found) {
+            await fetch(wo1, true);
+            yield { wallet: wo1 };
+          }
+        } else {
           await fetch(wo1, true);
           yield { wallet: wo1 };
         }
-      } else {
+      } catch {
         await fetch(wo1, true);
         yield { wallet: wo1 };
       }
@@ -615,7 +622,7 @@ const startImport = (
     try {
       const json = JSON.parse(text);
 
-      if (json.chain === 'BTC' && json.xfp) {
+      if (json.chain === (bitcoinNetwork === 'testnet' ? 'XTN' : 'BTC') && json.xfp) {
         for (const account of ['bip86', 'bip84', 'bip49', 'bip44']) {
           if (json[account] && json[account].desc) {
             const wallet = new WatchOnlyWallet();
