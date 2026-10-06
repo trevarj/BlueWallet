@@ -5,13 +5,7 @@ import wif from 'wif';
 import { BitcoinUnit, Chain } from '../../models/bitcoinUnits';
 import { CreateTransactionResult, CreateTransactionUtxo, Transaction, Utxo } from './types';
 import { hexToUint8Array, uint8ArrayToHex } from '../../blue_modules/uint8array-extras';
-import {
-  convertExtendedKey,
-  decodeExtendedKey,
-  extendedPublicKeyPrefixes,
-  findRecognizedExtendedKey,
-  type ExtendedKeyFormat,
-} from './extended-key';
+import { convertExtendedKey, decodeExtendedKey, extendedPublicKeyPrefixes, type ExtendedKeyFormat } from './extended-key';
 
 type WalletWithPassphrase = AbstractWallet & { getPassphrase: () => string };
 type UtxoMetadata = {
@@ -289,7 +283,8 @@ export class AbstractWallet {
 
     // [fingerprint/derivation]extended-public-key
     const originMatch = this.secret.match(/^\[([0-9a-fA-F]{8}\/[^\]]+)\]([1-9A-HJ-NP-Za-km-z]+)(?:\/.*)?$/);
-    if (this.secret.startsWith('[') && !originMatch && findRecognizedExtendedKey(this.secret)) {
+    const hasBracketedExtendedKey = /^\[[^\]]+\][1-9A-HJ-NP-Za-km-z]+/.test(this.secret);
+    if (hasBracketedExtendedKey && !originMatch) {
       throw new Error('Invalid extended key origin');
     }
     if (originMatch) {
