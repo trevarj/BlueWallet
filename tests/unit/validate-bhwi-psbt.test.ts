@@ -10,6 +10,13 @@ import { WatchOnlyWallet } from '../../class/wallets/watch-only-wallet';
 import { convertExtendedKey } from '../../class/wallets/extended-key';
 import ecc from '../../blue_modules/noble_ecc';
 import { validateBhwiPsbt, validateBhwiPsbtOriginal } from '../../blue_modules/validateBhwiPsbt';
+import {
+  BHWI_SIGNING_SESSION_EXPIRED,
+  assertBhwiPsbtAttemptCurrent,
+  hydrateBhwiPsbt,
+  validateBhwiBoundPsbt,
+} from '../../blue_modules/bhwiPsbt';
+import type { BhwiPsbtAttemptSnapshot } from '../../blue_modules/bhwiPsbt';
 import { network } from '../../models/bitcoinNetwork';
 
 bitcoin.initEccLib(ecc);
@@ -500,4 +507,111 @@ test('keeps mixed finalized and partial returns exportable without exposing a tr
   assert.ok(result.psbt.data.inputs[0].finalScriptWitness);
   assert.strictEqual(result.psbt.data.inputs[1].finalScriptWitness, undefined);
   assert.ok(result.psbt.toBase64().length > 0);
+});
+
+test('hydrates immutable parents and rejects remote txid, vout, value, and script conflicts before signing', async () => {
+  const fixture = makeSinglesigFixture();
+  const source = fixture.psbt.clone();
+  delete required(source.data.inputs[0]).nonWitnessUtxo;
+  const parent = required(fixture.parents[0]);
+  const fetchParent = jest.fn(async () => ({ [parent.getId()]: parent.toHex() }));
+  const hydrated = await hydrateBhwiPsbt(source, fetchParent);
+  assert.strictEqual(source.data.inputs[0]?.nonWitnessUtxo, undefined);
+  assert.ok(hydrated.data.inputs[0]?.nonWitnessUtxo);
+  assert.strictEqual(fetchParent.mock.calls.length, 1);
+  validateBhwiPsbtOriginal(hydrated.toBase64(), fixture.wallet, fixture.signer);
+
+  const wrongParent = makeParent(required(parent.outs[0]).script, required(parent.outs[0]).value, 201);
+  await assert.rejects(
+    hydrateBhwiPsbt(source, async () => ({ [parent.getId()]: wrongParent.toHex() })),
+    error => error instanceof Error && error.message === UNSUPPORTED,
+  );
+
+  const missingVout = new bitcoin.Psbt({ network });
+  const child = required(fixture.children[0]);
+  const parentOutput = required(parent.outs[0]);
+  missingVout.addInput({
+    hash: parent.getId(),
+    index: 1,
+    witnessUtxo: { script: parentOutput.script, value: parentOutput.value },
+    bip32Derivation: [
+      {
+        masterFingerprint: Buffer.from(fixture.signer.fingerprint, 'hex'),
+        path: `${fixture.signer.path}/0/0`,
+        pubkey: child.publicKey,
+      },
+    ],
+  });
+  missingVout.addOutput({ script: parentOutput.script, value: parentOutput.value - 1n });
+  await assert.rejects(
+    hydrateBhwiPsbt(missingVout, async () => ({ [parent.getId()]: parent.toHex() })),
+    error => error instanceof Error && error.message === UNSUPPORTED,
+  );
+
+  const wrongValue = source.clone();
+  const wrongValueInput = required(wrongValue.data.inputs[0]);
+  const witness = required(wrongValueInput.witnessUtxo);
+  wrongValueInput.witnessUtxo = { ...witness, value: witness.value - 1n };
+  await assert.rejects(
+    hydrateBhwiPsbt(wrongValue, async () => ({ [parent.getId()]: parent.toHex() })),
+    error => error instanceof Error && error.message === UNSUPPORTED,
+  );
+
+  const wrongScript = source.clone();
+  const wrongScriptInput = required(wrongScript.data.inputs[0]);
+  wrongScriptInput.witnessUtxo = { ...required(wrongScriptInput.witnessUtxo), script: Uint8Array.of(0x51) };
+  await assert.rejects(
+    hydrateBhwiPsbt(wrongScript, async () => ({ [parent.getId()]: parent.toHex() })),
+    error => error instanceof Error && error.message === UNSUPPORTED,
+  );
+});
+
+test('the direct and route hardware-bound consumer accepts verified partial/full returns and rejects altered/raw returns', () => {
+  const fixture = makeSinglesigFixture(2);
+  const association = { ...fixture.signer, family: 'ledger' as const, format: 'native-segwit' as const };
+  const partial = fixture.psbt.clone();
+  partial.signInput(0, required(fixture.children[0]));
+  const partialResult = validateBhwiBoundPsbt(fixture.psbt.toBase64(), partial.toBase64(), fixture.wallet, association);
+  assert.strictEqual(partialResult.tx, undefined);
+  assert.ok(partialResult.psbt.data.inputs[0]?.finalScriptWitness);
+  assert.strictEqual(partialResult.psbt.data.inputs[1]?.finalScriptWitness, undefined);
+  assert.ok(partialResult.psbt.toBase64().length > 0);
+
+  const full = fixture.psbt.clone();
+  full.signInput(0, required(fixture.children[0]));
+  full.signInput(1, required(fixture.children[1]));
+  assert.ok(validateBhwiBoundPsbt(fixture.psbt.toBase64(), full.toBase64(), fixture.wallet, association).tx);
+
+  const altered = fixture.psbt.clone();
+  altered.setLocktime(1);
+  altered.signInput(0, required(fixture.children[0]));
+  expectMessage(() => validateBhwiBoundPsbt(fixture.psbt.toBase64(), altered.toBase64(), fixture.wallet, association), CHANGED);
+  const rawTransaction = full.clone().finalizeAllInputs().extractTransaction().toHex();
+  expectMessage(() => validateBhwiBoundPsbt(fixture.psbt.toBase64(), rawTransaction, fixture.wallet, association), CHANGED);
+  expectMessage(() => validateBhwiBoundPsbt(undefined, full.toBase64(), fixture.wallet, association), BHWI_SIGNING_SESSION_EXPIRED);
+});
+
+test('rejects stale, backgrounded, deleted, edited, and replaced hardware signing snapshots', () => {
+  const snapshot: BhwiPsbtAttemptSnapshot = {
+    generation: 7,
+    originalBase64: 'original',
+    walletID: 'wallet',
+    walletIdentity: 'wallet-identity',
+    associationIdentity: 'association',
+    policyIdentity: 'none',
+    fee: '1000',
+  };
+  assert.doesNotThrow(() => assertBhwiPsbtAttemptCurrent(snapshot, { ...snapshot }));
+  for (const current of [
+    undefined,
+    { ...snapshot, generation: 8 },
+    { ...snapshot, originalBase64: 'changed' },
+    { ...snapshot, walletID: 'deleted' },
+    { ...snapshot, walletIdentity: 'edited' },
+    { ...snapshot, associationIdentity: 'replaced' },
+    { ...snapshot, policyIdentity: 'changed-policy' },
+    { ...snapshot, fee: '1001' },
+  ]) {
+    expectMessage(() => assertBhwiPsbtAttemptCurrent(snapshot, current), BHWI_SIGNING_SESSION_EXPIRED);
+  }
 });

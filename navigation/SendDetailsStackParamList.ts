@@ -5,6 +5,7 @@ import { BitcoinUnit, Chain } from '../models/bitcoinUnits';
 import { ScanQRCodeParamList } from './DetailViewStackParamList';
 import { IFee } from '../screen/send/SendDetails';
 import { NetworkTransactionFeeType } from '../models/networkTransactionFees';
+import type { BhwiOperationRouteParams } from '../blue_modules/bhwi';
 
 type HeaderRightRenderer = NonNullable<NativeStackNavigationOptions['headerRight']>;
 
@@ -99,7 +100,12 @@ export type SendDetailsStackParamList = {
     txhex?: string;
     deepLinkPSBT?: string;
     onBarScanned?: string;
+    bhwiBound?: boolean;
+    bhwiOriginalBase64?: string;
+    bhwiReturnedBase64?: string;
+    bhwiAttempt?: number;
   };
+  HardwareWalletAccount: Extract<BhwiOperationRouteParams, { mode: 'sign-psbt' }>;
   PsbtRaw: {
     psbtBase64: string;
   };

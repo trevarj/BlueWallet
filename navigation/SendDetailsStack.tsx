@@ -23,6 +23,7 @@ const Stack = createNativeStackNavigator<SendDetailsStackParamList>();
 const SendDetails = lazy(() => import('../screen/send/SendDetails'));
 const Confirm = lazy(() => import('../screen/send/Confirm'));
 const PsbtWithHardwareWallet = lazy(() => import('../screen/send/psbtWithHardwareWallet'));
+const HardwareWalletAccount = lazy(() => import('../screen/wallets/HardwareWalletAccount'));
 const CreateTransaction = lazy(() => import('../screen/send/create'));
 const PsbtMultisig = lazy(() => import('../screen/send/psbtMultisig'));
 const PsbtMultisigQRCode = lazy(() => import('../screen/send/PsbtMultisigQRCode'));
@@ -35,6 +36,7 @@ const ScanQRCode = lazy(() => import('../screen/send/ScanQRCode'));
 const SendDetailsComponent = withLazySuspense(SendDetails);
 const ConfirmComponent = withLazySuspense(Confirm);
 const PsbtWithHardwareWalletComponent = withLazySuspense(PsbtWithHardwareWallet);
+const HardwareWalletAccountComponent = withLazySuspense(HardwareWalletAccount);
 const CreateTransactionComponent = withLazySuspense(CreateTransaction);
 const PsbtMultisigComponent = withLazySuspense(PsbtMultisig);
 const PsbtMultisigQRCodeComponent = withLazySuspense(PsbtMultisigQRCode);
@@ -154,6 +156,15 @@ const SendDetailsStack = () => {
         options={navigationStyle({
           title: labelForNetwork(loc.send.header),
           closeButtonPosition: CloseButtonPosition.Right,
+          gestureEnabled: false,
+          fullScreenGestureEnabled: false,
+        })(theme)}
+      />
+      <Stack.Screen
+        name="HardwareWalletAccount"
+        component={HardwareWalletAccountComponent}
+        options={navigationStyle({
+          title: loc.wallets.hardware_title,
           gestureEnabled: false,
           fullScreenGestureEnabled: false,
         })(theme)}

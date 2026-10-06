@@ -1,11 +1,13 @@
 import React from 'react';
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
+import type { RenderAPI } from '@testing-library/react-native';
 import { AppState } from 'react-native';
 import type { AppStateStatus } from 'react-native';
 
 import type { TWallet } from '../../class/wallets/types';
 import { WatchOnlyWallet } from '../../class/wallets/watch-only-wallet';
 import HardwareWalletAccount from '../../screen/wallets/HardwareWalletAccount';
+import { BhwiError } from '../../blue_modules/bhwi';
 
 const mockNavigate = jest.fn();
 const mockDispatch = jest.fn();
@@ -19,8 +21,14 @@ const mockConnect = jest.fn();
 const mockGetAccount = jest.fn();
 const mockStartSession = jest.fn();
 const mockVerifyAccount = jest.fn();
+const mockSignPsbt = jest.fn();
+const mockValidateOriginal = jest.fn();
+const mockValidateResult = jest.fn();
+const mockSaveToDisk = jest.fn(async () => true);
+let mockWallets: TWallet[] = [];
 let mockRouteParams: Record<string, unknown> = { mode: 'wallet' };
 let mockAppStateChange: (state: AppStateStatus) => void = () => undefined;
+let mockIsFocused = true;
 
 type PromiseResolvers<T> = {
   promise: Promise<T>;
@@ -54,13 +62,16 @@ jest.mock('@react-navigation/native', () => {
   const actual = jest.requireActual('@react-navigation/native');
   return {
     ...actual,
+    useIsFocused: () => mockIsFocused,
     useNavigation: () => mockNavigation,
     useRoute: () => ({ params: mockRouteParams }),
     useLocale: () => ({ direction: 'ltr' }),
   };
 });
 
-jest.mock('../../hooks/context/useStorage', () => ({ useStorage: () => ({ addAndSaveWallet: mockAddAndSaveWallet }) }));
+jest.mock('../../hooks/context/useStorage', () => ({
+  useStorage: () => ({ addAndSaveWallet: mockAddAndSaveWallet, saveToDisk: mockSaveToDisk, wallets: mockWallets }),
+}));
 jest.mock('../../hooks/useScreenProtect', () => ({
   useScreenProtect: () => ({ enableScreenProtect: mockEnableScreenProtect, disableScreenProtect: mockDisableScreenProtect }),
 }));
@@ -81,14 +92,20 @@ jest.mock('../../blue_modules/bhwi', () => {
       format.startsWith('multisig-')
         ? `m/48'/0'/${index}'/${format === 'multisig-native' ? 2 : 1}'`
         : `m/${format === 'native-segwit' ? 84 : 44}'/0'/${index}'`,
+    getBhwiPolicyName: (value: string) => `policy-${value.length}`,
     isBhwiAvailable: () => true,
     isBhwiSinglesigFormat: (format: string) => !format.startsWith('multisig-'),
     isCanonicalBhwiFingerprint: (value: string) => value === 'd34db33f',
+    isBhwiReconnectMatch: () => true,
     startBhwiSession: (...args: unknown[]) => mockStartSession(...args),
     supportsBhwiAccountFormat: () => true,
     verifyBhwiAccount: (...args: unknown[]) => mockVerifyAccount(...args),
   };
 });
+jest.mock('../../blue_modules/validateBhwiPsbt', () => ({
+  validateBhwiPsbtOriginal: (...args: unknown[]) => mockValidateOriginal(...args),
+  validateBhwiPsbt: (...args: unknown[]) => mockValidateResult(...args),
+}));
 
 jest.mock('../../components/Button', () => {
   const ReactModule = require('react');
@@ -160,7 +177,13 @@ jest.mock('../../components/BlueSpacing', () => {
   return { BlueSpacing10: View, BlueSpacing20: View };
 });
 
-const session = { discover: mockDiscover, connect: mockConnect, getAccount: mockGetAccount, disconnect: mockDisconnect };
+const session = {
+  discover: mockDiscover,
+  connect: mockConnect,
+  getAccount: mockGetAccount,
+  signPsbt: mockSignPsbt,
+  disconnect: mockDisconnect,
+};
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -169,7 +192,9 @@ beforeEach(() => {
     mockAppStateChange = listener as (state: AppStateStatus) => void;
     return { remove: jest.fn() };
   });
+  mockIsFocused = true;
   mockRouteParams = { mode: 'wallet' };
+  mockWallets = [];
   mockStartSession.mockResolvedValue(session);
   mockDiscover.mockResolvedValue([{ id: 'usb:ledger', name: 'Ledger', family: 'ledger', transport: 'usb' }]);
   mockConnect.mockResolvedValue({ family: 'ledger', fingerprint: 'd34db33f', version: '1', model: null });
@@ -179,6 +204,8 @@ beforeEach(() => {
     path: requestedPath,
     format: requestedFormat,
   }));
+  mockSignPsbt.mockResolvedValue('signed-psbt');
+  mockValidateResult.mockReturnValue({ psbt: {} });
   jest.spyOn(WatchOnlyWallet, 'fromBhwiAccount').mockReturnValue(draft);
 });
 
@@ -310,4 +337,122 @@ it('returns a verified BIP48 account to the exact multisig route without creatin
   expect(mockDispatch).toHaveBeenCalledTimes(1);
   expect(JSON.stringify(mockDispatch.mock.calls[0][0])).toContain('WalletsAddMultisigStep2');
   expect(JSON.stringify(mockDispatch.mock.calls[0][0])).toContain("m/48'/0'/0'/2'");
+});
+
+function makeSigningWallet(secret = publicAccount.xpub) {
+  const wallet = Object.create(WatchOnlyWallet.prototype) as WatchOnlyWallet;
+  Object.assign(wallet, {
+    getID: () => 'signing-wallet',
+    getSecret: () => secret,
+    getMasterFingerprintHex: () => publicAccount.fingerprint,
+    getDerivationPath: () => publicAccount.path,
+    getHardwareWalletAssociation: () => ({ ...publicAccount }),
+  });
+  return wallet;
+}
+
+async function reachSigningOperation(view: RenderAPI) {
+  fireEvent.press(view.getByTestId('HardwareDiscover'));
+  fireEvent.press(await view.findByTestId('HardwareDevice-usb:ledger'));
+  await view.findByTestId('HardwareOperationAccount');
+}
+
+it('requires a fresh connection after signing refusal and never retries automatically', async () => {
+  const signingWallet = makeSigningWallet();
+  mockWallets = [signingWallet];
+  mockRouteParams = {
+    mode: 'sign-psbt',
+    walletID: signingWallet.getID(),
+    hardwareAccount: publicAccount,
+    originalBase64: 'original-psbt',
+    attempt: 1,
+  };
+  mockSignPsbt.mockRejectedValueOnce(new BhwiError('BHWI_USER_REFUSED')).mockResolvedValueOnce('signed-psbt');
+  const view = render(<HardwareWalletAccount />);
+  await reachSigningOperation(view);
+  fireEvent.press(view.getByTestId('HardwareSignPsbt'));
+  await waitFor(() => expect(mockSignPsbt).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(view.queryByTestId('HardwareOperationAccount')).toBeNull());
+  expect(mockStartSession).toHaveBeenCalledTimes(1);
+  expect(mockDispatch).not.toHaveBeenCalled();
+
+  await reachSigningOperation(view);
+  fireEvent.press(view.getByTestId('HardwareSignPsbt'));
+  await waitFor(() => expect(mockDispatch).toHaveBeenCalledTimes(1));
+  expect(mockStartSession).toHaveBeenCalledTimes(2);
+  expect(mockSignPsbt).toHaveBeenCalledTimes(2);
+  expect(mockValidateOriginal).toHaveBeenCalledTimes(2);
+  expect(mockValidateResult).toHaveBeenCalledTimes(1);
+  expect(JSON.stringify(mockDispatch.mock.calls[0][0])).toContain('signed-psbt');
+  expect(JSON.stringify(mockDispatch.mock.calls[0][0])).toContain('original-psbt');
+});
+
+test.each(['deleted', 'edited'] as const)('rejects a signing result delivered after the wallet was %s', async change => {
+  const signingWallet = makeSigningWallet();
+  mockWallets = [signingWallet];
+  mockRouteParams = {
+    mode: 'sign-psbt',
+    walletID: signingWallet.getID(),
+    hardwareAccount: publicAccount,
+    originalBase64: 'original-psbt',
+    attempt: 3,
+  };
+  const pendingSign = withResolvers<string>();
+  mockSignPsbt.mockReturnValueOnce(pendingSign.promise);
+  const view = render(<HardwareWalletAccount />);
+  await reachSigningOperation(view);
+  fireEvent.press(view.getByTestId('HardwareSignPsbt'));
+  await waitFor(() => expect(mockSignPsbt).toHaveBeenCalledTimes(1));
+  mockWallets = change === 'deleted' ? [] : [makeSigningWallet('edited-public-account')];
+  view.rerender(<HardwareWalletAccount />);
+  await act(async () => {
+    pendingSign.resolve('late-signed-psbt');
+    await pendingSign.promise;
+  });
+  await waitFor(() => expect(view.getByTestId('HardwareStatus').props.children).toBe('Hardware signing session expired; start again'));
+  expect(mockDispatch).not.toHaveBeenCalled();
+  expect(mockValidateResult).not.toHaveBeenCalled();
+});
+
+it('leaves screen protection owned by the parent during a signing route', () => {
+  const signingWallet = makeSigningWallet();
+  mockWallets = [signingWallet];
+  mockRouteParams = {
+    mode: 'sign-psbt',
+    walletID: signingWallet.getID(),
+    hardwareAccount: publicAccount,
+    originalBase64: 'original-psbt',
+    attempt: 4,
+  };
+  const view = render(<HardwareWalletAccount />);
+  expect(mockEnableScreenProtect).not.toHaveBeenCalled();
+  view.unmount();
+  expect(mockDisableScreenProtect).not.toHaveBeenCalled();
+});
+
+it('disconnects and rejects a pending signer completion after an unexpected child blur', async () => {
+  const signingWallet = makeSigningWallet();
+  mockWallets = [signingWallet];
+  mockRouteParams = {
+    mode: 'sign-psbt',
+    walletID: signingWallet.getID(),
+    hardwareAccount: publicAccount,
+    originalBase64: 'original-psbt',
+    attempt: 5,
+  };
+  const pendingSign = withResolvers<string>();
+  mockSignPsbt.mockReturnValueOnce(pendingSign.promise);
+  const view = render(<HardwareWalletAccount />);
+  await reachSigningOperation(view);
+  fireEvent.press(view.getByTestId('HardwareSignPsbt'));
+  await waitFor(() => expect(mockSignPsbt).toHaveBeenCalledTimes(1));
+  mockIsFocused = false;
+  view.rerender(<HardwareWalletAccount />);
+  await act(async () => {
+    pendingSign.resolve('late-signed-psbt');
+    await pendingSign.promise;
+  });
+  expect(mockDispatch).not.toHaveBeenCalled();
+  expect(mockValidateResult).not.toHaveBeenCalled();
+  expect(mockDisconnect).toHaveBeenCalled();
 });

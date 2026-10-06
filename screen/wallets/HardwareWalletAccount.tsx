@@ -1,4 +1,4 @@
-import { StackActions, useNavigation, useRoute } from '@react-navigation/native';
+import { StackActions, useIsFocused, useNavigation, useRoute } from '@react-navigation/native';
 import type { RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -25,6 +25,8 @@ import {
   supportsBhwiRegistration,
   verifyBhwiAccount,
 } from '../../blue_modules/bhwi';
+import { BHWI_SIGNING_SESSION_EXPIRED, bhwiAssociationIdentity, bhwiWatchOnlyWalletIdentity } from '../../blue_modules/bhwiPsbt';
+import { validateBhwiPsbt, validateBhwiPsbtOriginal } from '../../blue_modules/validateBhwiPsbt';
 import type {
   BhwiErrorCode,
   BhwiImportFormat,
@@ -83,9 +85,6 @@ const localizedBhwiError = (error: unknown): string => {
   return (code && bhwiErrorMessages[code]) || loc.wallets.hardware_operation_failed;
 };
 
-const associationIdentity = (association: HardwareWalletAssociation): string =>
-  [association.family, association.fingerprint, association.path, association.xpub, association.format].join('\0');
-
 const operationBinding = (params: BhwiOperationRouteParams, wallets: TWallet[]): string | undefined => {
   const wallet = wallets.find(candidate => candidate.getID() === params.walletID);
   if (!wallet) return undefined;
@@ -93,13 +92,29 @@ const operationBinding = (params: BhwiOperationRouteParams, wallets: TWallet[]):
     if (!(wallet instanceof MultisigHDWallet)) return undefined;
     const association = wallet
       .getHardwareWalletAssociations()
-      .find(candidate => associationIdentity(candidate) === associationIdentity(params.hardwareAccount));
+      .find(candidate => bhwiAssociationIdentity(candidate) === bhwiAssociationIdentity(params.hardwareAccount));
     if (!association) return undefined;
     try {
-      return ['register', wallet.getPublicDescriptor(), associationIdentity(association)].join('\0');
+      return ['register', wallet.getPublicDescriptor(), bhwiAssociationIdentity(association)].join('\0');
     } catch {
       return undefined;
     }
+  }
+  if (params.mode === 'sign-psbt') {
+    if (!(wallet instanceof WatchOnlyWallet) || !Number.isSafeInteger(params.attempt) || params.attempt < 1 || !params.originalBase64) {
+      return undefined;
+    }
+    const walletIdentity = bhwiWatchOnlyWalletIdentity(wallet, params.hardwareAccount);
+    return walletIdentity
+      ? [
+          'sign',
+          params.originalBase64,
+          params.attempt,
+          walletIdentity,
+          bhwiAssociationIdentity(params.hardwareAccount),
+          'policy:none',
+        ].join('\0')
+      : undefined;
   }
   if (!matchesBhwiAddressSnapshot(wallet, params.snapshot)) return undefined;
   if (wallet instanceof WatchOnlyWallet) {
@@ -110,12 +125,12 @@ const operationBinding = (params: BhwiOperationRouteParams, wallets: TWallet[]):
       params.snapshot.address,
       String(params.snapshot.isInternal),
       params.snapshot.index,
-      associationIdentity(association),
+      bhwiAssociationIdentity(association),
     ].join('\0');
   }
   if (wallet instanceof MultisigHDWallet) {
     try {
-      const associations = wallet.getHardwareWalletAssociations().map(associationIdentity).sort();
+      const associations = wallet.getHardwareWalletAssociations().map(bhwiAssociationIdentity).sort();
       if (associations.length === 0) return undefined;
       return [
         'verify',
@@ -135,21 +150,27 @@ const operationBinding = (params: BhwiOperationRouteParams, wallets: TWallet[]):
 const HardwareWalletAccount = () => {
   const navigation = useNavigation<NavigationProps>();
   const route = useRoute<RouteProps>();
+  const isFocused = useIsFocused();
   const { addAndSaveWallet, wallets, saveToDisk } = useStorage();
   const { enableScreenProtect, disableScreenProtect } = useScreenProtect();
   const { colors } = useTheme();
   const multisigMode = route.params.mode === 'multisig-cosigner';
+  const signingMode = route.params.mode === 'sign-psbt';
   const operationParams: BhwiOperationRouteParams | undefined =
-    route.params.mode === 'register-wallet' || route.params.mode === 'verify-address' ? route.params : undefined;
+    route.params.mode === 'register-wallet' || route.params.mode === 'verify-address' || route.params.mode === 'sign-psbt'
+      ? route.params
+      : undefined;
   const initialFormat: BhwiImportFormat = multisigMode
     ? route.params.format
-    : operationParams?.mode === 'register-wallet'
+    : operationParams?.mode === 'register-wallet' || operationParams?.mode === 'sign-psbt'
       ? operationParams.hardwareAccount.format
       : 'native-segwit';
   const walletsRef = useRef(wallets);
   walletsRef.current = wallets;
   const operationParamsRef = useRef(operationParams);
   const initialOperationBindingRef = useRef(operationParams ? operationBinding(operationParams, wallets) : undefined);
+  const currentOperationParamsRef = useRef(operationParams);
+  currentOperationParamsRef.current = operationParams;
 
   const [transport, setTransport] = useState<Transport>('usb');
   const [devices, setDevices] = useState<Device[]>([]);
@@ -180,6 +201,7 @@ const HardwareWalletAccount = () => {
   const stagedRegistrationRef = useRef<HardwareWalletRegistration | undefined>(undefined);
   const operationRef = useRef(false);
   const foregroundRef = useRef(AppState.currentState === 'active');
+  const focusedRef = useRef(isFocused);
   const restartRequiredRef = useRef(false);
 
   const stylesHook = StyleSheet.create({
@@ -191,11 +213,18 @@ const HardwareWalletAccount = () => {
 
   const operationIsCurrent = useCallback(() => {
     const params = operationParamsRef.current;
-    return !params || initialOperationBindingRef.current === operationBinding(params, walletsRef.current);
+    const currentParams = currentOperationParamsRef.current;
+    if (!params) return !currentParams;
+    return (
+      !!currentParams &&
+      initialOperationBindingRef.current === operationBinding(params, walletsRef.current) &&
+      initialOperationBindingRef.current === operationBinding(currentParams, walletsRef.current)
+    );
   }, []);
 
   const isCurrent = useCallback(
-    (attempt: number) => mountedRef.current && foregroundRef.current && attemptRef.current === attempt && operationIsCurrent(),
+    (attempt: number) =>
+      mountedRef.current && foregroundRef.current && focusedRef.current && attemptRef.current === attempt && operationIsCurrent(),
     [operationIsCurrent],
   );
 
@@ -273,7 +302,7 @@ const HardwareWalletAccount = () => {
         if (params) {
           const wallet = walletsRef.current.find(candidate => candidate.getID() === params.walletID);
           const associations =
-            params.mode === 'register-wallet'
+            params.mode === 'register-wallet' || params.mode === 'sign-psbt'
               ? [params.hardwareAccount]
               : wallet instanceof WatchOnlyWallet
                 ? [wallet.getHardwareWalletAssociation()].filter(
@@ -504,6 +533,91 @@ const HardwareWalletAccount = () => {
     }
   }, [isCurrent, navigation, operationIsCurrent]);
 
+  const signPsbt = useCallback(async () => {
+    const params = operationParamsRef.current;
+    const session = sessionRef.current;
+    const association = matchedAssociationRef.current;
+    const attempt = attemptRef.current;
+    if (
+      params?.mode !== 'sign-psbt' ||
+      !session ||
+      !association ||
+      operationRef.current ||
+      completedRef.current ||
+      !foregroundRef.current ||
+      !operationIsCurrent()
+    ) {
+      return;
+    }
+    operationRef.current = true;
+    setBusy(true);
+    setStatus('');
+    try {
+      const wallet = walletsRef.current.find(candidate => candidate.getID() === params.walletID);
+      if (
+        !(wallet instanceof WatchOnlyWallet) ||
+        bhwiAssociationIdentity(association) !== bhwiAssociationIdentity(params.hardwareAccount)
+      ) {
+        throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
+      }
+      validateBhwiPsbtOriginal(params.originalBase64, wallet, association);
+      const returnedBase64 = await session.signPsbt(params.originalBase64, null);
+      if (!isCurrent(attempt)) throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
+      validateBhwiPsbt(params.originalBase64, returnedBase64, wallet, association);
+      if (!isCurrent(attempt)) throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
+      completedRef.current = true;
+      navigation.dispatch(
+        StackActions.popTo(
+          'PsbtWithHardwareWallet',
+          {
+            bhwiBound: true,
+            bhwiOriginalBase64: params.originalBase64,
+            bhwiReturnedBase64: returnedBase64,
+            bhwiAttempt: params.attempt,
+          },
+          { merge: true },
+        ),
+      );
+    } catch (error) {
+      if (!mountedRef.current || !foregroundRef.current || attemptRef.current !== attempt) return;
+      if (!operationIsCurrent()) {
+        await retireSession();
+        if (!mountedRef.current || !foregroundRef.current) return;
+        operationRef.current = false;
+        restartRequiredRef.current = true;
+        matchedAssociationRef.current = undefined;
+        setMatchedAssociation(undefined);
+        setDeviceInfo(undefined);
+        setDevices([]);
+        setBusy(false);
+        setStatus(BHWI_SIGNING_SESSION_EXPIRED);
+        return;
+      }
+      const message =
+        error instanceof BhwiError
+          ? localizedBhwiError(error)
+          : error instanceof Error
+            ? error.message
+            : loc.wallets.hardware_operation_failed;
+      await retireSession();
+      if (!mountedRef.current || !foregroundRef.current) return;
+      const bindingIsCurrent = operationIsCurrent();
+      operationRef.current = false;
+      restartRequiredRef.current = true;
+      matchedAssociationRef.current = undefined;
+      setMatchedAssociation(undefined);
+      setDeviceInfo(undefined);
+      setDevices([]);
+      setBusy(false);
+      setStatus(bindingIsCurrent ? message : BHWI_SIGNING_SESSION_EXPIRED);
+    } finally {
+      if (attemptRef.current === attempt) {
+        operationRef.current = false;
+        if (isCurrent(attempt)) setBusy(false);
+      }
+    }
+  }, [isCurrent, navigation, operationIsCurrent, retireSession]);
+
   const finish = useCallback(async () => {
     if (!stagedAssociation || operationRef.current || completedRef.current || !foregroundRef.current) return;
     operationRef.current = true;
@@ -550,14 +664,30 @@ const HardwareWalletAccount = () => {
   }, [beginDiscovery, initialFormat, transport]);
 
   useEffect(() => {
+    focusedRef.current = isFocused;
+    if (isFocused) return;
+    restartRequiredRef.current = true;
+    const hadHardwareWork = attemptRef.current > 0 || operationRef.current || !!sessionRef.current || !!matchedAssociationRef.current;
+    operationRef.current = false;
+    retireSession().catch(() => undefined);
+    matchedAssociationRef.current = undefined;
+    setMatchedAssociation(undefined);
+    setBusy(false);
+    setDevices([]);
+    setDeviceInfo(undefined);
+    if (hadHardwareWork) setStatus(signingMode ? BHWI_SIGNING_SESSION_EXPIRED : loc.wallets.hardware_disconnected);
+  }, [isFocused, retireSession, signingMode]);
+
+  useEffect(() => {
     mountedRef.current = true;
-    enableScreenProtect();
+    if (!signingMode) enableScreenProtect();
     const appState = AppState.addEventListener('change', nextState => {
       foregroundRef.current = nextState === 'active';
       if (foregroundRef.current) return;
       restartRequiredRef.current = true;
       const hadHardwareWork = attemptRef.current > 0 || operationRef.current || !!sessionRef.current || !!stagedAssociationRef.current;
       const hasDraft = !!draftRef.current || !!stagedAssociationRef.current;
+      operationRef.current = false;
       retireSession().catch(() => undefined);
       setBusy(false);
       if (hadHardwareWork) setStatus(loc.wallets.hardware_disconnected);
@@ -576,9 +706,9 @@ const HardwareWalletAccount = () => {
       sessionRef.current = undefined;
       if (session) session.disconnect().catch(() => undefined);
       appState.remove();
-      disableScreenProtect();
+      if (!signingMode) disableScreenProtect();
     };
-  }, [disableScreenProtect, enableScreenProtect, retireSession]);
+  }, [disableScreenProtect, enableScreenProtect, retireSession, signingMode]);
 
   const controlsLocked = !!stagedAssociation;
   const finishTitle = multisigMode
@@ -703,7 +833,13 @@ const HardwareWalletAccount = () => {
           <BlueText selectable>{matchedAssociation.path}</BlueText>
           <BlueSpacing20 />
           <Button
-            testID={operationParams.mode === 'register-wallet' ? 'HardwareRegisterWallet' : 'HardwareVerifyAddress'}
+            testID={
+              operationParams.mode === 'register-wallet'
+                ? 'HardwareRegisterWallet'
+                : operationParams.mode === 'sign-psbt'
+                  ? 'HardwareSignPsbt'
+                  : 'HardwareVerifyAddress'
+            }
             title={
               operationDone
                 ? loc._.close
@@ -711,13 +847,17 @@ const HardwareWalletAccount = () => {
                   ? saveFailed
                     ? loc.wallets.hardware_retry_save
                     : loc.wallets.hardware_register_wallet
-                  : loc.wallets.hardware_verify_address
+                  : operationParams.mode === 'sign-psbt'
+                    ? loc.wallets.hardware_sign_transaction
+                    : loc.wallets.hardware_verify_address
             }
             onPress={() => {
               if (operationDone) {
                 navigation.goBack();
               } else if (operationParams.mode === 'register-wallet') {
                 registerWallet().catch(() => undefined);
+              } else if (operationParams.mode === 'sign-psbt') {
+                signPsbt().catch(() => undefined);
               } else {
                 verifyAddress().catch(() => undefined);
               }

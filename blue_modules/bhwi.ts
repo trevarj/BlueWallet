@@ -86,6 +86,13 @@ export type BhwiOperationRouteParams =
       mode: 'verify-address';
       walletID: string;
       snapshot: BhwiAddressSnapshot;
+    }
+  | {
+      mode: 'sign-psbt';
+      walletID: string;
+      hardwareAccount: HardwareWalletAssociation;
+      originalBase64: string;
+      attempt: number;
     };
 
 export const BHWI_MAX_ACCOUNT_INDEX = 0x7fffffff;
