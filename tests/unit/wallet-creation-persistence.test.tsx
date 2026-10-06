@@ -2,6 +2,7 @@ import React from 'react';
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 
 import triggerHapticFeedback from '../../blue_modules/hapticFeedback';
+import { getBhwiHardwareMobilePolicy } from '../../blue_modules/bhwiPsbt';
 import { HDSegwitBech32Wallet } from '../../class/wallets/hd-segwit-bech32-wallet';
 import { MultisigHDWallet } from '../../class/wallets/multisig-hd-wallet';
 import { convertExtendedKey } from '../../class/wallets/extended-key';
@@ -11,6 +12,8 @@ import ImportCustomDerivationPath from '../../screen/wallets/ImportCustomDerivat
 import ImportSpeed from '../../screen/wallets/ImportSpeed';
 import ImportWalletDiscovery from '../../screen/wallets/ImportWalletDiscovery';
 import WalletsAddMultisigStep2 from '../../screen/wallets/addMultisigStep2';
+import WalletsAddMultisig from '../../screen/wallets/WalletsAddMultisig';
+import WalletsAddMultisigVaultKeySheet from '../../screen/wallets/WalletsAddMultisigVaultKeySheet';
 
 const MNEMONIC = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 
@@ -18,8 +21,13 @@ const mockNavigate = jest.fn();
 const mockGoBack = jest.fn();
 const mockParentGoBack = jest.fn();
 const mockSetOptions = jest.fn();
+const mockDispatch = jest.fn();
+const mockEnableScreenProtect = jest.fn(async () => undefined);
+const mockDisableScreenProtect = jest.fn(async () => undefined);
 const mockSetParams = jest.fn((updates: Record<string, unknown>) => Object.assign(mockRouteParams, updates));
 let mockRouteParams: Record<string, unknown> = {};
+let mockFocusCleanup: void | (() => void);
+let mockIsElectrumDisabled = true;
 const mockParentNavigation = { goBack: mockParentGoBack };
 const mockNavigation = {
   navigate: mockNavigate,
@@ -27,12 +35,13 @@ const mockNavigation = {
   getParent: () => mockParentNavigation,
   setOptions: mockSetOptions,
   setParams: mockSetParams,
+  dispatch: mockDispatch,
 };
 
 const mockAddAndSaveWallet = jest.fn<Promise<boolean>, [TWallet]>();
 const mockAddWallet = jest.fn<void, [TWallet]>();
 const mockSaveToDisk = jest.fn<Promise<boolean>, []>();
-const mockSleep = jest.fn(async () => undefined);
+const mockSleep = jest.fn<Promise<void>, []>(async () => undefined);
 let mockDiscoveredWallet: TWallet;
 
 jest.mock('@react-navigation/native', () => {
@@ -41,7 +50,9 @@ jest.mock('@react-navigation/native', () => {
     ...actual,
     useNavigation: () => mockNavigation,
     useRoute: () => ({ params: mockRouteParams }),
-    useFocusEffect: (effect: () => void | (() => void)) => effect(),
+    useFocusEffect: (effect: () => void | (() => void)) => {
+      mockFocusCleanup = effect();
+    },
     useLocale: () => ({ direction: 'ltr' }),
   };
 });
@@ -59,13 +70,13 @@ jest.mock('../../hooks/context/useStorage', () => ({
 
 jest.mock('../../hooks/context/useSettings', () => ({
   useSettings: () => ({
-    isElectrumDisabled: true,
+    isElectrumDisabled: mockIsElectrumDisabled,
     isPrivacyBlurEnabled: false,
   }),
 }));
 
 jest.mock('../../hooks/useScreenProtect', () => ({
-  useScreenProtect: () => ({ enableScreenProtect: jest.fn(), disableScreenProtect: jest.fn() }),
+  useScreenProtect: () => ({ enableScreenProtect: mockEnableScreenProtect, disableScreenProtect: mockDisableScreenProtect }),
 }));
 
 jest.mock('../../components/themes', () => ({
@@ -203,6 +214,8 @@ describe('wallet creation persistence gates', () => {
     mockAddAndSaveWallet.mockReset().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
     mockSaveToDisk.mockReset();
     mockRouteParams = {};
+    mockFocusCleanup = undefined;
+    mockIsElectrumDisabled = true;
     mockDiscoveredWallet = {
       type: 'discovered',
       typeReadable: 'Discovered wallet',
@@ -319,6 +332,18 @@ describe('wallet creation persistence gates', () => {
     await waitFor(expectSameRetry);
     expect((mockAddAndSaveWallet.mock.calls[0][0] as MultisigHDWallet).getCosigner(1)).toBe(MNEMONIC);
   });
+  it('opens the dedicated 2-of-2 native hardware and phone route without changing generic defaults', () => {
+    mockRouteParams = { walletLabel: 'Dedicated vault' };
+    const view = render(<WalletsAddMultisig />);
+    fireEvent.press(view.getByTestId('VaultHardwareAndMobile'));
+    expect(mockNavigate).toHaveBeenCalledWith('WalletsAddMultisigStep2', {
+      m: 2,
+      n: 2,
+      format: MultisigHDWallet.FORMAT_P2WSH,
+      walletLabel: 'Dedicated vault',
+      hardwareAndMobile: true,
+    });
+  });
 
   it('opens the shared hardware account route only for supported BIP48 vault formats', async () => {
     mockRouteParams = { m: 1, n: 1, format: MultisigHDWallet.FORMAT_P2WSH, walletLabel: 'Hardware vault' };
@@ -368,5 +393,228 @@ describe('wallet creation persistence gates', () => {
     fireEvent.press(view.getByTestId('CreateButton'));
     await waitFor(expectSameRetry);
     expect(mockAddAndSaveWallet.mock.calls[1][0]).toBe(staged);
+  });
+
+  it('creates only the acknowledged BIP48 phone plus hardware vault and retries the exact phone seed', async () => {
+    const generate = jest.spyOn(HDSegwitBech32Wallet.prototype, 'generate').mockImplementation(async function (this: HDSegwitBech32Wallet) {
+      this.setSecret(MNEMONIC);
+    });
+    const hardwareSeed = 'legal winner thank year wave sausage worth useful legal winner thank yellow';
+    const path = MultisigHDWallet.PATH_NATIVE_SEGWIT;
+    const hardwareAccount = {
+      family: 'ledger' as const,
+      fingerprint: 'd34db33f',
+      path,
+      xpub: convertExtendedKey(MultisigHDWallet.seedToXpub(hardwareSeed, path), 'legacy'),
+      format: 'multisig-native' as const,
+    };
+    mockRouteParams = {
+      m: 2,
+      n: 2,
+      format: MultisigHDWallet.FORMAT_P2WSH,
+      walletLabel: 'Hardware and phone',
+      hardwareAndMobile: true,
+    };
+    const view = render(<WalletsAddMultisigStep2 />);
+    const generateButton = await view.findByTestId('VaultKeyGenerate');
+    fireEvent.press(generateButton);
+    fireEvent.press(generateButton);
+    await waitFor(() =>
+      expect(mockNavigate).toHaveBeenCalledWith('WalletsAddMultisigVaultKeySheet', {
+        keyIndex: 1,
+        seed: MNEMONIC,
+        requireBackupAcknowledgement: true,
+        seedToken: 'key-1',
+      }),
+    );
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(view.queryByTestId('VaultCosignerImport2')).toBeNull();
+    expect(view.getByTestId('CreateButton').props.accessibilityState?.disabled ?? true).toBe(true);
+    fireEvent.press(view.getByTestId('VaultHardwareCosigner2'));
+    expect(mockNavigate).toHaveBeenLastCalledWith('HardwareWalletAccount', {
+      mode: 'multisig-cosigner',
+      format: 'multisig-native',
+      returnTo: 'WalletsAddMultisigStep2',
+    });
+    expect(JSON.stringify(mockNavigate.mock.calls.at(-1))).not.toContain(MNEMONIC);
+
+    mockRouteParams.hardwareAccount = hardwareAccount;
+    view.rerender(<WalletsAddMultisigStep2 />);
+    await waitFor(() => expect(view.queryByTestId('VaultHardwareCosigner2')).toBeNull());
+    expect(view.getByTestId('CreateButton').props.accessibilityState?.disabled ?? view.getByTestId('CreateButton').props.disabled).toBe(
+      true,
+    );
+    mockRouteParams.sheetAction = 'backupAcknowledged';
+    mockRouteParams.sheetSeedToken = 'key-0';
+    view.rerender(<WalletsAddMultisigStep2 />);
+    expect(view.getByTestId('CreateButton').props.accessibilityState?.disabled ?? view.getByTestId('CreateButton').props.disabled).toBe(
+      true,
+    );
+    mockRouteParams.sheetSeedToken = 'key-1';
+    view.rerender(<WalletsAddMultisigStep2 />);
+    await waitFor(() => {
+      const create = view.getByTestId('CreateButton');
+      expect(create.props.accessibilityState?.disabled ?? create.props.disabled ?? false).toBe(false);
+    });
+    fireEvent.press(view.getByTestId('CreateButton'));
+    await waitFor(() => expect(mockAddAndSaveWallet).toHaveBeenCalledTimes(1));
+    const staged = mockAddAndSaveWallet.mock.calls[0][0] as MultisigHDWallet;
+    expect(staged.getCosigner(1)).toBe(MNEMONIC);
+    expect(staged.getPublicCosigners()[0]?.path).toBe(path);
+    expect(staged.getHardwareWalletAssociations()).toEqual([hardwareAccount]);
+    const signingPolicy = getBhwiHardwareMobilePolicy(staged);
+    expect(signingPolicy?.association).toEqual(hardwareAccount);
+    expect(signingPolicy?.phone).toEqual(staged.getPublicCosigners()[0]);
+    expect(mockParentGoBack).not.toHaveBeenCalled();
+
+    fireEvent.press(view.getByTestId('CreateButton'));
+    await waitFor(expectSameRetry);
+    expect(mockAddAndSaveWallet.mock.calls[1][0]).toBe(staged);
+  });
+
+  it('ignores a generated key that completes after the creation screen loses focus', async () => {
+    let resolveGeneration: (() => void) | undefined;
+    const generate = jest.spyOn(HDSegwitBech32Wallet.prototype, 'generate').mockImplementation(async function (this: HDSegwitBech32Wallet) {
+      await new Promise<void>(resolve => {
+        resolveGeneration = resolve;
+      });
+      this.setSecret(MNEMONIC);
+    });
+    mockRouteParams = {
+      m: 2,
+      n: 2,
+      format: MultisigHDWallet.FORMAT_P2WSH,
+      walletLabel: 'Exited generation',
+      hardwareAndMobile: true,
+    };
+    const view = render(<WalletsAddMultisigStep2 />);
+    fireEvent.press(await view.findByTestId('VaultKeyGenerate'));
+    act(() => mockFocusCleanup?.());
+    await act(async () => {
+      resolveGeneration?.();
+      await Promise.resolve();
+    });
+    expect(mockNavigate).not.toHaveBeenCalledWith('WalletsAddMultisigVaultKeySheet', expect.objectContaining({ seed: MNEMONIC }));
+
+    view.rerender(<WalletsAddMultisigStep2 />);
+    const retry = await view.findByTestId('VaultKeyGenerate');
+    expect(retry.props.accessibilityState?.disabled ?? retry.props.disabled ?? false).toBe(false);
+    fireEvent.press(retry);
+    expect(generate).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      resolveGeneration?.();
+      await Promise.resolve();
+    });
+    await waitFor(() =>
+      expect(mockNavigate).toHaveBeenCalledWith(
+        'WalletsAddMultisigVaultKeySheet',
+        expect.objectContaining({ seed: MNEMONIC, seedToken: 'key-3' }),
+      ),
+    );
+  });
+
+  it('hides seed words until protection is acquired and acknowledges only the current seed token', async () => {
+    mockRouteParams = {
+      keyIndex: 1,
+      seed: MNEMONIC,
+      seedToken: 'key-7',
+      requireBackupAcknowledgement: true,
+    };
+    const view = render(<WalletsAddMultisigVaultKeySheet />);
+    expect(view.queryByTestId('VaultSeedWords')).toBeNull();
+    expect(view.getByTestId('VaultSeedProtectionPending')).toBeTruthy();
+    await view.findByTestId('VaultSeedWords');
+    mockDisableScreenProtect.mockImplementationOnce(async () => {
+      expect(view.queryByTestId('VaultSeedWords')).toBeNull();
+    });
+    expect(mockEnableScreenProtect).toHaveBeenCalledTimes(1);
+    fireEvent.press(view.getByTestId('VaultKeyDone'));
+    await waitFor(() => expect(mockDispatch).toHaveBeenCalledTimes(1));
+    expect(JSON.stringify(mockDispatch.mock.calls[0]?.[0])).toContain('backupAcknowledged');
+    expect(JSON.stringify(mockDispatch.mock.calls[0]?.[0])).toContain('key-7');
+    view.unmount();
+    expect(mockDisableScreenProtect).toHaveBeenCalled();
+  });
+
+  it('keeps seed words hidden when screen protection acquisition fails', async () => {
+    mockEnableScreenProtect.mockRejectedValueOnce(new Error('capture unavailable'));
+    mockRouteParams = {
+      keyIndex: 1,
+      seed: MNEMONIC,
+      seedToken: 'key-8',
+      requireBackupAcknowledgement: true,
+    };
+    const view = render(<WalletsAddMultisigVaultKeySheet />);
+    await waitFor(() => expect(view.queryByTestId('VaultSeedProtectionPending')).toBeNull());
+    expect(view.queryByTestId('VaultSeedWords')).toBeNull();
+    fireEvent.press(view.getByTestId('VaultKeyDone'));
+    expect(mockDispatch).not.toHaveBeenCalled();
+  });
+
+  it('never persists or navigates when vault creation loses focus during balance fetch', async () => {
+    mockIsElectrumDisabled = false;
+    mockRouteParams = {
+      m: 1,
+      n: 1,
+      format: MultisigHDWallet.FORMAT_P2WSH,
+      walletLabel: 'Abandoned vault',
+      sheetAction: 'importMnemonic',
+      sheetImportText: MNEMONIC,
+      sheetAskPassphrase: false,
+    };
+    let resolveFetch: (() => void) | undefined;
+    const fetch = jest.spyOn(MultisigHDWallet.prototype, 'fetchBalance').mockImplementation(
+      () =>
+        new Promise<void>(resolve => {
+          resolveFetch = resolve;
+        }),
+    );
+    const view = render(<WalletsAddMultisigStep2 />);
+    await waitFor(() => {
+      const create = view.getByTestId('CreateButton');
+      expect(create.props.accessibilityState?.disabled ?? create.props.disabled ?? false).toBe(false);
+    });
+    fireEvent.press(view.getByTestId('CreateButton'));
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    act(() => mockFocusCleanup?.());
+    await act(async () => {
+      resolveFetch?.();
+      await Promise.resolve();
+    });
+    expect(mockAddAndSaveWallet).not.toHaveBeenCalled();
+    expect(mockParentGoBack).not.toHaveBeenCalled();
+  });
+
+  it('rejects duplicate create presses while the same operation is awaiting', async () => {
+    mockRouteParams = {
+      m: 1,
+      n: 1,
+      format: MultisigHDWallet.FORMAT_P2WSH,
+      walletLabel: 'Single operation',
+      sheetAction: 'importMnemonic',
+      sheetImportText: MNEMONIC,
+      sheetAskPassphrase: false,
+    };
+    let resolveSleep: (() => void) | undefined;
+    mockSleep.mockImplementationOnce(
+      () =>
+        new Promise<void>(resolve => {
+          resolveSleep = resolve;
+        }),
+    );
+    const view = render(<WalletsAddMultisigStep2 />);
+    await waitFor(() => {
+      const create = view.getByTestId('CreateButton');
+      expect(create.props.accessibilityState?.disabled ?? create.props.disabled ?? false).toBe(false);
+    });
+    const create = view.getByTestId('CreateButton');
+    fireEvent.press(create);
+    fireEvent.press(create);
+    expect(mockSleep).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      resolveSleep?.();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(mockAddAndSaveWallet).toHaveBeenCalledTimes(1));
   });
 });

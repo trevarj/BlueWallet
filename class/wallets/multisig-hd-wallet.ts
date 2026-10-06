@@ -1335,14 +1335,10 @@ export class MultisigHDWallet extends AbstractHDElectrumWallet {
   }
 
   calculateHowManySignaturesWeHaveFromPsbt(psbt: Psbt) {
-    let sigsHave = 0;
-    for (const inp of psbt.data.inputs) {
-      sigsHave = Math.max(sigsHave, inp.partialSig?.length || 0);
-      if (inp.finalScriptSig || inp.finalScriptWitness) sigsHave = this.getM(); // hacky, but it means we have enough
-      // He who knows that enough is enough will always have enough. Lao Tzu
-    }
-
-    return sigsHave;
+    if (psbt.inputCount === 0) return 0;
+    return Math.min(
+      ...psbt.data.inputs.map(input => (input.finalScriptSig || input.finalScriptWitness ? this.getM() : (input.partialSig?.length ?? 0))),
+    );
   }
 
   /**
@@ -1411,8 +1407,11 @@ export class MultisigHDWallet extends AbstractHDElectrumWallet {
     }
 
     if (this.calculateHowManySignaturesWeHaveFromPsbt(psbt) >= this.getM()) {
-      const tx = psbt.finalizeAllInputs().extractTransaction();
-      return { tx };
+      for (let index = 0; index < psbt.inputCount; index++) {
+        const input = psbt.data.inputs[index];
+        if (input && !input.finalScriptSig && !input.finalScriptWitness) psbt.finalizeInput(index);
+      }
+      return { tx: psbt.extractTransaction() };
     }
 
     return { tx: false };

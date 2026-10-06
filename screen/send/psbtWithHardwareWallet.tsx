@@ -52,6 +52,8 @@ const PsbtWithHardwareWallet = () => {
   const { walletID, memo, psbt, launchedBy } = routeParamsRef.current;
   const wallet = wallets.find(candidate => candidate.getID() === walletID);
   const currentAssociation = wallet instanceof WatchOnlyWallet ? wallet.getHardwareWalletAssociation() : undefined;
+  const currentWalletIdentity =
+    wallet instanceof WatchOnlyWallet && currentAssociation ? bhwiWatchOnlyWalletIdentity(wallet, currentAssociation) : undefined;
   const hardwareBoundFlowRef = useRef(!!currentAssociation || routeParamsRef.current.bhwiBound === true);
   const hardwareBoundFlow = hardwareBoundFlowRef.current;
   if (hardwareBoundFlow) routeParamsRef.current = { ...routeParamsRef.current, bhwiBound: true };
@@ -485,7 +487,7 @@ const PsbtWithHardwareWallet = () => {
       expireHardwareAttempt();
       setHardwareStatus(BHWI_SIGNING_SESSION_EXPIRED);
     }
-  }, [expireHardwareAttempt, isFocused, requireCurrentAttempt]);
+  }, [currentWalletIdentity, expireHardwareAttempt, isFocused, requireCurrentAttempt]);
 
   useEffect(() => {
     const data = routeParamsRef.current.onBarScanned;

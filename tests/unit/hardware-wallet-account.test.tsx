@@ -6,6 +6,7 @@ import type { AppStateStatus } from 'react-native';
 
 import type { TWallet } from '../../class/wallets/types';
 import { WatchOnlyWallet } from '../../class/wallets/watch-only-wallet';
+import { MultisigHDWallet } from '../../class/wallets/multisig-hd-wallet';
 import HardwareWalletAccount from '../../screen/wallets/HardwareWalletAccount';
 import { BhwiError } from '../../blue_modules/bhwi';
 
@@ -22,6 +23,7 @@ const mockGetAccount = jest.fn();
 const mockStartSession = jest.fn();
 const mockVerifyAccount = jest.fn();
 const mockSignPsbt = jest.fn();
+const mockGetBhwiLedgerHmac = jest.fn();
 const mockValidateOriginal = jest.fn();
 const mockValidateResult = jest.fn();
 const mockSaveToDisk = jest.fn(async () => true);
@@ -93,6 +95,7 @@ jest.mock('../../blue_modules/bhwi', () => {
         ? `m/48'/0'/${index}'/${format === 'multisig-native' ? 2 : 1}'`
         : `m/${format === 'native-segwit' ? 84 : 44}'/0'/${index}'`,
     getBhwiPolicyName: (value: string) => `policy-${value.length}`,
+    getBhwiLedgerHmac: (...args: unknown[]) => mockGetBhwiLedgerHmac(...args),
     isBhwiAvailable: () => true,
     isBhwiSinglesigFormat: (format: string) => !format.startsWith('multisig-'),
     isCanonicalBhwiFingerprint: (value: string) => value === 'd34db33f',
@@ -199,6 +202,7 @@ beforeEach(() => {
   mockDiscover.mockResolvedValue([{ id: 'usb:ledger', name: 'Ledger', family: 'ledger', transport: 'usb' }]);
   mockConnect.mockResolvedValue({ family: 'ledger', fingerprint: 'd34db33f', version: '1', model: null });
   mockGetAccount.mockResolvedValue(nativeAccount);
+  mockGetBhwiLedgerHmac.mockResolvedValue('ab'.repeat(32));
   mockVerifyAccount.mockImplementation((_info, requestedPath, requestedFormat) => ({
     ...publicAccount,
     path: requestedPath,
@@ -338,6 +342,61 @@ it('returns a verified BIP48 account to the exact multisig route without creatin
   expect(JSON.stringify(mockDispatch.mock.calls[0][0])).toContain('WalletsAddMultisigStep2');
   expect(JSON.stringify(mockDispatch.mock.calls[0][0])).toContain("m/48'/0'/0'/2'");
 });
+async function reachSigningOperation(view: RenderAPI) {
+  fireEvent.press(view.getByTestId('HardwareDiscover'));
+  fireEvent.press(await view.findByTestId('HardwareDevice-usb:ledger'));
+  await view.findByTestId('HardwareOperationAccount');
+}
+
+it('sends only the current public multisig policy and exact association to hardware signing', async () => {
+  const hardwareAccount = {
+    ...publicAccount,
+    path: "m/48'/0'/0'/2'",
+    format: 'multisig-native' as const,
+  };
+  const descriptor = 'wsh(sortedmulti(2,public-phone,public-hardware))';
+  const registration = {
+    ...hardwareAccount,
+    status: 'complete' as const,
+    network: 'bitcoin' as const,
+    name: 'registered-policy',
+    descriptor,
+    hmacService: 'bluewallet.bhwi.ledger-policy.test',
+  };
+  const privateSeed = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
+  const wallet = Object.create(MultisigHDWallet.prototype) as MultisigHDWallet;
+  Object.assign(wallet, {
+    getID: () => 'multisig-signing-wallet',
+    getM: () => 2,
+    getN: () => 2,
+    getPublicDescriptor: () => descriptor,
+    getHardwareWalletAssociations: () => [{ ...hardwareAccount }],
+    getHardwareWalletRegistration: () => registration,
+    getCosigner: () => privateSeed,
+  });
+  mockWallets = [wallet];
+  mockRouteParams = {
+    mode: 'sign-psbt',
+    walletID: wallet.getID(),
+    hardwareAccount,
+    originalBase64: 'phone-signed-psbt',
+    attempt: 2,
+  };
+  const view = render(<HardwareWalletAccount />);
+  await reachSigningOperation(view);
+  fireEvent.press(view.getByTestId('HardwareSignPsbt'));
+  await waitFor(() => expect(mockSignPsbt).toHaveBeenCalledTimes(1));
+  expect(mockSignPsbt).toHaveBeenCalledWith('phone-signed-psbt', {
+    name: 'registered-policy',
+    descriptor,
+    ledgerHmacHex: 'ab'.repeat(32),
+  });
+  expect(mockGetBhwiLedgerHmac).toHaveBeenCalledWith(registration.hmacService);
+  expect(JSON.stringify(mockSignPsbt.mock.calls[0])).not.toContain(privateSeed);
+  expect(JSON.stringify(mockDispatch.mock.calls[0]?.[0])).toContain('PsbtMultisig');
+  expect(JSON.stringify(mockRouteParams)).not.toContain('ab'.repeat(32));
+  expect(JSON.stringify(mockDispatch.mock.calls[0]?.[0])).not.toContain('ab'.repeat(32));
+});
 
 function makeSigningWallet(secret = publicAccount.xpub) {
   const wallet = Object.create(WatchOnlyWallet.prototype) as WatchOnlyWallet;
@@ -349,12 +408,6 @@ function makeSigningWallet(secret = publicAccount.xpub) {
     getHardwareWalletAssociation: () => ({ ...publicAccount }),
   });
   return wallet;
-}
-
-async function reachSigningOperation(view: RenderAPI) {
-  fireEvent.press(view.getByTestId('HardwareDiscover'));
-  fireEvent.press(await view.findByTestId('HardwareDevice-usb:ledger'));
-  await view.findByTestId('HardwareOperationAccount');
 }
 
 it('requires a fresh connection after signing refusal and never retries automatically', async () => {

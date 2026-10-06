@@ -2,12 +2,18 @@ import * as bitcoin from 'bitcoinjs-lib';
 import { Buffer } from 'buffer';
 
 import { WatchOnlyWallet } from '../class/wallets/watch-only-wallet';
+import { MultisigHDWallet } from '../class/wallets/multisig-hd-wallet';
 import { network } from '../models/bitcoinNetwork';
 import * as BlueElectrum from './BlueElectrum';
+import { sameBhwiExtendedPublicKey } from './bhwi';
+import type { Account as BhwiAccount } from '../codegen/NativeBhwi';
 import type { HardwareWalletAssociation } from './bhwi';
 import { validateBhwiPsbt } from './validateBhwiPsbt';
 
 export const BHWI_SIGNING_SESSION_EXPIRED = 'Hardware signing session expired; start again';
+export const assertBhwiPsbtContinuationToken = (expected: string | undefined, returned: string | undefined): void => {
+  if (!expected || returned !== expected) throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
+};
 const UNSUPPORTED = 'Unsupported hardware-wallet signing input';
 
 export type BhwiPsbtAttemptSnapshot = Readonly<{
@@ -36,6 +42,58 @@ const unsupported = (): never => {
 
 export const bhwiAssociationIdentity = (association: HardwareWalletAssociation): string =>
   [association.family, association.fingerprint, association.path, association.xpub, association.format].join('\0');
+export type BhwiHardwareMobilePolicy = {
+  association: HardwareWalletAssociation;
+  phone: Pick<BhwiAccount, 'fingerprint' | 'path' | 'xpub'>;
+};
+
+export function getBhwiHardwareMobilePolicy(wallet: MultisigHDWallet): BhwiHardwareMobilePolicy | undefined {
+  if (wallet.getM() !== 2 || wallet.getN() !== 2 || !wallet.isNativeSegwit() || wallet.howManySignaturesCanWeMake() !== 1) {
+    return undefined;
+  }
+  const associations = wallet.getHardwareWalletAssociations();
+  if (associations.length !== 1) return undefined;
+  const association = associations[0];
+  if (!association || association.format !== 'multisig-native' || association.path !== MultisigHDWallet.PATH_NATIVE_SEGWIT) {
+    return undefined;
+  }
+  let publicCosigners: Array<{ xpub: string; fingerprint: string; path: string }>;
+  try {
+    publicCosigners = wallet.getPublicCosigners();
+  } catch {
+    return undefined;
+  }
+  const hardwareIndexes = publicCosigners
+    .map((cosigner, index) => (sameBhwiExtendedPublicKey(cosigner.xpub, association.xpub) ? index : -1))
+    .filter(index => index >= 0);
+  const phoneIndexes = publicCosigners
+    .map((_cosigner, index) => {
+      const key = wallet.getCosigner(index + 1);
+      return !MultisigHDWallet.isXpubString(key) && !MultisigHDWallet.isXprvString(key) ? index : -1;
+    })
+    .filter(index => index >= 0);
+  if (
+    hardwareIndexes.length !== 1 ||
+    phoneIndexes.length !== 1 ||
+    hardwareIndexes[0] === phoneIndexes[0] ||
+    !MultisigHDWallet.isXpubString(wallet.getCosigner(hardwareIndexes[0]! + 1))
+  ) {
+    return undefined;
+  }
+  const phone = publicCosigners[phoneIndexes[0]!];
+  if (!phone || phone.path !== MultisigHDWallet.PATH_NATIVE_SEGWIT) return undefined;
+  return { association, phone };
+}
+
+export function getUnsignedBhwiMultisigPsbt(source: bitcoin.Psbt): bitcoin.Psbt {
+  const unsigned = source.clone();
+  for (const input of unsigned.data.inputs) {
+    if (input.finalScriptSig || input.finalScriptWitness) throw new Error(UNSUPPORTED);
+    delete input.partialSig;
+    delete input.tapKeySig;
+  }
+  return unsigned;
+}
 
 export function bhwiWatchOnlyWalletIdentity(wallet: WatchOnlyWallet, association: HardwareWalletAssociation): string | undefined {
   const liveAssociation = wallet.getHardwareWalletAssociation();
@@ -47,6 +105,36 @@ export function bhwiWatchOnlyWalletIdentity(wallet: WatchOnlyWallet, association
       wallet.getMasterFingerprintHex(),
       wallet.getDerivationPath(),
       bhwiAssociationIdentity(liveAssociation),
+    ].join('\0');
+  } catch {
+    return undefined;
+  }
+}
+
+export function bhwiMultisigWalletIdentity(wallet: MultisigHDWallet, association: HardwareWalletAssociation): string | undefined {
+  const liveAssociations = wallet
+    .getHardwareWalletAssociations()
+    .filter(candidate => bhwiAssociationIdentity(candidate) === bhwiAssociationIdentity(association));
+  if (liveAssociations.length !== 1) return undefined;
+  try {
+    return [wallet.getID(), wallet.getM(), wallet.getN(), wallet.getPublicDescriptor(), bhwiAssociationIdentity(liveAssociations[0])].join(
+      '\0',
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+export function bhwiMultisigPolicyIdentity(wallet: MultisigHDWallet, association: HardwareWalletAssociation): string | undefined {
+  try {
+    const descriptor = wallet.getPublicDescriptor();
+    const registration = wallet.getHardwareWalletRegistration(association);
+    return [
+      descriptor,
+      registration?.status ?? 'unregistered',
+      registration?.name ?? '',
+      registration?.descriptor ?? '',
+      registration?.hmacService ?? '',
     ].join('\0');
   } catch {
     return undefined;

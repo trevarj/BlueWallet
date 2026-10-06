@@ -28,6 +28,7 @@ import RNFS from 'react-native-fs';
 import { btcToSatoshi, fiatToBTC } from '../../blue_modules/currency';
 import * as fs from '../../blue_modules/fs';
 import triggerHapticFeedback, { HapticFeedbackTypes } from '../../blue_modules/hapticFeedback';
+import { getBhwiHardwareMobilePolicy } from '../../blue_modules/bhwiPsbt';
 import BlueText from '../../components/BlueText';
 import { HDSegwitBech32Wallet } from '../../class/wallets/hd-segwit-bech32-wallet';
 import { MultisigHDWallet } from '../../class/wallets/multisig-hd-wallet';
@@ -978,7 +979,11 @@ const SendDetails = () => {
         if (!base64) return;
         const psbt = bitcoin.Psbt.fromBase64(base64, { network }); // if it doesnt throw - all good, its valid
 
-        if ((wallet as MultisigHDWallet)?.howManySignaturesCanWeMake() > 0 && (await askCosignThisTransaction())) {
+        if (
+          !(wallet instanceof MultisigHDWallet && getBhwiHardwareMobilePolicy(wallet)) &&
+          (wallet as MultisigHDWallet)?.howManySignaturesCanWeMake() > 0 &&
+          (await askCosignThisTransaction())
+        ) {
           setIsLoading(true);
           await sleep(100);
           (wallet as MultisigHDWallet).cosignPsbt(psbt);
@@ -1035,6 +1040,14 @@ const SendDetails = () => {
       const multisigWallet = wallet as MultisigHDWallet;
       try {
         psbt = bitcoin.Psbt.fromBase64(psbtBase64, { network });
+        if (getBhwiHardwareMobilePolicy(multisigWallet)) {
+          navigation.navigate('PsbtMultisig', {
+            memo: transactionMemo,
+            psbtBase64: psbt.toBase64(),
+            walletID: multisigWallet.getID(),
+          });
+          return;
+        }
         tx = multisigWallet.cosignPsbt(psbt).tx;
       } catch (e: any) {
         console.log(e);
@@ -1065,7 +1078,7 @@ const SendDetails = () => {
         psbt,
       });
     },
-    [navigation, presentAlert, wallet],
+    [navigation, presentAlert, transactionMemo, wallet],
   );
 
   useEffect(() => {

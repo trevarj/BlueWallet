@@ -31,8 +31,6 @@ import { BlueSpacing20 } from '../../components/BlueSpacing';
 type CosignerTuple = [string, string | false, string | false, string?, HardwareWalletAssociation?];
 type StaticCache = Record<string, string>;
 
-const staticCache: StaticCache = {};
-
 const AnimatedFlatList = Animated.createAnimatedComponent(FlatList);
 
 const WalletsAddMultisigStep2 = () => {
@@ -43,7 +41,7 @@ const WalletsAddMultisigStep2 = () => {
   const navigation = useNavigation<NativeStackNavigationProp<AddWalletStackParamList, 'WalletsAddMultisigStep2'>>();
   const route = useRoute<RouteProp<AddWalletStackParamList, 'WalletsAddMultisigStep2'>>();
   const params = route.params;
-  const { m, n, format, walletLabel } = params;
+  const { m, n, format, walletLabel, hardwareAndMobile = false, sheetAction, sheetImportText, sheetAskPassphrase, sheetSeedToken } = params;
   const [cosigners, setCosigners] = useState<CosignerTuple[]>([]); // array of cosigners user provided. if format [cosigner, fp, path]
   const [isLoading, setIsLoading] = useState(false);
   const [vaultKeyData, setVaultKeyData] = useState({
@@ -58,19 +56,59 @@ const WalletsAddMultisigStep2 = () => {
   const data = useRef(new Array(n).fill(null));
   const stagedWallet = useRef<MultisigHDWallet | undefined>(undefined);
   const handledHardwareAccount = useRef<HardwareWalletAssociation | undefined>(undefined);
+  const staticCache = useRef<StaticCache>({});
+  const generatedPhoneSeed = useRef<string | undefined>(undefined);
+  const keyGeneration = useRef(0);
+  const keyGenerationInFlight = useRef(false);
+  const generatedPhoneSeedToken = useRef<string | undefined>(undefined);
+  const mounted = useRef(true);
+  const focused = useRef(false);
+  const createGeneration = useRef(0);
+  const createInFlight = useRef(false);
+  const [backupAcknowledged, setBackupAcknowledged] = useState(false);
+
+  useEffect(
+    () => () => {
+      mounted.current = false;
+      focused.current = false;
+      createGeneration.current += 1;
+      createInFlight.current = false;
+      keyGeneration.current += 1;
+      keyGenerationInFlight.current = false;
+      generatedPhoneSeedToken.current = undefined;
+      staticCache.current = {};
+      generatedPhoneSeed.current = undefined;
+      stagedWallet.current = undefined;
+      handledHardwareAccount.current = undefined;
+    },
+    [],
+  );
 
   useFocusEffect(
     useCallback(() => {
+      focused.current = true;
       if (isPrivacyBlurEnabled) {
         enableScreenProtect();
       }
       return () => {
+        focused.current = false;
+        createGeneration.current += 1;
+        createInFlight.current = false;
+        if (keyGenerationInFlight.current) {
+          keyGeneration.current += 1;
+          keyGenerationInFlight.current = false;
+          generatedPhoneSeedToken.current = undefined;
+          setVaultKeyData(previous => ({ ...previous, seed: '', xpub: '', isLoading: false }));
+        }
+        setIsLoading(false);
+        navigation.setOptions({ headerBackVisible: true });
         disableScreenProtect();
       };
-    }, [isPrivacyBlurEnabled, enableScreenProtect, disableScreenProtect]),
+    }, [isPrivacyBlurEnabled, enableScreenProtect, disableScreenProtect, navigation]),
   );
 
   useEffect(() => {
+    if (hardwareAndMobile) return;
     console.log(currentSharedCosigner);
     if (currentSharedCosigner && !stagedWallet.current) {
       (async function () {
@@ -85,7 +123,7 @@ const WalletsAddMultisigStep2 = () => {
       })();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentSharedCosigner]);
+  }, [currentSharedCosigner, hardwareAndMobile]);
 
   const handleOnHelpPress = useCallback(() => {
     navigation.navigate('WalletsAddMultisigHelp');
@@ -121,16 +159,30 @@ const WalletsAddMultisigStep2 = () => {
     });
   }, [navigation, renderHeaderRight]);
 
+  const creationIsCurrent = useCallback(
+    (generation: number) => mounted.current && focused.current && createInFlight.current && createGeneration.current === generation,
+    [],
+  );
+
   const onCreate = async () => {
+    if (createInFlight.current || !focused.current) return;
+    createInFlight.current = true;
+    const generation = ++createGeneration.current;
     setIsLoading(true);
     navigation.setOptions({ headerBackVisible: false });
-    await sleep(100);
     try {
-      if (!(await _onCreate())) {
+      await sleep(100);
+      if (!creationIsCurrent(generation)) return;
+      const created = await _onCreate(generation);
+      if (!creationIsCurrent(generation)) return;
+      if (!created) {
+        createInFlight.current = false;
         setIsLoading(false);
         navigation.setOptions({ headerBackVisible: true });
       }
     } catch (e) {
+      if (!creationIsCurrent(generation)) return;
+      createInFlight.current = false;
       setIsLoading(false);
       navigation.setOptions({ headerBackVisible: true });
       const message = e instanceof Error ? e.message : String(e);
@@ -139,7 +191,31 @@ const WalletsAddMultisigStep2 = () => {
     }
   };
 
-  const _onCreate = async (): Promise<boolean> => {
+  const _onCreate = async (generation: number): Promise<boolean> => {
+    if (!creationIsCurrent(generation)) return false;
+    if (hardwareAndMobile) {
+      const seed = generatedPhoneSeed.current;
+      const local = cosigners.filter(cosigner => !cosigner[4] && cosigner[0] === seed);
+      const hardware = cosigners.filter(cosigner => !!cosigner[4]);
+      const association = hardware.length === 1 ? parseHardwareWalletAssociation(hardware[0]?.[4]) : undefined;
+      const path = MultisigHDWallet.PATH_NATIVE_SEGWIT;
+      if (
+        m !== 2 ||
+        n !== 2 ||
+        format !== MultisigHDWallet.FORMAT_P2WSH ||
+        !backupAcknowledged ||
+        !seed ||
+        local.length !== 1 ||
+        hardware.length !== 1 ||
+        cosigners.length !== 2 ||
+        !association ||
+        association.format !== 'multisig-native' ||
+        association.path !== path ||
+        sameBhwiExtendedPublicKey(MultisigHDWallet.seedToXpub(seed, path), association.xpub)
+      ) {
+        throw new Error(!backupAcknowledged ? loc.multisig.backup_required : loc.multisig.hardware_and_mobile_invalid);
+      }
+    }
     let w = stagedWallet.current;
     if (!w) {
       w = new MultisigHDWallet();
@@ -171,11 +247,23 @@ const WalletsAddMultisigStep2 = () => {
       w.setLabel(walletLabel);
       if (!isElectrumDisabled) {
         await w.fetchBalance();
+        if (!creationIsCurrent(generation)) return false;
       }
+      if (!creationIsCurrent(generation)) return false;
       stagedWallet.current = w;
     }
 
-    if (!(await addAndSaveWallet(w))) return false;
+    if (!creationIsCurrent(generation)) return false;
+    const saved = await addAndSaveWallet(w);
+    if (!creationIsCurrent(generation) || !saved) return false;
+    stagedWallet.current = undefined;
+    generatedPhoneSeed.current = undefined;
+    handledHardwareAccount.current = undefined;
+    keyGeneration.current += 1;
+    keyGenerationInFlight.current = false;
+    generatedPhoneSeedToken.current = undefined;
+    staticCache.current = {};
+    setVaultKeyData({ keyIndex: 1, xpub: '', seed: '', isLoading: false });
     navigation.getParent()?.goBack();
     return true;
   };
@@ -203,64 +291,89 @@ const WalletsAddMultisigStep2 = () => {
   const setXpubCacheForMnemonics = useCallback(
     (seed: string, passphrase?: string) => {
       const path = getPath();
-      staticCache[seed + path + passphrase] = convertExtendedKey(
+      staticCache.current[seed + path + passphrase] = convertExtendedKey(
         MultisigHDWallet.seedToXpub(seed, path, passphrase),
         format === MultisigHDWallet.FORMAT_P2WSH ? 'multisigNative' : format === MultisigHDWallet.FORMAT_P2SH ? 'legacy' : 'multisigNested',
       );
-      return staticCache[seed + path + passphrase];
+      return staticCache.current[seed + path + passphrase];
     },
     [format, getPath],
   );
 
   const setFpCacheForMnemonics = useCallback((seed: string, passphrase?: string) => {
-    staticCache[seed + (passphrase ?? '')] = MultisigHDWallet.mnemonicToFingerprint(seed, passphrase);
-    return staticCache[seed + (passphrase ?? '')];
+    staticCache.current[seed + (passphrase ?? '')] = MultisigHDWallet.mnemonicToFingerprint(seed, passphrase);
+    return staticCache.current[seed + (passphrase ?? '')];
   }, []);
 
   const getXpubCacheForMnemonics = useCallback(
     (seed: string, passphrase?: string) => {
       const path = getPath();
-      return staticCache[seed + path + passphrase] || setXpubCacheForMnemonics(seed, passphrase);
+      return staticCache.current[seed + path + passphrase] || setXpubCacheForMnemonics(seed, passphrase);
     },
     [getPath, setXpubCacheForMnemonics],
   );
 
   const getFpCacheForMnemonics = useCallback(
     (seed: string, passphrase?: string) => {
-      return staticCache[seed + (passphrase ?? '')] || setFpCacheForMnemonics(seed, passphrase);
+      return staticCache.current[seed + (passphrase ?? '')] || setFpCacheForMnemonics(seed, passphrase);
     },
     [setFpCacheForMnemonics],
   );
 
   const generateNewKey = useCallback(() => {
-    if (stagedWallet.current) return;
+    if (stagedWallet.current || keyGenerationInFlight.current || (hardwareAndMobile && cosigners.length !== 0)) return;
+    keyGenerationInFlight.current = true;
+    const generation = ++keyGeneration.current;
+    const seedToken = `key-${generation}`;
     const w = new HDSegwitBech32Wallet();
-    w.generate().then(() => {
-      const cosignersCopy = [...cosigners];
-      cosignersCopy.push([w.getSecret(), false, false]);
-      setCosigners(cosignersCopy);
-      setVaultKeyData({
-        keyIndex: cosignersCopy.length,
-        seed: w.getSecret(),
-        xpub: w.getXpub(),
-        isLoading: false,
-      });
-      setIsLoading(true);
-      navigation.navigate('WalletsAddMultisigVaultKeySheet', {
-        keyIndex: cosignersCopy.length,
-        seed: w.getSecret(),
-      });
-      setTimeout(() => {
-        // filling cache
-        setXpubCacheForMnemonics(w.getSecret());
-        setFpCacheForMnemonics(w.getSecret());
+    w.generate()
+      .then(() => {
+        if (!mounted.current || keyGeneration.current !== generation) return;
+        keyGenerationInFlight.current = false;
+        const seed = w.getSecret();
+        if (hardwareAndMobile) {
+          generatedPhoneSeed.current = seed;
+          generatedPhoneSeedToken.current = seedToken;
+          setBackupAcknowledged(false);
+        }
+        const cosignersCopy = [...cosigners, [seed, false, false] as CosignerTuple];
+        setCosigners(cosignersCopy);
+        setXpubCacheForMnemonics(seed);
+        setFpCacheForMnemonics(seed);
+        setVaultKeyData({
+          keyIndex: cosignersCopy.length,
+          seed,
+          xpub: '',
+          isLoading: false,
+        });
         setIsLoading(false);
-      }, 500);
-    });
-  }, [cosigners, navigation, setFpCacheForMnemonics, setXpubCacheForMnemonics]);
+        navigation.navigate('WalletsAddMultisigVaultKeySheet', {
+          keyIndex: cosignersCopy.length,
+          seed,
+          requireBackupAcknowledgement: hardwareAndMobile,
+          seedToken,
+        });
+      })
+      .catch(error => {
+        if (!mounted.current || keyGeneration.current !== generation) return;
+        keyGenerationInFlight.current = false;
+        setIsLoading(false);
+        setVaultKeyData(previous => ({ ...previous, isLoading: false }));
+        presentAlert({ message: error instanceof Error ? error.message : String(error) });
+      });
+  }, [cosigners, hardwareAndMobile, navigation, setFpCacheForMnemonics, setXpubCacheForMnemonics]);
 
   const viewKey = useCallback(
     (cosigner: CosignerTuple) => {
+      if (hardwareAndMobile && cosigner[0] === generatedPhoneSeed.current) {
+        navigation.navigate('WalletsAddMultisigVaultKeySheet', {
+          keyIndex: 1,
+          seed: cosigner[0],
+          requireBackupAcknowledgement: true,
+          seedToken: generatedPhoneSeedToken.current,
+        });
+        return;
+      }
       if (MultisigHDWallet.isXpubValid(cosigner[0])) {
         const cosignerJson = MultisigCosigner.exportToJson(cosigner[1] as string, cosigner[0], cosigner[2] as string);
         const cosignerUR = encodeUR(cosignerJson, 175, null)[0];
@@ -285,7 +398,7 @@ const WalletsAddMultisigStep2 = () => {
         });
       }
     },
-    [getPath, getFpCacheForMnemonics, getXpubCacheForMnemonics, navigation],
+    [getPath, getFpCacheForMnemonics, getXpubCacheForMnemonics, hardwareAndMobile, navigation],
   );
 
   const iHaveMnemonics = useCallback(() => {
@@ -298,6 +411,7 @@ const WalletsAddMultisigStep2 = () => {
 
   const tryUsingXpub = useCallback(
     async (xpub: string, fp?: string, path?: string) => {
+      if (hardwareAndMobile) return;
       if (stagedWallet.current) return;
       if (!MultisigHDWallet.isXpubForMultisig(xpub)) {
         setIsLoading(false);
@@ -344,7 +458,7 @@ const WalletsAddMultisigStep2 = () => {
       cosignersCopy.push([xpub, fp ?? false, path ?? false]);
       setCosigners(cosignersCopy);
     },
-    [cosigners, getPath],
+    [cosigners, getPath, hardwareAndMobile],
   );
 
   const hardwareMultisigFormat: BhwiMultisigFormat | undefined =
@@ -356,9 +470,18 @@ const WalletsAddMultisigStep2 = () => {
 
   const addHardwareCosigner = useCallback(
     (value: HardwareWalletAssociation) => {
-      if (stagedWallet.current || !hardwareMultisigFormat) return;
+      if (
+        stagedWallet.current ||
+        !hardwareMultisigFormat ||
+        (hardwareAndMobile && (cosigners.length !== 1 || cosigners[0]?.[0] !== generatedPhoneSeed.current))
+      )
+        return;
       const association = parseHardwareWalletAssociation(value);
-      if (!association || association.format !== hardwareMultisigFormat) {
+      if (
+        !association ||
+        association.format !== hardwareMultisigFormat ||
+        (hardwareAndMobile && association.path !== MultisigHDWallet.PATH_NATIVE_SEGWIT)
+      ) {
         presentAlert({ message: loc.multisig.invalid_cosigner });
         return;
       }
@@ -379,17 +502,22 @@ const WalletsAddMultisigStep2 = () => {
       const hardwareCosigner: CosignerTuple = [xpub, association.fingerprint, association.path, undefined, association];
       setCosigners([...cosigners, hardwareCosigner]);
     },
-    [cosigners, getXpubCacheForMnemonics, hardwareMultisigFormat],
+    [cosigners, getXpubCacheForMnemonics, hardwareAndMobile, hardwareMultisigFormat],
   );
 
   const importHardwareCosigner = useCallback(() => {
-    if (stagedWallet.current || !hardwareMultisigFormat) return;
+    if (
+      stagedWallet.current ||
+      !hardwareMultisigFormat ||
+      (hardwareAndMobile && (cosigners.length !== 1 || cosigners[0]?.[0] !== generatedPhoneSeed.current))
+    )
+      return;
     navigation.navigate('HardwareWalletAccount', {
       mode: 'multisig-cosigner',
       format: hardwareMultisigFormat,
       returnTo: 'WalletsAddMultisigStep2',
     });
-  }, [hardwareMultisigFormat, navigation]);
+  }, [cosigners, hardwareAndMobile, hardwareMultisigFormat, navigation]);
 
   useEffect(() => {
     if (!params.hardwareAccount) {
@@ -411,6 +539,7 @@ const WalletsAddMultisigStep2 = () => {
 
   const utilizeMnemonicPhrase = useCallback(
     async (overrideText?: string, overrideAskPassphrase?: boolean) => {
+      if (hardwareAndMobile) return;
       if (stagedWallet.current) return;
       const textToUse = overrideText ?? importText;
       const askForPassphrase = overrideAskPassphrase ?? askPassphrase;
@@ -462,11 +591,12 @@ const WalletsAddMultisigStep2 = () => {
       setImportText('');
       setAskPassphrase(false);
     },
-    [askPassphrase, cosigners, importText, tryUsingXpub],
+    [askPassphrase, cosigners, hardwareAndMobile, importText, tryUsingXpub],
   );
 
   const onBarScanned = useCallback(
     async (ret: { data?: string } | string) => {
+      if (hardwareAndMobile) return;
       if (stagedWallet.current) return;
       const payload = typeof ret === 'string' ? { data: ret } : ret;
       const dataString = payload.data ?? '';
@@ -587,7 +717,7 @@ const WalletsAddMultisigStep2 = () => {
         setCosigners(cosignersCopy);
       }
     },
-    [askPassphrase, cosigners, format, getXpubCacheForMnemonics, tryUsingXpub, utilizeMnemonicPhrase],
+    [askPassphrase, cosigners, format, getXpubCacheForMnemonics, hardwareAndMobile, tryUsingXpub, utilizeMnemonicPhrase],
   );
 
   useEffect(() => {
@@ -600,10 +730,11 @@ const WalletsAddMultisigStep2 = () => {
   }, [navigation, params.onBarScanned]);
 
   useEffect(() => {
-    const { sheetAction, sheetImportText, sheetAskPassphrase } = params;
-    if (!sheetAction) return;
+    if (!sheetAction || (sheetAction === 'backupAcknowledged' && sheetSeedToken !== generatedPhoneSeedToken.current)) return;
 
-    if (sheetAction === 'importMnemonic') {
+    if (sheetAction === 'backupAcknowledged' && hardwareAndMobile && generatedPhoneSeed.current) {
+      setBackupAcknowledged(true);
+    } else if (sheetAction === 'importMnemonic' && !hardwareAndMobile) {
       setImportText(sheetImportText ?? '');
       setAskPassphrase(!!sheetAskPassphrase);
       utilizeMnemonicPhrase(sheetImportText ?? '', sheetAskPassphrase ?? askPassphrase);
@@ -613,8 +744,18 @@ const WalletsAddMultisigStep2 = () => {
       sheetAction: undefined,
       sheetImportText: undefined,
       sheetAskPassphrase: undefined,
+      sheetSeedToken: undefined,
     });
-  }, [askPassphrase, navigation, params, utilizeMnemonicPhrase]);
+  }, [
+    askPassphrase,
+    hardwareAndMobile,
+    navigation,
+    sheetAction,
+    sheetAskPassphrase,
+    sheetImportText,
+    sheetSeedToken,
+    utilizeMnemonicPhrase,
+  ]);
 
   const dashType = useCallback(
     ({ index, lastIndex, isChecked, isFocus }: { index: number; lastIndex: number; isChecked: boolean; isFocus: boolean }) => {
@@ -648,7 +789,7 @@ const WalletsAddMultisigStep2 = () => {
           checked={isChecked}
           rightButton={{
             disabled: vaultKeyData.isLoading,
-            text: loc.multisig.share,
+            text: hardwareAndMobile && cosigners[el.index]?.[0] === generatedPhoneSeed.current ? loc.multisig.view : loc.multisig.share,
             onPress: () => {
               viewKey(cosigners[el.index]);
             },
@@ -656,27 +797,29 @@ const WalletsAddMultisigStep2 = () => {
         />
         {renderProvideKeyButtons && (
           <>
-            <MultipleStepsListItem
-              showActivityIndicator={vaultKeyData.keyIndex === el.index && vaultKeyData.isLoading}
-              button={{
-                testID: 'VaultKeyGenerate',
-                buttonType: MultipleStepsListItemButtonType.Full,
-                onPress: () => {
-                  setVaultKeyData({
-                    keyIndex: el.index,
-                    xpub: '',
-                    seed: '',
-                    isLoading: true,
-                  });
-                  generateNewKey();
-                },
-                text: loc.multisig.create_new_key,
-                disabled: vaultKeyData.isLoading,
-              }}
-              dashes={MultipleStepsListItemDashType.TopAndBottom}
-              checked={isChecked}
-            />
-            {hardwareMultisigFormat && (
+            {(!hardwareAndMobile || cosigners.length === 0) && (
+              <MultipleStepsListItem
+                showActivityIndicator={vaultKeyData.keyIndex === el.index && vaultKeyData.isLoading}
+                button={{
+                  testID: 'VaultKeyGenerate',
+                  buttonType: MultipleStepsListItemButtonType.Full,
+                  onPress: () => {
+                    setVaultKeyData({
+                      keyIndex: el.index,
+                      xpub: '',
+                      seed: '',
+                      isLoading: true,
+                    });
+                    generateNewKey();
+                  },
+                  text: loc.multisig.create_new_key,
+                  disabled: vaultKeyData.isLoading,
+                }}
+                dashes={MultipleStepsListItemDashType.TopAndBottom}
+                checked={isChecked}
+              />
+            )}
+            {hardwareMultisigFormat && (!hardwareAndMobile || cosigners.length === 1) && (
               <MultipleStepsListItem
                 button={{
                   testID: 'VaultHardwareCosigner' + String(el.index + 1),
@@ -689,17 +832,21 @@ const WalletsAddMultisigStep2 = () => {
                 checked={isChecked}
               />
             )}
-            <MultipleStepsListItem
-              button={{
-                testID: 'VaultCosignerImport' + String(el.index + 1),
-                onPress: iHaveMnemonics,
-                buttonType: MultipleStepsListItemButtonType.Full,
-                text: loc.wallets.import_do_import,
-                disabled: vaultKeyData.isLoading,
-              }}
-              dashes={el.index === data.current.length - 1 ? MultipleStepsListItemDashType.Top : MultipleStepsListItemDashType.TopAndBottom}
-              checked={isChecked}
-            />
+            {!hardwareAndMobile && (
+              <MultipleStepsListItem
+                button={{
+                  testID: 'VaultCosignerImport' + String(el.index + 1),
+                  onPress: iHaveMnemonics,
+                  buttonType: MultipleStepsListItemButtonType.Full,
+                  text: loc.wallets.import_do_import,
+                  disabled: vaultKeyData.isLoading,
+                }}
+                dashes={
+                  el.index === data.current.length - 1 ? MultipleStepsListItemDashType.Top : MultipleStepsListItemDashType.TopAndBottom
+                }
+                checked={isChecked}
+              />
+            )}
           </>
         )}
       </View>
@@ -711,7 +858,12 @@ const WalletsAddMultisigStep2 = () => {
       {isLoading ? (
         <ActivityIndicator />
       ) : (
-        <Button testID="CreateButton" title={loc.multisig.create} onPress={onCreate} disabled={cosigners.length !== n} />
+        <Button
+          testID="CreateButton"
+          title={loc.multisig.create}
+          onPress={onCreate}
+          disabled={cosigners.length !== n || (hardwareAndMobile && !backupAcknowledged)}
+        />
       )}
     </View>
   );

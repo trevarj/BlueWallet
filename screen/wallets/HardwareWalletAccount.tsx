@@ -25,7 +25,13 @@ import {
   supportsBhwiRegistration,
   verifyBhwiAccount,
 } from '../../blue_modules/bhwi';
-import { BHWI_SIGNING_SESSION_EXPIRED, bhwiAssociationIdentity, bhwiWatchOnlyWalletIdentity } from '../../blue_modules/bhwiPsbt';
+import {
+  BHWI_SIGNING_SESSION_EXPIRED,
+  bhwiAssociationIdentity,
+  bhwiMultisigPolicyIdentity,
+  bhwiMultisigWalletIdentity,
+  bhwiWatchOnlyWalletIdentity,
+} from '../../blue_modules/bhwiPsbt';
 import { validateBhwiPsbt, validateBhwiPsbtOriginal } from '../../blue_modules/validateBhwiPsbt';
 import type {
   BhwiErrorCode,
@@ -101,20 +107,35 @@ const operationBinding = (params: BhwiOperationRouteParams, wallets: TWallet[]):
     }
   }
   if (params.mode === 'sign-psbt') {
-    if (!(wallet instanceof WatchOnlyWallet) || !Number.isSafeInteger(params.attempt) || params.attempt < 1 || !params.originalBase64) {
-      return undefined;
+    if (!Number.isSafeInteger(params.attempt) || params.attempt < 1 || !params.originalBase64) return undefined;
+    if (wallet instanceof WatchOnlyWallet) {
+      const walletIdentity = bhwiWatchOnlyWalletIdentity(wallet, params.hardwareAccount);
+      return walletIdentity
+        ? [
+            'sign',
+            params.originalBase64,
+            params.attempt,
+            walletIdentity,
+            bhwiAssociationIdentity(params.hardwareAccount),
+            'policy:none',
+          ].join('\0')
+        : undefined;
     }
-    const walletIdentity = bhwiWatchOnlyWalletIdentity(wallet, params.hardwareAccount);
-    return walletIdentity
-      ? [
-          'sign',
-          params.originalBase64,
-          params.attempt,
-          walletIdentity,
-          bhwiAssociationIdentity(params.hardwareAccount),
-          'policy:none',
-        ].join('\0')
-      : undefined;
+    if (wallet instanceof MultisigHDWallet) {
+      const walletIdentity = bhwiMultisigWalletIdentity(wallet, params.hardwareAccount);
+      const policyIdentity = bhwiMultisigPolicyIdentity(wallet, params.hardwareAccount);
+      return walletIdentity && policyIdentity
+        ? [
+            'sign',
+            params.originalBase64,
+            params.attempt,
+            walletIdentity,
+            bhwiAssociationIdentity(params.hardwareAccount),
+            policyIdentity,
+          ].join('\0')
+        : undefined;
+    }
+    return undefined;
   }
   if (!matchesBhwiAddressSnapshot(wallet, params.snapshot)) return undefined;
   if (wallet instanceof WatchOnlyWallet) {
@@ -553,22 +574,45 @@ const HardwareWalletAccount = () => {
     setBusy(true);
     setStatus('');
     try {
-      const wallet = walletsRef.current.find(candidate => candidate.getID() === params.walletID);
+      let wallet = walletsRef.current.find(candidate => candidate.getID() === params.walletID);
       if (
-        !(wallet instanceof WatchOnlyWallet) ||
+        (!(wallet instanceof WatchOnlyWallet) && !(wallet instanceof MultisigHDWallet)) ||
         bhwiAssociationIdentity(association) !== bhwiAssociationIdentity(params.hardwareAccount)
       ) {
         throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
       }
       validateBhwiPsbtOriginal(params.originalBase64, wallet, association);
-      const returnedBase64 = await session.signPsbt(params.originalBase64, null);
+      let policy = null;
+      if (wallet instanceof MultisigHDWallet) {
+        const descriptor = wallet.getPublicDescriptor();
+        const registration = wallet.getHardwareWalletRegistration(association);
+        let ledgerHmacHex: string | null = null;
+        if (association.family === 'ledger' && registration?.status === 'complete') {
+          if (!registration.hmacService) throw new BhwiError('BHWI_INVALID_INPUT');
+          ledgerHmacHex = await getBhwiLedgerHmac(registration.hmacService);
+          if (!isCurrent(attempt)) throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
+          wallet = walletsRef.current.find(candidate => candidate.getID() === params.walletID);
+          if (!(wallet instanceof MultisigHDWallet)) throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
+        }
+        policy = {
+          name: registration?.name ?? getBhwiPolicyName(descriptor),
+          descriptor,
+          ledgerHmacHex,
+        };
+      }
       if (!isCurrent(attempt)) throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
-      validateBhwiPsbt(params.originalBase64, returnedBase64, wallet, association);
+      const returnedBase64 = await session.signPsbt(params.originalBase64, policy);
+      if (!isCurrent(attempt)) throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
+      const liveWallet = walletsRef.current.find(candidate => candidate.getID() === params.walletID);
+      if (!(liveWallet instanceof WatchOnlyWallet) && !(liveWallet instanceof MultisigHDWallet)) {
+        throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
+      }
+      validateBhwiPsbt(params.originalBase64, returnedBase64, liveWallet, association);
       if (!isCurrent(attempt)) throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
       completedRef.current = true;
       navigation.dispatch(
         StackActions.popTo(
-          'PsbtWithHardwareWallet',
+          liveWallet instanceof MultisigHDWallet ? 'PsbtMultisig' : 'PsbtWithHardwareWallet',
           {
             bhwiBound: true,
             bhwiOriginalBase64: params.originalBase64,

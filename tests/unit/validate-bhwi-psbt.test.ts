@@ -12,6 +12,7 @@ import ecc from '../../blue_modules/noble_ecc';
 import { validateBhwiPsbt, validateBhwiPsbtOriginal } from '../../blue_modules/validateBhwiPsbt';
 import {
   BHWI_SIGNING_SESSION_EXPIRED,
+  assertBhwiPsbtContinuationToken,
   assertBhwiPsbtAttemptCurrent,
   hydrateBhwiPsbt,
   validateBhwiBoundPsbt,
@@ -339,6 +340,86 @@ test('accepts real multisig partial and independently checks a finalized return'
   assert.strictEqual(finalResult.tx.toHex(), finalized.extractTransaction().toHex());
 });
 
+test('preserves the first real signature and completes in phone-first and hardware-first order', () => {
+  for (const [firstIndex, secondIndex] of [
+    [0, 1],
+    [1, 0],
+  ] as const) {
+    const fixture = makeMultisigFixture();
+    const first = fixture.psbt.clone();
+    first.signInput(0, required(fixture.children[firstIndex]));
+    const acceptedFirst = validateBhwiPsbt(
+      fixture.psbt.toBase64(),
+      first.toBase64(),
+      fixture.wallet,
+      required(fixture.signers[firstIndex]),
+    );
+    assert.strictEqual(acceptedFirst.psbt.data.inputs[0]?.partialSig?.length, 1);
+    const second = acceptedFirst.psbt.clone();
+    second.signInput(0, required(fixture.children[secondIndex]));
+    const completed = validateBhwiPsbt(
+      acceptedFirst.psbt.toBase64(),
+      second.toBase64(),
+      fixture.wallet,
+      required(fixture.signers[secondIndex]),
+    );
+    assert.ok(completed.tx);
+    assert.strictEqual(completed.psbt.data.inputs[0]?.partialSig, undefined);
+    assert.ok(completed.psbt.data.inputs[0]?.finalScriptWitness);
+  }
+});
+
+test('counts the minimum real signatures per input and returns zero without inputs', () => {
+  const fixture = makeMultisigFixture();
+  const firstInput = required(fixture.psbt.data.inputs[0]);
+  const firstPrevout = required(firstInput.witnessUtxo);
+  const parent = makeParent(firstPrevout.script, firstPrevout.value, 91);
+  const psbt = fixture.psbt.clone();
+  psbt.addInput({
+    hash: parent.getId(),
+    index: 0,
+    nonWitnessUtxo: parent.toBuffer(),
+    witnessUtxo: { ...firstPrevout },
+    witnessScript: required(firstInput.witnessScript),
+    bip32Derivation: required(firstInput.bip32Derivation).map(derivation => ({ ...derivation })),
+  });
+  const unsigned = psbt.clone();
+  psbt.signInput(0, required(fixture.children[0]));
+  psbt.signInput(1, required(fixture.children[0]));
+  psbt.signInput(1, required(fixture.children[1])).finalizeInput(1);
+  assert.strictEqual(fixture.wallet.calculateHowManySignaturesWeHaveFromPsbt(psbt), 1);
+  assert.strictEqual(fixture.wallet.calculateHowManySignaturesWeHaveFromPsbt(new bitcoin.Psbt({ network })), 0);
+
+  const first = unsigned.clone();
+  first.signInput(0, required(fixture.children[0]));
+  first.signInput(1, required(fixture.children[0]));
+  const firstAccepted = validateBhwiPsbt(unsigned.toBase64(), first.toBase64(), fixture.wallet, required(fixture.signers[0]));
+  const missingQuorum = firstAccepted.psbt.clone();
+  missingQuorum.signInput(0, required(fixture.children[1]));
+  const incomplete = validateBhwiPsbt(
+    firstAccepted.psbt.toBase64(),
+    missingQuorum.toBase64(),
+    fixture.wallet,
+    required(fixture.signers[1]),
+  );
+  assert.strictEqual(incomplete.tx, undefined);
+  assert.strictEqual(incomplete.selectedSignerSignedAllInputs, false);
+  assert.ok(incomplete.psbt.data.inputs[0]?.finalScriptWitness);
+  assert.strictEqual(incomplete.continuationPsbt.data.inputs[0]?.finalScriptWitness, undefined);
+  assert.strictEqual(incomplete.continuationPsbt.data.inputs[0]?.partialSig?.length, 2);
+  assert.strictEqual(fixture.wallet.calculateHowManySignaturesWeHaveFromPsbt(incomplete.psbt), 1);
+  const retry = incomplete.continuationPsbt.clone();
+  retry.signInput(1, required(fixture.children[1]));
+  const completedRetry = validateBhwiPsbt(
+    incomplete.continuationPsbt.toBase64(),
+    retry.toBase64(),
+    fixture.wallet,
+    required(fixture.signers[1]),
+  );
+  assert.strictEqual(completedRetry.selectedSignerSignedAllInputs, true);
+  assert.ok(completedRetry.tx);
+});
+
 test('accepts a real finalized 16-of-16 P2WSH witness with 18 stack items', () => {
   const fixture = makeMultisigFixture(16, 16);
   const firstFifteen = fixture.psbt.clone();
@@ -614,4 +695,10 @@ test('rejects stale, backgrounded, deleted, edited, and replaced hardware signin
   ]) {
     expectMessage(() => assertBhwiPsbtAttemptCurrent(snapshot, current), BHWI_SIGNING_SESSION_EXPIRED);
   }
+});
+
+test('rejects tokenless and stale associated multisig continuations', () => {
+  assert.doesNotThrow(() => assertBhwiPsbtContinuationToken('qr-7', 'qr-7'));
+  expectMessage(() => assertBhwiPsbtContinuationToken('qr-7', undefined), BHWI_SIGNING_SESSION_EXPIRED);
+  expectMessage(() => assertBhwiPsbtContinuationToken('qr-7', 'qr-6'), BHWI_SIGNING_SESSION_EXPIRED);
 });

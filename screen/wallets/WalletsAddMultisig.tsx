@@ -73,6 +73,17 @@ const WalletsAddMultisig: React.FC = () => {
     navigate('WalletsAddMultisigStep2', { m: state.m, n: state.n, format: state.format, walletLabel });
   }, [navigate, state.m, state.n, state.format, walletLabel]);
 
+  const onHardwareAndMobilePress = useCallback(() => {
+    resetScanWasBBQR();
+    navigate('WalletsAddMultisigStep2', {
+      m: 2,
+      n: 2,
+      format: MultisigHDWallet.FORMAT_P2WSH,
+      walletLabel,
+      hardwareAndMobile: true,
+    });
+  }, [navigate, walletLabel]);
+
   const showAdvancedOptionsModal = useCallback(() => {
     navigate('MultisigAdvanced', {
       m: state.m,
@@ -127,6 +138,13 @@ const WalletsAddMultisig: React.FC = () => {
         </Text>
       </View>
       <View>
+        <ListItem
+          testID="VaultHardwareAndMobile"
+          onPress={onHardwareAndMobilePress}
+          title={loc.multisig.hardware_and_mobile}
+          subtitle={loc.multisig.hardware_and_mobile_explain}
+          chevron
+        />
         <ListItem
           testID="VaultAdvancedCustomize"
           onPress={showAdvancedOptionsModal}

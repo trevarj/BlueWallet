@@ -91,12 +91,16 @@ export type AddWalletStackParamList = {
     sheetAction?: string;
     sheetImportText?: string;
     sheetAskPassphrase?: boolean;
+    sheetSeedToken?: string;
     headerRight?: HeaderRightRenderer;
     hardwareAccount?: HardwareWalletAssociation;
+    hardwareAndMobile?: boolean;
   };
   WalletsAddMultisigVaultKeySheet: {
     keyIndex: number;
     seed: string;
+    requireBackupAcknowledgement?: boolean;
+    seedToken?: string;
   };
   WalletsAddMultisigProvideMnemonicsSheet: {
     importText: string;

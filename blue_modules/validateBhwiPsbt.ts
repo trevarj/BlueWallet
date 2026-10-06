@@ -46,6 +46,13 @@ const FINALIZER_CLEANUP_TYPES: Partial<Record<number, true>> = {
 };
 
 type BhwiSigner = Pick<BhwiAccount, 'fingerprint' | 'path' | 'xpub'>;
+
+export type BhwiPsbtValidationResult = {
+  psbt: bitcoin.Psbt;
+  tx?: bitcoin.Transaction;
+  continuationPsbt: bitcoin.Psbt;
+  selectedSignerSignedAllInputs: boolean;
+};
 type PsbtInput = bitcoin.Psbt['data']['inputs'][number];
 type RawKeyValue = { key: Buffer; value: Buffer; id: string };
 type RawPsbt = {
@@ -958,7 +965,7 @@ function addAndCheckReturnedSignatures(
   context: InputContext,
   finalized: boolean,
   transaction: bitcoin.Transaction,
-): boolean {
+): { added: boolean; present: boolean } {
   const originalInput = working.data.inputs[index];
   const returnedInput = returned.data.inputs[index];
   if (!originalInput || !returnedInput) invalidSignature();
@@ -975,6 +982,7 @@ function addAndCheckReturnedSignatures(
     if (returnedInput.tapKeySig && !equal(returnedInput.tapKeySig, extracted.tapKeySig)) invalidSignature();
   }
   let selectedAdded = false;
+  let selectedPresent = false;
 
   if (context.kind === 'tr') {
     if (extracted.partialSig?.length) invalidSignature();
@@ -987,7 +995,9 @@ function addAndCheckReturnedSignatures(
         if (!selectedPubkey) invalidSignature();
         working.updateInput(index, { tapKeySig: signature });
         selectedAdded = true;
+        selectedPresent = true;
       }
+      selectedPresent = true;
     }
   } else {
     if (extracted.tapKeySig) invalidSignature();
@@ -995,6 +1005,7 @@ function addAndCheckReturnedSignatures(
       const existing = (originalInput.partialSig ?? []).find(candidate => equal(candidate.pubkey, partial.pubkey));
       if (existing) {
         if (!equal(existing.signature, partial.signature)) invalidSignature();
+        if (context.selectedPubkey && equal(partial.pubkey, context.selectedPubkey)) selectedPresent = true;
         continue;
       }
       const selectedPubkey = context.selectedPubkey;
@@ -1005,10 +1016,11 @@ function addAndCheckReturnedSignatures(
         invalidSignature();
       }
       selectedAdded = true;
+      selectedPresent = true;
     }
   }
   validatePresentSignatures(working, index, context);
-  return selectedAdded;
+  return { added: selectedAdded, present: selectedPresent };
 }
 
 function finishInput(working: bitcoin.Psbt, returned: bitcoin.Psbt, index: number, finalized: boolean): boolean {
@@ -1034,7 +1046,7 @@ export function validateBhwiPsbt(
   returnedBase64: string,
   wallet: WatchOnlyWallet | MultisigHDWallet,
   signer: BhwiSigner,
-): { psbt: bitcoin.Psbt; tx?: bitcoin.Transaction } {
+): BhwiPsbtValidationResult {
   try {
     const original = preflight(originalBase64, wallet, signer);
     let returned: RawPsbt | undefined;
@@ -1066,25 +1078,29 @@ export function validateBhwiPsbt(
 
     const working = original.raw.psbt;
     let selectedAdded = false;
+    const selectedPresent: boolean[] = [];
     for (let index = 0; index < inputCount; index++) {
       const context = original.contexts[index];
       const isFinalized = finalized[index];
       if (!context || isFinalized === undefined) invalidSignature();
-      selectedAdded =
-        addAndCheckReturnedSignatures(working, returned.psbt, index, context, isFinalized, original.raw.transaction) || selectedAdded;
+      const selected = addAndCheckReturnedSignatures(working, returned.psbt, index, context, isFinalized, original.raw.transaction);
+      selectedAdded = selected.added || selectedAdded;
+      selectedPresent.push(selected.present);
     }
     if (!selectedAdded) noSignature();
 
+    const completionCandidate = working.clone();
     let complete = true;
     for (let index = 0; index < inputCount; index++) {
       const isFinalized = finalized[index];
       if (isFinalized === undefined) invalidSignature();
-      complete = finishInput(working, returned.psbt, index, isFinalized) && complete;
+      complete = finishInput(completionCandidate, returned.psbt, index, isFinalized) && complete;
     }
-    if (!complete) return { psbt: working };
-    const tx = working.extractTransaction();
-    if (working.getFee() !== original.fee) changed();
-    return { psbt: working, tx };
+    const selectedSignerSignedAllInputs = selectedPresent.length === inputCount && selectedPresent.every(Boolean);
+    if (!complete) return { psbt: completionCandidate, continuationPsbt: working, selectedSignerSignedAllInputs };
+    const tx = completionCandidate.extractTransaction();
+    if (completionCandidate.getFee() !== original.fee) changed();
+    return { psbt: completionCandidate, continuationPsbt: completionCandidate, tx, selectedSignerSignedAllInputs };
   } catch (error) {
     if (error instanceof Error && STABLE_ERRORS[error.message] === true) throw error;
     return invalidSignature();

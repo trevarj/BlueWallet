@@ -1,8 +1,11 @@
-import React, { useEffect, useState } from 'react';
-import { useNavigation, RouteProp, useRoute } from '@react-navigation/native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { RouteProp, StackActions, useIsFocused, useNavigation, useRoute } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import BigNumber from 'bignumber.js';
 import * as bitcoin from 'bitcoinjs-lib';
+import { Buffer } from 'buffer';
 import {
+  AppState,
   FlatList,
   StyleSheet,
   Text,
@@ -27,70 +30,650 @@ import { BitcoinUnit } from '../../models/bitcoinUnits';
 import { useStorage } from '../../hooks/context/useStorage';
 import { combinePSBTs } from '../../util/combinePSBTs.ts';
 import { MultisigHDWallet } from '../../class/wallets/multisig-hd-wallet';
-import assert from 'assert';
 import { mainnetServicesEnabled, network } from '../../models/bitcoinNetwork';
+import type { SendDetailsStackParamList } from '../../navigation/SendDetailsStackParamList';
+import {
+  BHWI_SIGNING_SESSION_EXPIRED,
+  assertBhwiPsbtContinuationToken,
+  bhwiAssociationIdentity,
+  bhwiMultisigPolicyIdentity,
+  bhwiMultisigWalletIdentity,
+  getBhwiHardwareMobilePolicy,
+  getBhwiPsbtReview,
+  getUnsignedBhwiMultisigPsbt,
+  hydrateBhwiPsbt,
+} from '../../blue_modules/bhwiPsbt';
+import type { BhwiHardwareMobilePolicy, BhwiPsbtAttemptSnapshot } from '../../blue_modules/bhwiPsbt';
+import { isBhwiAvailable } from '../../blue_modules/bhwi';
+import { validateBhwiPsbt, validateBhwiPsbtOriginal } from '../../blue_modules/validateBhwiPsbt';
+import { useScreenProtect } from '../../hooks/useScreenProtect';
+import { useSettings } from '../../hooks/context/useSettings';
 
-type RouteParams = {
-  params: {
-    walletID: string;
-    psbtBase64: string;
-    memo: string;
-    receivedPSBTBase64: string;
-    txhex: string;
-    launchedBy: string;
-  };
+type NavigationProps = NativeStackNavigationProp<SendDetailsStackParamList, 'PsbtMultisig'>;
+type SigningActor = 'phone' | 'hardware' | 'both';
+type HardwareAttempt = BhwiPsbtAttemptSnapshot & { acceptedBase64: string };
+type QrAttempt = BhwiPsbtAttemptSnapshot & { acceptedBase64: string; token: string };
+
+type AcceptedPsbt = {
+  psbt: bitcoin.Psbt;
+  unsignedBase64: string;
+  actor?: SigningActor;
+  exportPsbt?: bitcoin.Psbt;
+  pendingActor?: Exclude<SigningActor, 'both'>;
+  error?: string;
+};
+
+const acceptInitialHardwareMobilePsbt = (
+  source: bitcoin.Psbt,
+  wallet: MultisigHDWallet,
+  policy: BhwiHardwareMobilePolicy,
+): AcceptedPsbt => {
+  try {
+    const unsigned = getUnsignedBhwiMultisigPsbt(source);
+    const unsignedBase64 = unsigned.toBase64();
+    validateBhwiPsbtOriginal(unsignedBase64, wallet, policy.phone);
+    validateBhwiPsbtOriginal(unsignedBase64, wallet, policy.association);
+    const hasSignatures = source.data.inputs.some(
+      input => !!input.finalScriptSig || !!input.finalScriptWitness || !!input.partialSig?.length || !!input.tapKeySig,
+    );
+    if (!hasSignatures) return { psbt: unsigned, unsignedBase64 };
+    for (const [actor, signer] of [
+      ['phone', policy.phone],
+      ['hardware', policy.association],
+    ] as const) {
+      try {
+        const result = validateBhwiPsbt(unsignedBase64, source.toBase64(), wallet, signer);
+        return result.selectedSignerSignedAllInputs
+          ? { psbt: result.psbt, unsignedBase64, actor }
+          : {
+              psbt: result.continuationPsbt,
+              exportPsbt: result.psbt,
+              unsignedBase64,
+              pendingActor: actor,
+            };
+      } catch {}
+    }
+    throw new Error('The existing multisig signature is invalid.');
+  } catch (error) {
+    return {
+      psbt: source,
+      unsignedBase64: '',
+      error: error instanceof Error ? error.message : loc.send.invalid_psbt,
+    };
+  }
 };
 
 const PsbtMultisig = () => {
   const { wallets } = useStorage();
-  const { navigate, setParams } = useNavigation();
   const { colors } = useTheme();
-  const [flatListHeight, setFlatListHeight] = useState(0);
-  const { walletID, psbtBase64, memo, receivedPSBTBase64, txhex, launchedBy } = useRoute<RouteProp<RouteParams>>().params;
-  const wallet = wallets.find(w => w.getID() === walletID) as MultisigHDWallet;
-  assert(wallet, 'Internal error: MultisigHDWallet not found');
-
-  const [psbt, setPsbt] = useState(() => {
+  const { isElectrumDisabled } = useSettings();
+  const { enableScreenProtect, disableScreenProtect } = useScreenProtect();
+  const navigation = useNavigation<NavigationProps>();
+  const { navigate, setParams, dispatch } = navigation;
+  const route = useRoute<RouteProp<SendDetailsStackParamList, 'PsbtMultisig'>>();
+  const routeParamsRef = useRef(route.params);
+  routeParamsRef.current = { ...routeParamsRef.current, ...route.params };
+  const { walletID, psbtBase64, memo, receivedPSBTBase64, txhex, launchedBy, multisigContinuation } = routeParamsRef.current;
+  const walletCandidate = wallets.find(candidate => candidate.getID() === walletID);
+  const wallet = walletCandidate instanceof MultisigHDWallet ? walletCandidate : undefined;
+  const policy = wallet ? getBhwiHardwareMobilePolicy(wallet) : undefined;
+  const initialized = useRef(false);
+  const initial = useRef<AcceptedPsbt | undefined>(undefined);
+  if (!initialized.current) {
+    initialized.current = true;
     try {
-      const initial = bitcoin.Psbt.fromBase64(psbtBase64, { network });
-      return initial;
+      const source = bitcoin.Psbt.fromBase64(psbtBase64, { network });
+      initial.current = wallet && policy ? acceptInitialHardwareMobilePsbt(source, wallet, policy) : { psbt: source, unsignedBase64: '' };
     } catch (error) {
       console.error('Error loading initial PSBT:', error);
-      presentAlert({ message: loc.send.invalid_psbt });
-      return null;
+      initial.current = undefined;
     }
-  });
+  }
+  const hardwareBound = useRef(!!policy).current;
+  const [psbt, setPsbt] = useState(initial.current?.psbt ?? null);
+  const [actor, setActor] = useState<SigningActor | undefined>(initial.current?.actor);
+  const [pendingActor, setPendingActor] = useState<'phone' | 'hardware' | undefined>(initial.current?.pendingActor);
+  const [hardwareStatus, setHardwareStatus] = useState(
+    initial.current?.error ?? (initial.current?.pendingActor ? loc.multisig.partial_signature_incomplete : ''),
+  );
+  const [isHardwareLoading, setIsHardwareLoading] = useState(false);
+  const [verifiedTxHex, setVerifiedTxHex] = useState<string>();
+  const [flatListHeight, setFlatListHeight] = useState(0);
+  const [isFiltered, setIsFiltered] = useState(true);
+  const psbtRef = useRef(psbt);
+  psbtRef.current = psbt;
+  const actorRef = useRef(actor);
+  actorRef.current = actor;
+  const pendingActorRef = useRef(pendingActor);
+  pendingActorRef.current = pendingActor;
+  const partialExportRef = useRef(initial.current?.exportPsbt);
+  const pendingBaseRef = useRef(initial.current?.pendingActor ? initial.current.unsignedBase64 : undefined);
+  const reviewedOriginalRef = useRef(initial.current?.unsignedBase64);
+  const attemptRef = useRef(0);
+  const hardwareAttemptRef = useRef<HardwareAttempt | undefined>(undefined);
+  const mountedRef = useRef(true);
+  const foregroundRef = useRef(AppState.currentState === 'active');
+  const isFocused = useIsFocused();
+  const focusedRef = useRef(isFocused);
+  focusedRef.current = isFocused;
+  const walletsRef = useRef(wallets);
+  walletsRef.current = wallets;
+  const allowedContinuationRef = useRef<'hardware' | 'qr' | undefined>(undefined);
+  const handledHardwareReturnRef = useRef('');
+  const qrGenerationRef = useRef(0);
+  const qrAttemptRef = useRef<QrAttempt | undefined>(undefined);
+  const initialBindingRef = useRef(
+    wallet && policy
+      ? {
+          walletIdentity: bhwiMultisigWalletIdentity(wallet, policy.association),
+          associationIdentity: bhwiAssociationIdentity(policy.association),
+          policyIdentity: bhwiMultisigPolicyIdentity(wallet, policy.association),
+        }
+      : undefined,
+  );
 
-  useEffect(() => {
-    if (receivedPSBTBase64) {
-      _combinePSBT();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [receivedPSBTBase64]);
-
-  useEffect(() => {
-    if (txhex) {
-      // we have finalized txhex, lets  calculate some stuff and navigate to Confirm scren
-      const tx = bitcoin.Transaction.fromHex(txhex);
-
-      try {
-        const satoshiPerByte = Math.round(getFee() / tx.virtualSize());
-        navigate('Confirm', {
-          fee: new BigNumber(getFee()).dividedBy(100000000).toNumber(),
-          memo,
-          walletID,
-          tx: txhex,
-          recipients: targets,
-          satoshiPerByte,
+  const expireHardwareAttempt = useCallback(
+    (message = BHWI_SIGNING_SESSION_EXPIRED) => {
+      attemptRef.current += 1;
+      hardwareAttemptRef.current = undefined;
+      qrGenerationRef.current += 1;
+      qrAttemptRef.current = undefined;
+      setVerifiedTxHex(undefined);
+      setIsHardwareLoading(false);
+      if (hardwareBound) setHardwareStatus(message);
+      routeParamsRef.current = {
+        ...routeParamsRef.current,
+        bhwiOriginalBase64: undefined,
+        bhwiReturnedBase64: undefined,
+        bhwiAttempt: undefined,
+        multisigContinuation: undefined,
+        txhex: undefined,
+      };
+      if (mountedRef.current) {
+        setParams({
+          bhwiOriginalBase64: undefined,
+          bhwiReturnedBase64: undefined,
+          bhwiAttempt: undefined,
+          multisigContinuation: undefined,
+          txhex: undefined,
         });
-      } catch (error: any) {
-        presentAlert({ message: error });
       }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [txhex]);
+    },
+    [hardwareBound, setParams],
+  );
 
-  const data = new Array(wallet.getM());
+  const liveBinding = useCallback(() => {
+    const liveWallet = walletsRef.current.find(candidate => candidate.getID() === walletID);
+    if (!(liveWallet instanceof MultisigHDWallet)) return undefined;
+    const livePolicy = getBhwiHardwareMobilePolicy(liveWallet);
+    if (!livePolicy) return undefined;
+    const walletIdentity = bhwiMultisigWalletIdentity(liveWallet, livePolicy.association);
+    const policyIdentity = bhwiMultisigPolicyIdentity(liveWallet, livePolicy.association);
+    if (!walletIdentity || !policyIdentity) return undefined;
+    return {
+      wallet: liveWallet,
+      policy: livePolicy,
+      walletIdentity,
+      associationIdentity: bhwiAssociationIdentity(livePolicy.association),
+      policyIdentity,
+    };
+  }, [walletID]);
+
+  const openQrContinuation = useCallback(
+    (source: bitcoin.Psbt, showOpenScanner: boolean) => {
+      const current = liveBinding();
+      const originalBase64 = reviewedOriginalRef.current;
+      const accepted = psbtRef.current;
+      if (!current || !originalBase64 || !accepted || !mountedRef.current || !foregroundRef.current || !focusedRef.current) {
+        throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
+      }
+      validateBhwiPsbtOriginal(originalBase64, current.wallet, current.policy.association);
+      const generation = ++qrGenerationRef.current;
+      const token = `qr-${generation}`;
+      const snapshot: QrAttempt = Object.freeze({
+        generation,
+        token,
+        originalBase64,
+        acceptedBase64: accepted.toBase64(),
+        walletID,
+        walletIdentity: current.walletIdentity,
+        associationIdentity: current.associationIdentity,
+        policyIdentity: current.policyIdentity,
+        fee: getBhwiPsbtReview(bitcoin.Psbt.fromBase64(originalBase64, { network })).fee.toString(),
+      });
+      qrAttemptRef.current = snapshot;
+      allowedContinuationRef.current = 'qr';
+      navigate('PsbtMultisigQRCode', {
+        walletID,
+        psbtBase64: source.toBase64(),
+        isShowOpenScanner: showOpenScanner,
+        multisigContinuation: token,
+      });
+    },
+    [liveBinding, navigate, walletID],
+  );
+
+  const qrContinuationIsCurrent = useCallback(
+    (expected: QrAttempt, token: string | undefined) => {
+      const current = liveBinding();
+      try {
+        assertBhwiPsbtContinuationToken(expected.token, token);
+      } catch {
+        return undefined;
+      }
+      if (
+        qrAttemptRef.current !== expected ||
+        qrGenerationRef.current !== expected.generation ||
+        !mountedRef.current ||
+        !foregroundRef.current ||
+        !focusedRef.current ||
+        psbtRef.current?.toBase64() !== expected.acceptedBase64 ||
+        reviewedOriginalRef.current !== expected.originalBase64 ||
+        !current ||
+        current.walletIdentity !== expected.walletIdentity ||
+        current.associationIdentity !== expected.associationIdentity ||
+        current.policyIdentity !== expected.policyIdentity ||
+        getBhwiPsbtReview(bitcoin.Psbt.fromBase64(expected.originalBase64, { network })).fee.toString() !== expected.fee
+      ) {
+        return undefined;
+      }
+      return current;
+    },
+    [liveBinding],
+  );
+
+  const attemptIsCurrent = useCallback(
+    (expected: HardwareAttempt) => {
+      if (
+        !mountedRef.current ||
+        !foregroundRef.current ||
+        !focusedRef.current ||
+        attemptRef.current !== expected.generation ||
+        psbtRef.current?.toBase64() !== expected.acceptedBase64 ||
+        routeParamsRef.current.bhwiAttempt !== expected.generation ||
+        routeParamsRef.current.bhwiOriginalBase64 !== expected.originalBase64
+      ) {
+        return undefined;
+      }
+      const current = liveBinding();
+      if (
+        !current ||
+        current.walletIdentity !== expected.walletIdentity ||
+        current.associationIdentity !== expected.associationIdentity ||
+        current.policyIdentity !== expected.policyIdentity
+      ) {
+        return undefined;
+      }
+      return current;
+    },
+    [liveBinding],
+  );
+
+  const applyVerifiedTransition = useCallback(
+    (returnedBase64: string, signer: 'phone' | 'hardware', expected?: HardwareAttempt) => {
+      const current = expected ? attemptIsCurrent(expected) : liveBinding();
+      const original = expected?.originalBase64 ?? psbtRef.current?.toBase64();
+      if (!current || !original || !psbtRef.current) throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
+      const selectedSigner = signer === 'phone' ? current.policy.phone : current.policy.association;
+      const result = validateBhwiPsbt(original, returnedBase64, current.wallet, selectedSigner);
+      if (expected && !attemptIsCurrent(expected)) throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
+      const completedStage = result.selectedSignerSignedAllInputs;
+      const previousActor = actorRef.current;
+      const nextActor: SigningActor | undefined = completedStage
+        ? previousActor === undefined || previousActor === signer
+          ? signer
+          : 'both'
+        : previousActor;
+      const nextPending = completedStage ? undefined : signer;
+      const nextPsbt = completedStage ? result.psbt : result.continuationPsbt;
+      psbtRef.current = nextPsbt;
+      partialExportRef.current = completedStage ? undefined : result.psbt;
+      actorRef.current = nextActor;
+      pendingActorRef.current = nextPending;
+      pendingBaseRef.current = completedStage ? undefined : original;
+      setPsbt(nextPsbt);
+      setActor(nextActor);
+      setPendingActor(nextPending);
+      setVerifiedTxHex(completedStage ? result.tx?.toHex() : undefined);
+      setHardwareStatus(completedStage ? '' : loc.multisig.partial_signature_incomplete);
+      hardwareAttemptRef.current = undefined;
+      qrGenerationRef.current += 1;
+      qrAttemptRef.current = undefined;
+      routeParamsRef.current = {
+        ...routeParamsRef.current,
+        bhwiReturnedBase64: undefined,
+        receivedPSBTBase64: undefined,
+        txhex: undefined,
+        multisigContinuation: undefined,
+      };
+      setParams({
+        bhwiReturnedBase64: undefined,
+        receivedPSBTBase64: undefined,
+        txhex: undefined,
+        multisigContinuation: undefined,
+      });
+      return result;
+    },
+    [attemptIsCurrent, liveBinding, setParams],
+  );
+
+  const prepareHardwareSigning = useCallback(
+    async (destination: 'hardware' | 'phone' | 'qr' = 'hardware') => {
+      const generation = ++attemptRef.current;
+      hardwareAttemptRef.current = undefined;
+      if (destination !== 'qr') {
+        qrGenerationRef.current += 1;
+        qrAttemptRef.current = undefined;
+      }
+      if (destination === 'hardware') setVerifiedTxHex(undefined);
+      setHardwareStatus('');
+      setIsHardwareLoading(true);
+      try {
+        const current = liveBinding();
+        const source = psbtRef.current;
+        const pendingSigner = pendingActorRef.current;
+        if (
+          !current ||
+          !source ||
+          (destination === 'hardware' &&
+            (actorRef.current === 'hardware' || actorRef.current === 'both' || (!!pendingSigner && pendingSigner !== 'hardware'))) ||
+          (destination === 'phone' &&
+            (actorRef.current === 'phone' || actorRef.current === 'both' || (!!pendingSigner && pendingSigner !== 'phone')))
+        ) {
+          throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
+        }
+        if (destination === 'hardware' && !isBhwiAvailable()) throw new Error(loc.wallets.hardware_unavailable);
+        const sourceBase64 = source.toBase64();
+        const preparationIsCurrent = () => {
+          const live = liveBinding();
+          if (
+            !mountedRef.current ||
+            !foregroundRef.current ||
+            !focusedRef.current ||
+            attemptRef.current !== generation ||
+            psbtRef.current?.toBase64() !== sourceBase64 ||
+            !live ||
+            live.walletIdentity !== current.walletIdentity ||
+            live.associationIdentity !== current.associationIdentity ||
+            live.policyIdentity !== current.policyIdentity
+          ) {
+            throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
+          }
+        };
+        if (source.data.inputs.some(input => !input.nonWitnessUtxo) && isElectrumDisabled) throw new Error(loc.errors.network);
+        const hydrated = await hydrateBhwiPsbt(source, undefined, preparationIsCurrent);
+        preparationIsCurrent();
+        const unsigned = getUnsignedBhwiMultisigPsbt(hydrated);
+        const unsignedBase64 = unsigned.toBase64();
+        validateBhwiPsbtOriginal(unsignedBase64, current.wallet, current.policy.phone);
+        const previousOriginal = reviewedOriginalRef.current;
+        if (previousOriginal) {
+          const previous = bitcoin.Psbt.fromBase64(previousOriginal, { network });
+          const previousReview = getBhwiPsbtReview(previous);
+          const nextReview = getBhwiPsbtReview(unsigned);
+          const sameOutputs =
+            previousReview.outputs.length === nextReview.outputs.length &&
+            previousReview.outputs.every(
+              (output, index) =>
+                output.destination === nextReview.outputs[index]?.destination && output.value === nextReview.outputs[index]?.value,
+            );
+          if (
+            !Buffer.from(previous.data.globalMap.unsignedTx.toBuffer()).equals(
+              Buffer.from(unsigned.data.globalMap.unsignedTx.toBuffer()),
+            ) ||
+            previousReview.fee !== nextReview.fee ||
+            !sameOutputs ||
+            (previous.data.inputs.every(input => !!input.nonWitnessUtxo) && previousOriginal !== unsignedBase64)
+          ) {
+            throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
+          }
+        }
+        validateBhwiPsbtOriginal(unsignedBase64, current.wallet, current.policy.association);
+        let accepted = unsigned;
+        const currentActor = actorRef.current;
+        if (pendingSigner) {
+          if (!pendingBaseRef.current) throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
+          const signer = pendingSigner === 'phone' ? current.policy.phone : current.policy.association;
+          validateBhwiPsbtOriginal(hydrated.toBase64(), current.wallet, signer);
+          accepted = hydrated;
+        } else if (currentActor === 'phone' || currentActor === 'hardware') {
+          const signer = currentActor === 'phone' ? current.policy.phone : current.policy.association;
+          accepted = validateBhwiPsbt(unsignedBase64, hydrated.toBase64(), current.wallet, signer).psbt;
+        }
+        if (destination === 'phone') {
+          reviewedOriginalRef.current = unsignedBase64;
+          psbtRef.current = accepted;
+          setPsbt(accepted);
+          const returned = accepted.clone();
+          current.wallet.cosignPsbt(returned);
+          applyVerifiedTransition(returned.toBase64(), 'phone');
+          return;
+        }
+        const requestBase64 = accepted.toBase64();
+        if (destination === 'qr') {
+          reviewedOriginalRef.current = unsignedBase64;
+          psbtRef.current = accepted;
+          setPsbt(accepted);
+          openQrContinuation(partialExportRef.current ?? accepted, !!verifiedTxHex);
+          return;
+        }
+        validateBhwiPsbtOriginal(requestBase64, current.wallet, current.policy.association);
+        reviewedOriginalRef.current = unsignedBase64;
+        const review = getBhwiPsbtReview(unsigned);
+        const snapshot: HardwareAttempt = Object.freeze({
+          generation,
+          originalBase64: requestBase64,
+          acceptedBase64: requestBase64,
+          walletID,
+          walletIdentity: current.walletIdentity,
+          associationIdentity: current.associationIdentity,
+          policyIdentity: current.policyIdentity,
+          fee: review.fee.toString(),
+        });
+        psbtRef.current = accepted;
+        setPsbt(accepted);
+        hardwareAttemptRef.current = snapshot;
+        routeParamsRef.current = {
+          ...routeParamsRef.current,
+          bhwiOriginalBase64: requestBase64,
+          bhwiReturnedBase64: undefined,
+          bhwiAttempt: generation,
+          txhex: undefined,
+        };
+        setParams({
+          bhwiOriginalBase64: requestBase64,
+          bhwiReturnedBase64: undefined,
+          bhwiAttempt: generation,
+          txhex: undefined,
+        });
+        if (!attemptIsCurrent(snapshot)) throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
+        allowedContinuationRef.current = 'hardware';
+        navigate('HardwareWalletAccount', {
+          mode: 'sign-psbt',
+          walletID,
+          hardwareAccount: current.policy.association,
+          originalBase64: requestBase64,
+          attempt: generation,
+        });
+      } catch (error) {
+        if (attemptRef.current === generation && mountedRef.current) {
+          hardwareAttemptRef.current = undefined;
+          setHardwareStatus(error instanceof Error ? error.message : BHWI_SIGNING_SESSION_EXPIRED);
+        }
+      } finally {
+        if (attemptRef.current === generation && mountedRef.current) setIsHardwareLoading(false);
+      }
+    },
+    [
+      applyVerifiedTransition,
+      attemptIsCurrent,
+      isElectrumDisabled,
+      liveBinding,
+      navigate,
+      openQrContinuation,
+      setParams,
+      verifiedTxHex,
+      walletID,
+    ],
+  );
+
+  useEffect(() => {
+    mountedRef.current = true;
+    foregroundRef.current = AppState.currentState === 'active';
+    enableScreenProtect();
+    const appState = AppState.addEventListener('change', nextState => {
+      foregroundRef.current = nextState === 'active';
+      if (!foregroundRef.current && hardwareBound) expireHardwareAttempt();
+    });
+    return () => {
+      mountedRef.current = false;
+      foregroundRef.current = false;
+      focusedRef.current = false;
+      attemptRef.current += 1;
+      hardwareAttemptRef.current = undefined;
+      qrGenerationRef.current += 1;
+      qrAttemptRef.current = undefined;
+      appState.remove();
+      disableScreenProtect();
+    };
+  }, [disableScreenProtect, enableScreenProtect, expireHardwareAttempt, hardwareBound]);
+
+  useEffect(() => {
+    focusedRef.current = isFocused;
+    if (isFocused) {
+      allowedContinuationRef.current = undefined;
+      if (qrAttemptRef.current && !routeParamsRef.current.receivedPSBTBase64) {
+        qrGenerationRef.current += 1;
+        qrAttemptRef.current = undefined;
+        setParams({ multisigContinuation: undefined });
+      }
+    } else if (allowedContinuationRef.current) {
+      allowedContinuationRef.current = undefined;
+    } else if (hardwareBound) {
+      expireHardwareAttempt();
+    }
+  }, [expireHardwareAttempt, hardwareBound, isFocused, setParams]);
+
+  useEffect(() => {
+    if (!hardwareBound) return;
+    const expected = initialBindingRef.current;
+    const current = liveBinding();
+    if (
+      !expected ||
+      !current ||
+      expected.walletIdentity !== current.walletIdentity ||
+      expected.associationIdentity !== current.associationIdentity ||
+      expected.policyIdentity !== current.policyIdentity
+    ) {
+      expireHardwareAttempt();
+    }
+  }, [expireHardwareAttempt, hardwareBound, liveBinding, wallets]);
+
+  useEffect(() => {
+    const returned = routeParamsRef.current.bhwiReturnedBase64;
+    const generation = routeParamsRef.current.bhwiAttempt;
+    if (!hardwareBound || !returned) return;
+    const key = `${String(generation)}\0${returned}`;
+    if (handledHardwareReturnRef.current === key) return;
+    handledHardwareReturnRef.current = key;
+    try {
+      const expected = hardwareAttemptRef.current;
+      if (!expected || generation !== expected.generation) throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
+      applyVerifiedTransition(returned, 'hardware', expected);
+    } catch (error) {
+      expireHardwareAttempt(error instanceof Error ? error.message : BHWI_SIGNING_SESSION_EXPIRED);
+    }
+  }, [applyVerifiedTransition, expireHardwareAttempt, hardwareBound, route.params]);
+
+  useEffect(() => {
+    if (!receivedPSBTBase64 || !psbtRef.current) return;
+    if (!hardwareBound && receivedPSBTBase64 === psbtRef.current.toBase64()) return;
+    if (!hardwareBound) {
+      try {
+        const combined = combinePSBTs({
+          psbtBase64: psbtRef.current.toBase64(),
+          newPSBTBase64: receivedPSBTBase64,
+        });
+        psbtRef.current = combined;
+        setPsbt(combined);
+        setParams({ receivedPSBTBase64: undefined });
+      } catch (error) {
+        presentAlert({ message: error instanceof Error ? error.message : loc.send.invalid_psbt });
+      }
+      return;
+    }
+    try {
+      const expected = qrAttemptRef.current;
+      if (!expected || !qrContinuationIsCurrent(expected, multisigContinuation)) {
+        throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
+      }
+      const currentActor = actorRef.current;
+      const pending = pendingActorRef.current;
+      if (currentActor === 'both') throw new Error('This transaction is already fully signed.');
+      const signers: Array<'phone' | 'hardware'> = pending
+        ? [pending]
+        : currentActor === 'phone'
+          ? ['hardware']
+          : currentActor === 'hardware'
+            ? ['phone']
+            : ['phone', 'hardware'];
+      let accepted = false;
+      let failure: unknown;
+      for (const signer of signers) {
+        try {
+          applyVerifiedTransition(receivedPSBTBase64, signer);
+          accepted = true;
+          break;
+        } catch (error) {
+          failure = error;
+        }
+      }
+      if (!accepted) throw failure ?? new Error(loc.send.invalid_psbt);
+    } catch (error) {
+      qrGenerationRef.current += 1;
+      qrAttemptRef.current = undefined;
+      setVerifiedTxHex(undefined);
+      setHardwareStatus(error instanceof Error ? error.message : loc.send.invalid_psbt);
+      setParams({ receivedPSBTBase64: undefined, txhex: undefined, multisigContinuation: undefined });
+    }
+  }, [applyVerifiedTransition, hardwareBound, multisigContinuation, qrContinuationIsCurrent, receivedPSBTBase64, setParams]);
+
+  useEffect(() => {
+    if (!txhex) return;
+    if (hardwareBound) {
+      qrGenerationRef.current += 1;
+      qrAttemptRef.current = undefined;
+      setVerifiedTxHex(undefined);
+      setHardwareStatus(loc.multisig.hardware_psbt_required);
+      setParams({ txhex: undefined, multisigContinuation: undefined });
+      return;
+    }
+    try {
+      const tx = bitcoin.Transaction.fromHex(txhex);
+      const currentPsbt = psbtRef.current;
+      const liveWallet = walletsRef.current.find(candidate => candidate.getID() === walletID);
+      if (!currentPsbt || !(liveWallet instanceof MultisigHDWallet)) throw new Error(loc.send.invalid_psbt);
+      const fee = liveWallet.calculateFeeFromPsbt(currentPsbt);
+      const recipients = currentPsbt.txOutputs
+        .filter(output => !!output.address && !liveWallet.weOwnAddress(output.address))
+        .map(output => ({ address: output.address!, value: Number(output.value) }));
+      navigate('Confirm', {
+        fee: new BigNumber(fee).dividedBy(100000000).toNumber(),
+        memo,
+        walletID,
+        tx: txhex,
+        recipients,
+        satoshiPerByte: Math.round(fee / tx.virtualSize()),
+        psbt: currentPsbt,
+      });
+    } catch (error) {
+      presentAlert({ message: error instanceof Error ? error.message : loc.send.invalid_psbt });
+    }
+  }, [hardwareBound, memo, navigate, setParams, txhex, walletID]);
+  useEffect(() => {
+    if (!initial.current) presentAlert({ message: loc.send.invalid_psbt });
+  }, []);
+
   const stylesHook = StyleSheet.create({
     root: {
       backgroundColor: colors.elevated,
@@ -130,9 +713,8 @@ const PsbtMultisig = () => {
     },
   });
 
-  const [isFiltered, setIsFiltered] = useState(true);
-
-  if (!psbt) return null;
+  if (!psbt || !wallet) return null;
+  const data = new Array(wallet.getM());
 
   // if useFilter is true, include only non-owned addresses.
   const getDestinationData = (useFilter = true) => {
@@ -144,7 +726,7 @@ const PsbtMultisig = () => {
         if (useFilter && wallet.weOwnAddress(output.address)) continue;
         totalSat += Number(output.value);
         addresses.push(output.address);
-        targets.push({ address: output.address, value: output.value });
+        targets.push({ address: output.address, value: Number(output.value) });
       }
     }
     return { addresses, totalSat, targets };
@@ -169,6 +751,25 @@ const PsbtMultisig = () => {
   };
 
   const navigateToPSBTMultisigQRCode = () => {
+    if (hardwareBound) {
+      let reviewedParents = false;
+      try {
+        const reviewed = reviewedOriginalRef.current ? bitcoin.Psbt.fromBase64(reviewedOriginalRef.current, { network }) : undefined;
+        reviewedParents = !!reviewed && reviewed.data.inputs.every(input => !!input.nonWitnessUtxo);
+      } catch {}
+      const hasFinalInput = psbt.data.inputs.some(input => !!input.finalScriptSig || !!input.finalScriptWitness);
+      if (!reviewedParents && !hasFinalInput) {
+        prepareHardwareSigning('qr').catch(() => undefined);
+        return;
+      }
+      try {
+        openQrContinuation(partialExportRef.current ?? psbt, isConfirmEnabled());
+      } catch (error) {
+        expireHardwareAttempt(error instanceof Error ? error.message : BHWI_SIGNING_SESSION_EXPIRED);
+      }
+      return;
+    }
+    allowedContinuationRef.current = 'qr';
     navigate('PsbtMultisigQRCode', {
       walletID,
       psbtBase64: psbt.toBase64(),
@@ -226,55 +827,42 @@ const PsbtMultisig = () => {
     );
   };
 
-  const _combinePSBT = () => {
-    if (receivedPSBTBase64 && receivedPSBTBase64 !== psbt.toBase64()) {
-      try {
-        const combined = combinePSBTs({
-          psbtBase64: psbt.toBase64(),
-          newPSBTBase64: receivedPSBTBase64,
-        });
-        setPsbt(combined);
-        setParams({ receivedPSBTBase64: undefined });
-      } catch (error: any) {
-        console.error('Error during PSBT combination:', error);
-        presentAlert({ message: error.message });
-      }
-    }
-  };
-
   const onConfirm = () => {
+    if (hardwareBound && !verifiedTxHex) return;
+    const confirmedPsbt = psbt;
+    let transaction: bitcoin.Transaction;
     try {
-      psbt.finalizeAllInputs();
-    } catch (err) {
-      console.warn('Finalize error (ignored if already finalized):', err);
-    }
-
-    if (launchedBy) {
-      // we must navigate back to the screen who requested psbt (instead of broadcasting it ourselves)
-      // most likely for LN channel opening
-      navigate(launchedBy, { psbt });
-      return;
-    }
-
-    try {
-      const tx = psbt.extractTransaction().toHex();
-      const satoshiPerByte = Math.round(getFee() / psbt.extractTransaction().virtualSize());
+      if (hardwareBound) {
+        transaction = bitcoin.Transaction.fromHex(verifiedTxHex!);
+      } else {
+        for (let index = 0; index < confirmedPsbt.inputCount; index++) {
+          const input = confirmedPsbt.data.inputs[index];
+          if (input && !input.finalScriptSig && !input.finalScriptWitness) confirmedPsbt.finalizeInput(index);
+        }
+        transaction = confirmedPsbt.extractTransaction();
+      }
+      if (launchedBy) {
+        dispatch(StackActions.popTo(launchedBy, { psbt: confirmedPsbt }, { merge: true }));
+        return;
+      }
+      const fee = getFee();
       navigate('Confirm', {
-        fee: new BigNumber(getFee()).dividedBy(100000000).toNumber(),
+        fee: new BigNumber(fee).dividedBy(100000000).toNumber(),
         memo,
         walletID,
-        tx,
+        tx: transaction.toHex(),
         recipients: targets,
-        satoshiPerByte,
+        satoshiPerByte: Math.round(fee / transaction.virtualSize()),
+        psbt: confirmedPsbt,
       });
-    } catch (error: any) {
-      presentAlert({ message: error });
+    } catch (error) {
+      presentAlert({ message: error instanceof Error ? error.message : String(error) });
     }
   };
 
   const howManySignaturesWeHave = wallet.calculateHowManySignaturesWeHaveFromPsbt(psbt);
   const isConfirmEnabled = () => {
-    return howManySignaturesWeHave >= wallet.getM();
+    return hardwareBound ? !!verifiedTxHex : howManySignaturesWeHave >= wallet.getM();
   };
 
   const destinationAddress = (useFilter = true) => {
@@ -371,6 +959,33 @@ const PsbtMultisig = () => {
                     ListFooterComponent={footer}
                     onLayout={onLayout}
                   />
+                  {hardwareBound && actor !== 'both' && (
+                    <View style={styles.hardwareActions}>
+                      {actor !== 'phone' && (!pendingActor || pendingActor === 'phone') && (
+                        <Button
+                          testID="PsbtMultisigSignWithPhone"
+                          title={loc.multisig.sign_with_phone}
+                          onPress={() => prepareHardwareSigning('phone').catch(() => undefined)}
+                          disabled={isHardwareLoading || !reviewedOriginalRef.current}
+                          showActivityIndicator={isHardwareLoading}
+                        />
+                      )}
+                      {actor !== 'hardware' && (!pendingActor || pendingActor === 'hardware') && (
+                        <Button
+                          testID="PsbtMultisigSignWithHardware"
+                          title={loc.wallets.hardware_sign_transaction}
+                          onPress={() => prepareHardwareSigning().catch(() => undefined)}
+                          disabled={isHardwareLoading || !reviewedOriginalRef.current}
+                          showActivityIndicator={isHardwareLoading}
+                        />
+                      )}
+                      {!!hardwareStatus && (
+                        <BlueText style={styles.hardwareStatus} testID="PsbtMultisigHardwareStatus">
+                          {hardwareStatus}
+                        </BlueText>
+                      )}
+                    </View>
+                  )}
                   {isConfirmEnabled() && (
                     <View style={styles.height80}>
                       <TouchableOpacity
@@ -546,6 +1161,14 @@ const styles = StyleSheet.create({
   },
   feeContainer: {
     marginBottom: 8,
+  },
+  hardwareActions: {
+    paddingHorizontal: 24,
+    paddingBottom: 16,
+  },
+  hardwareStatus: {
+    marginTop: 12,
+    textAlign: 'center',
   },
 });
 

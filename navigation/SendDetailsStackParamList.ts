@@ -126,6 +126,12 @@ export type SendDetailsStackParamList = {
     psbtBase64: string;
     walletID: string;
     launchedBy?: string;
+    receivedPSBTBase64?: string;
+    txhex?: string;
+    bhwiOriginalBase64?: string;
+    bhwiReturnedBase64?: string;
+    bhwiAttempt?: number;
+    multisigContinuation?: string;
   };
   PsbtMultisigQRCode: {
     memo?: string;
@@ -134,6 +140,7 @@ export type SendDetailsStackParamList = {
     launchedBy?: string;
     isShowOpenScanner?: boolean;
     onBarScanned?: string;
+    multisigContinuation?: string;
   };
   Success: {
     fee?: number;

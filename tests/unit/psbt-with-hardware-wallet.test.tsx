@@ -113,6 +113,12 @@ let mockIsFocused = true;
 let mockAppStateChange: (state: AppStateStatus) => void = () => undefined;
 let mockRouteParams: Record<string, unknown>;
 let mockWallet: WatchOnlyWallet;
+let mockWallets: WatchOnlyWallet[] = [];
+
+function setMockWallet(wallet: WatchOnlyWallet): void {
+  mockWallet = wallet;
+  mockWallets = [wallet];
+}
 
 jest.mock('@react-navigation/native', () => {
   const actual = jest.requireActual('@react-navigation/native');
@@ -131,7 +137,7 @@ jest.mock('../../blue_modules/bhwi', () => {
 
 jest.mock('../../hooks/context/useStorage', () => ({
   useStorage: () => ({
-    wallets: [mockWallet],
+    wallets: mockWallets,
     txMetadata: {},
     fetchAndSaveWalletTransactions: mockFetchAndSaveWalletTransactions,
   }),
@@ -197,7 +203,7 @@ jest.mock('../../components/SecondButton', () => {
 });
 
 async function renderPreparedAssociated(fixture: AssociatedFixture): Promise<RenderAPI> {
-  mockWallet = fixture.wallet;
+  setMockWallet(fixture.wallet);
   mockRouteParams = { walletID: fixture.wallet.getID(), psbt: fixture.psbt };
   mockMultiGetTransaction.mockResolvedValue(parentMap(fixture));
   const view = render(<PsbtWithHardwareWallet />);
@@ -228,7 +234,7 @@ beforeEach(() => {
   });
   const psbt = new bitcoin.Psbt({ network });
   psbt.addOutput({ script: bitcoin.script.compile([bitcoin.opcodes.OP_RETURN]), value: 0n });
-  mockWallet = Object.create(WatchOnlyWallet.prototype) as WatchOnlyWallet;
+  setMockWallet(Object.create(WatchOnlyWallet.prototype) as WatchOnlyWallet);
   Object.assign(mockWallet, {
     getID: () => 'offline-wallet',
     getHardwareWalletAssociation: () => undefined,
@@ -267,7 +273,7 @@ test('rejects a hardware-bound raw route when its immutable original is missing'
 
 test('fails closed when associated parent hydration fails and rejects a raw downgrade', async () => {
   const fixture = makeAssociatedFixture();
-  mockWallet = fixture.wallet;
+  setMockWallet(fixture.wallet);
   mockRouteParams = { walletID: fixture.wallet.getID(), psbt: fixture.psbt };
   mockMultiGetTransaction.mockResolvedValue({});
   const view = render(<PsbtWithHardwareWallet />);
@@ -285,7 +291,7 @@ test('fails closed when associated parent hydration fails and rejects a raw down
 
 test('rejects an associated standalone txhex without an immutable original', async () => {
   const fixture = makeAssociatedFixture();
-  mockWallet = fixture.wallet;
+  setMockWallet(fixture.wallet);
   mockRouteParams = { walletID: fixture.wallet.getID(), txhex: 'deadbeef' };
   const view = render(<PsbtWithHardwareWallet />);
   await waitFor(() => expect(mockPresentAlert).toHaveBeenCalledWith(expect.objectContaining({ message: BHWI_SIGNING_SESSION_EXPIRED })));
@@ -337,7 +343,7 @@ test('rejects an altered scanner return without downgrading the associated flow'
 
 test('invalidates pending and completed work on unexpected blur but preserves an intentional scanner continuation', async () => {
   const pendingFixture = makeAssociatedFixture();
-  mockWallet = pendingFixture.wallet;
+  setMockWallet(pendingFixture.wallet);
   mockRouteParams = { walletID: pendingFixture.wallet.getID(), psbt: pendingFixture.psbt };
   let resolveParents!: (parents: Record<string, string>) => void;
   const pendingParents = new Promise<Record<string, string>>(resolve => {
@@ -404,6 +410,24 @@ test('clears a verified associated result on background and requires a new prepa
   expect(view.queryByTestId('PsbtTxScanButton')).toBeNull();
 });
 
+test('immediately clears a verified associated result when the live wallet is deleted', async () => {
+  const fixture = makeAssociatedFixture();
+  const view = await renderPreparedAssociated(fixture);
+  const originalBase64 = required(mockRouteParams.bhwiOriginalBase64 as string | undefined);
+  const complete = bitcoin.Psbt.fromBase64(originalBase64, { network });
+  complete.signInput(0, required(fixture.children[0]));
+  complete.signInput(1, required(fixture.children[1]));
+  mockRouteParams = { ...mockRouteParams, bhwiReturnedBase64: complete.toBase64() };
+  view.rerender(<PsbtWithHardwareWallet />);
+  await view.findByTestId('PsbtWithHardwareWalletBroadcastTransactionButton');
+
+  mockWallets = [];
+  view.rerender(<PsbtWithHardwareWallet />);
+  await view.findByTestId('BhwiPreparePsbt');
+  expect(view.queryByTestId('PsbtWithHardwareWalletBroadcastTransactionButton')).toBeNull();
+  expect(view.queryByTestId('PsbtTxScanButton')).toBeNull();
+});
+
 test('requires exact reconnect identity with the real matcher', () => {
   const { association } = makeAssociatedFixture();
   const info = { family: association.family, fingerprint: association.fingerprint };
@@ -434,7 +458,7 @@ test('keeps parent screen protection active across the intentional hardware chil
 
 test('discards a stale first preparation and publishes the current lifecycle retry', async () => {
   const fixture = makeAssociatedFixture();
-  mockWallet = fixture.wallet;
+  setMockWallet(fixture.wallet);
   mockRouteParams = { walletID: fixture.wallet.getID(), psbt: fixture.psbt };
   let resolveFirst!: (parents: Record<string, string>) => void;
   const firstParents = new Promise<Record<string, string>>(resolve => {
