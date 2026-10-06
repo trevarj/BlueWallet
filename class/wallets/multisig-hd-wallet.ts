@@ -13,7 +13,14 @@ import { decodeUR } from '../../blue_modules/ur';
 import { AbstractHDElectrumWallet } from './abstract-hd-electrum-wallet';
 import { CreateTransactionResult, CreateTransactionTarget, CreateTransactionUtxo } from './types';
 import { uint8ArrayToHex, hexToUint8Array, uint8ArrayToString, compareUint8Arrays } from '../../blue_modules/uint8array-extras';
-import { bitcoinNetwork, coinType, getMultisigPathFormat, isCompatibleOrigin, network } from '../../models/bitcoinNetwork';
+import {
+  bitcoinNetwork,
+  coinType,
+  getMultisigPathFormat,
+  isCompatibleOrigin,
+  network,
+  normalizeDerivationPath,
+} from '../../models/bitcoinNetwork';
 import {
   convertExtendedKey,
   decodeExtendedKey,
@@ -21,8 +28,13 @@ import {
   isExtendedPrivateKey,
   isExtendedPublicKey,
 } from './extended-key';
-import { isBhwiSinglesigFormat, parseHardwareWalletAssociation, sameBhwiExtendedPublicKey } from '../../blue_modules/bhwi';
-import type { HardwareWalletAssociation } from '../../blue_modules/bhwi';
+import {
+  isBhwiSinglesigFormat,
+  parseHardwareWalletAssociation,
+  parseHardwareWalletRegistration,
+  sameBhwiExtendedPublicKey,
+} from '../../blue_modules/bhwi';
+import type { HardwareWalletAssociation, HardwareWalletRegistration } from '../../blue_modules/bhwi';
 
 const ECPair = ECPairFactory(ecc);
 const bip32 = BIP32Factory(ecc);
@@ -95,13 +107,20 @@ export class MultisigHDWallet extends AbstractHDElectrumWallet {
   public _derivationPath: string = '';
   public gap_limit: number = 20;
   private _hardwareWalletAssociations: HardwareWalletAssociation[] = [];
+  private _hardwareWalletRegistrations: HardwareWalletRegistration[] = [];
 
   static override fromJson(obj: string): MultisigHDWallet {
     const wallet = super.fromJson(obj) as unknown as MultisigHDWallet;
-    const restored = Array.isArray(wallet._hardwareWalletAssociations) ? wallet._hardwareWalletAssociations : [];
-    wallet._hardwareWalletAssociations = restored
+    const restoredAssociations = Array.isArray(wallet._hardwareWalletAssociations) ? wallet._hardwareWalletAssociations : [];
+    wallet._hardwareWalletAssociations = restoredAssociations
       .map(parseHardwareWalletAssociation)
       .filter((association): association is HardwareWalletAssociation => !!association && wallet.hasHardwareCosigner(association));
+    const restoredRegistrations = Array.isArray(wallet._hardwareWalletRegistrations) ? wallet._hardwareWalletRegistrations : [];
+    wallet._hardwareWalletRegistrations = restoredRegistrations
+      .map(parseHardwareWalletRegistration)
+      .filter(
+        (registration): registration is HardwareWalletRegistration => !!registration && wallet.matchesHardwareRegistration(registration),
+      );
     return wallet;
   }
 
@@ -109,12 +128,21 @@ export class MultisigHDWallet extends AbstractHDElectrumWallet {
     if (isBhwiSinglesigFormat(association.format)) return false;
     if (association.format === 'multisig-native' && !this.isNativeSegwit()) return false;
     if (association.format === 'multisig-wrapped' && !this.isWrappedSegwit()) return false;
-    return this._cosigners.some(
-      (cosigner, index) =>
-        this._cosignersFingerprints[index]?.toLowerCase() === association.fingerprint &&
-        (this._cosignersCustomPaths[index] || this.getDerivationPath()) === association.path &&
-        sameBhwiExtendedPublicKey(cosigner, association.xpub),
-    );
+    return this._cosigners.some((_cosigner, index) => {
+      const path = this._cosignersCustomPaths[index] || this.getDerivationPath();
+      if (
+        !path ||
+        this._cosignersFingerprints[index]?.toLowerCase() !== association.fingerprint ||
+        normalizeDerivationPath(path) !== association.path
+      ) {
+        return false;
+      }
+      try {
+        return sameBhwiExtendedPublicKey(this._getXpubFromCosignerIndex(index), association.xpub);
+      } catch {
+        return false;
+      }
+    });
   }
 
   addHardwareWalletAssociation(value: HardwareWalletAssociation): void {
@@ -141,6 +169,79 @@ export class MultisigHDWallet extends AbstractHDElectrumWallet {
       .map(association => ({ ...association }));
   }
 
+  private matchesHardwareRegistration(registration: HardwareWalletRegistration): boolean {
+    const parsed = parseHardwareWalletRegistration(registration);
+    if (!parsed || !this.hasHardwareCosigner(parsed)) return false;
+    try {
+      return parsed.descriptor === this.getPublicDescriptor();
+    } catch {
+      return false;
+    }
+  }
+
+  addHardwareWalletRegistration(value: HardwareWalletRegistration): void {
+    const registration = parseHardwareWalletRegistration(value);
+    if (!registration || !this.matchesHardwareRegistration(registration)) throw new Error('Invalid hardware wallet registration');
+    this._hardwareWalletRegistrations = this._hardwareWalletRegistrations.filter(
+      existing =>
+        existing.family !== registration.family ||
+        existing.fingerprint !== registration.fingerprint ||
+        existing.path !== registration.path ||
+        existing.xpub !== registration.xpub ||
+        existing.format !== registration.format,
+    );
+    this._hardwareWalletRegistrations.push(registration);
+  }
+
+  getHardwareWalletRegistrations(): HardwareWalletRegistration[] {
+    return this._hardwareWalletRegistrations
+      .map(parseHardwareWalletRegistration)
+      .filter(
+        (registration): registration is HardwareWalletRegistration => !!registration && this.matchesHardwareRegistration(registration),
+      )
+      .map(registration => ({ ...registration }));
+  }
+
+  getHardwareWalletRegistration(association: HardwareWalletAssociation): HardwareWalletRegistration | undefined {
+    return this.getHardwareWalletRegistrations().find(
+      registration =>
+        registration.family === association.family &&
+        registration.fingerprint === association.fingerprint &&
+        registration.path === association.path &&
+        registration.xpub === association.xpub &&
+        registration.format === association.format,
+    );
+  }
+
+  private invalidateHardwareWalletRegistrations(): void {
+    this._hardwareWalletRegistrations = [];
+  }
+
+  getPublicCosigners(): Array<{ xpub: string; fingerprint: string; path: string }> {
+    return this._cosigners.map((_cosigner, index) => {
+      const fingerprint = this._cosignersFingerprints[index]?.toLowerCase();
+      const customPath = this._cosignersCustomPaths[index] || this.getDerivationPath();
+      if (!customPath) throw new Error('Multisig cosigner origin is incomplete');
+      const path = normalizeDerivationPath(customPath);
+      if (!fingerprint || !/^[0-9a-f]{8}$/.test(fingerprint) || !path.startsWith('m/')) {
+        throw new Error('Multisig cosigner origin is incomplete');
+      }
+      return { xpub: this._getXpubFromCosignerIndex(index), fingerprint, path };
+    });
+  }
+
+  getPublicDescriptor(): string {
+    if (this._m < 1 || this._m > this.getN()) throw new Error('Invalid multisig policy');
+    const keys = this.getPublicCosigners()
+      .map(({ xpub, fingerprint, path }) => `[${fingerprint}/${path.slice(2)}]${xpub}/<0;1>/*`)
+      .sort();
+    const policy = `sortedmulti(${this._m},${keys.join(',')})`;
+    if (this.isNativeSegwit()) return `wsh(${policy})`;
+    if (this.isWrappedSegwit()) return `sh(wsh(${policy}))`;
+    if (this.isLegacy()) return `sh(${policy})`;
+    throw new Error('Unsupported multisig format');
+  }
+
   isLegacy() {
     return this._isLegacy;
   }
@@ -154,18 +255,28 @@ export class MultisigHDWallet extends AbstractHDElectrumWallet {
   }
 
   setWrappedSegwit() {
+    if (!this._isWrappedSegwit || this._isNativeSegwit || this._isLegacy) this.invalidateHardwareWalletRegistrations();
     this._isWrappedSegwit = true;
+    this._isNativeSegwit = false;
+    this._isLegacy = false;
   }
 
   setNativeSegwit() {
+    if (!this._isNativeSegwit || this._isWrappedSegwit || this._isLegacy) this.invalidateHardwareWalletRegistrations();
     this._isNativeSegwit = true;
+    this._isWrappedSegwit = false;
+    this._isLegacy = false;
   }
 
   setLegacy() {
+    if (!this._isLegacy || this._isNativeSegwit || this._isWrappedSegwit) this.invalidateHardwareWalletRegistrations();
     this._isLegacy = true;
+    this._isNativeSegwit = false;
+    this._isWrappedSegwit = false;
   }
 
   setM(m: number) {
+    if (this._m !== m) this.invalidateHardwareWalletRegistrations();
     this._m = m;
   }
 
@@ -185,7 +296,9 @@ export class MultisigHDWallet extends AbstractHDElectrumWallet {
 
   setDerivationPath(path: string) {
     if (!isCompatibleOrigin(path)) throw new Error(`Multisig origin must use coin type ${coinType}`);
-    this._derivationPath = path;
+    const normalizedPath = normalizeDerivationPath(path);
+    if (this._derivationPath !== normalizedPath) this.invalidateHardwareWalletRegistrations();
+    this._derivationPath = normalizedPath;
     this._isNativeSegwit = false;
     this._isWrappedSegwit = false;
     this._isLegacy = false;
@@ -299,6 +412,7 @@ export class MultisigHDWallet extends AbstractHDElectrumWallet {
       throw new Error('Duplicate fingerprint');
     }
 
+    this.invalidateHardwareWalletRegistrations();
     const index = this._cosigners.length;
     this._cosigners[index] = key;
     if (fingerprint) this._cosignersFingerprints[index] = fingerprint.toUpperCase();
@@ -648,6 +762,7 @@ export class MultisigHDWallet extends AbstractHDElectrumWallet {
           if (key && value && MultisigHDWallet.isXpubString(value.trim())) {
             const path = customPathForCurrentCosigner ?? this._derivationPath;
             this.addCosigner(value.trim(), key, path);
+            customPathForCurrentCosigner = undefined;
           } else if (key.replace('#', '').trim() === 'derivation') {
             customPathForCurrentCosigner = value.trim();
           } else if (key === 'seed') {
@@ -660,6 +775,7 @@ export class MultisigHDWallet extends AbstractHDElectrumWallet {
             }
             const path = customPathForCurrentCosigner ?? this._derivationPath;
             this.addCosigner(seed.trim(), fingerprint, path, passphrase);
+            customPathForCurrentCosigner = undefined;
           }
           break;
       }
@@ -1137,6 +1253,7 @@ export class MultisigHDWallet extends AbstractHDElectrumWallet {
 
   prepareForSerialization() {
     this._hardwareWalletAssociations = this.getHardwareWalletAssociations();
+    this._hardwareWalletRegistrations = this.getHardwareWalletRegistrations();
     // deleting structures that cant be serialized
     // @ts-ignore I dont want to make it optional
     delete this._nodes;
@@ -1321,6 +1438,19 @@ export class MultisigHDWallet extends AbstractHDElectrumWallet {
     if (fingerprint !== calculatedFingerprint) {
       throw new Error('Fingerprint of new seed doesnt match');
     }
+    const previousXpub = this._getXpubFromCosignerIndex(index);
+    const path = this._cosignersCustomPaths[index] || this._derivationPath;
+    const storedFingerprint = fingerprint?.toLowerCase();
+    const replacementXpub = MultisigHDWallet.seedToXpub(mnemonic, path, passphrase);
+    if (!sameBhwiExtendedPublicKey(previousXpub, replacementXpub)) {
+      this.invalidateHardwareWalletRegistrations();
+      this._hardwareWalletAssociations = this._hardwareWalletAssociations.filter(
+        association =>
+          association.fingerprint !== storedFingerprint ||
+          association.path !== normalizeDerivationPath(path) ||
+          !sameBhwiExtendedPublicKey(association.xpub, previousXpub),
+      );
+    }
     this._cosigners[index] = mnemonic.trim();
     this._cosignersPassphrases[index] = passphrase || undefined;
   }
@@ -1348,8 +1478,9 @@ export class MultisigHDWallet extends AbstractHDElectrumWallet {
     if (foundIndex === -1) throw new Error('Cant find cosigner by fingerprint');
     const deletedFingerprint = this._cosignersFingerprints[foundIndex].toLowerCase();
     const deletedPath = this._cosignersCustomPaths[foundIndex] || this.getDerivationPath();
-    const deletedKey = this._cosigners[foundIndex];
+    const deletedKey = this._getXpubFromCosignerIndex(foundIndex);
 
+    this.invalidateHardwareWalletRegistrations();
     this._cosignersFingerprints = this._cosignersFingerprints.filter((_el, index) => index !== foundIndex);
     this._cosigners = this._cosigners.filter((_el, index) => index !== foundIndex);
     this._cosignersCustomPaths = this._cosignersCustomPaths.filter((_el, index) => index !== foundIndex);

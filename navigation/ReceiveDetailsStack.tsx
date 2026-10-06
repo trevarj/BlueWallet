@@ -3,6 +3,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { useTheme } from '../components/themes';
 import loc from '../loc';
 import ReceiveDetails from '../screen/receive/ReceiveDetails';
+import HardwareWalletAccount from '../screen/wallets/HardwareWalletAccount';
 import navigationStyle, { CloseButtonPosition, withRouteParamHeaderOptions, receiveSheetOptions } from '../components/navigationStyle';
 import { ReceiveDetailsStackParamList } from './ReceiveDetailsStackParamList';
 import ReceiveCustomAmountSheet from '../screen/receive/ReceiveCustomAmountSheet';
@@ -28,6 +29,11 @@ const ReceiveDetailsStack = () => {
           },
           withRouteParamHeaderOptions({ headerLeft: true, headerRight: false, headerBackVisible: true }),
         )(theme)}
+      />
+      <Stack.Screen
+        name="HardwareWalletAccount"
+        component={HardwareWalletAccount}
+        options={navigationStyle({ title: loc.wallets.hardware_title })(theme)}
       />
       <Stack.Screen
         name="ReceiveCustomAmount"

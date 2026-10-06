@@ -171,6 +171,12 @@ const ViewEditMultisigCosigners: React.FC = () => {
           } else {
             try {
               tempWallet.current.setSecret(w.current.getSecret());
+              for (const association of (w.current as MultisigHDWallet).getHardwareWalletAssociations()) {
+                tempWallet.current.addHardwareWalletAssociation(association);
+              }
+              for (const registration of (w.current as MultisigHDWallet).getHardwareWalletRegistrations()) {
+                tempWallet.current.addHardwareWalletRegistration(registration);
+              }
               if (!cancelled) {
                 setWalletData(new Array(tempWallet.current.getN()));
                 setWallet(tempWallet.current);

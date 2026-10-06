@@ -1,12 +1,17 @@
 import type { NativeStackNavigationOptions } from '@react-navigation/native-stack';
+import type { BhwiAddressSnapshot, BhwiOperationRouteParams } from '../blue_modules/bhwi';
 
 type HeaderLeftRenderer = NonNullable<NativeStackNavigationOptions['headerLeft']>;
 type HeaderRightRenderer = NonNullable<NativeStackNavigationOptions['headerRight']>;
 
 export type ReceiveDetailsStackParamList = {
+  HardwareWalletAccount: BhwiOperationRouteParams;
   ReceiveDetails: {
     walletID?: string;
     address?: string;
+    addressIndex?: number;
+    isInternal?: boolean;
+    hardwareVerification?: BhwiAddressSnapshot;
     allowBIP47?: boolean;
     isBIP47Enabled?: boolean;
     toggleBIP47RequestedAt?: number;

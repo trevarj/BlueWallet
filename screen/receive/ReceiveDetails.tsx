@@ -10,11 +10,15 @@ import * as BlueElectrum from '../../blue_modules/BlueElectrum';
 import { fiatToBTC, satoshiToBTC } from '../../blue_modules/currency';
 import triggerHapticFeedback, { HapticFeedbackTypes } from '../../blue_modules/hapticFeedback';
 import { majorTomToGroundControl, tryToObtainPermissions } from '../../blue_modules/notifications';
+import { isBhwiAvailable, matchesBhwiAddressSnapshot, resolveBhwiAddressSnapshot } from '../../blue_modules/bhwi';
+import type { BhwiAddressSnapshot } from '../../blue_modules/bhwi';
 import AddressLabelBadge from '../../components/AddressLabelBadge';
 import BlueButtonLink from '../../components/BlueButtonLink';
 import BlueCard from '../../components/BlueCard';
 import BlueText from '../../components/BlueText';
 import DeeplinkSchemaMatch from '../../class/deeplink-schema-match';
+import { MultisigHDWallet } from '../../class/wallets/multisig-hd-wallet';
+import { WatchOnlyWallet } from '../../class/wallets/watch-only-wallet';
 import presentAlert from '../../components/Alert';
 import Button from '../../components/Button';
 import CopyTextToClipboard, { CopyTextToClipboardHandle } from '../../components/CopyTextToClipboard';
@@ -149,7 +153,7 @@ type RouteProps = RouteProp<ReceiveDetailsStackParamList, 'ReceiveDetails'>;
 
 const ReceiveDetails = () => {
   const route = useRoute<RouteProps>();
-  const { walletID, address } = route.params;
+  const { walletID, address, addressIndex, isInternal, hardwareVerification } = route.params;
   const { wallets, saveToDisk, sleep, fetchAndSaveWalletTransactions, addressMetadata } = useStorage();
   const { isElectrumDisabled } = useSettings();
   const { colors } = useTheme();
@@ -170,8 +174,15 @@ const ReceiveDetails = () => {
   const [initialUnconfirmed, setInitialUnconfirmed] = useState(0);
   const [displayBalance, setDisplayBalance] = useState('');
   const [qrCodeSize, setQRCodeSize] = useState(90);
+  const [verifiedSnapshot, setVerifiedSnapshot] = useState<BhwiAddressSnapshot>();
 
   const wallet = walletID ? wallets.find(w => w.getID() === walletID) : undefined;
+  const hasHardwareAssociation =
+    wallet instanceof WatchOnlyWallet
+      ? !!wallet.getHardwareWalletAssociation()
+      : wallet instanceof MultisigHDWallet
+        ? wallet.getHardwareWalletAssociations().length > 0
+        : false;
   const isUnsupportedServiceWallet = !mainnetServicesEnabled && wallet?.chain === Chain.OFFCHAIN;
   const isBIP47Enabled = mainnetServicesEnabled && wallet?.allowBIP47() && wallet?.isBIP47Enabled();
 
@@ -235,9 +246,14 @@ const ReceiveDetails = () => {
   }, []);
 
   const setAddressBIP21Encoded = useCallback(
-    (addr: string) => {
+    (addr: string, snapshot?: BhwiAddressSnapshot) => {
       const newBip21encoded = DeeplinkSchemaMatch.bip21encode(addr);
-      setParams({ address: addr });
+      setParams({
+        address: addr,
+        addressIndex: snapshot?.index,
+        isInternal: snapshot?.isInternal,
+        hardwareVerification: undefined,
+      });
       setBip21encoded(newBip21encoded);
       setShowAddress(true);
     },
@@ -265,16 +281,22 @@ const ReceiveDetails = () => {
       return;
     }
 
-    let newAddress;
+    let newAddress: string | false | undefined;
+    let newAddressSnapshot: BhwiAddressSnapshot | undefined;
     if (wallet.chain === Chain.ONCHAIN) {
       try {
-        if (!isElectrumDisabled) newAddress = await Promise.race([wallet.getAddressAsync(), sleep(1000)]);
+        if (!isElectrumDisabled) {
+          const resolvedAddress = await Promise.race([wallet.getAddressAsync(), sleep(1000)]);
+          if (resolvedAddress !== undefined) newAddress = resolvedAddress;
+        }
       } catch (error) {
         console.warn('Error fetching wallet address (ONCHAIN):', error);
       }
       if (newAddress === undefined) {
-        if ('_getExternalAddressByIndex' in wallet) {
-          newAddress = wallet._getExternalAddressByIndex(wallet.getNextFreeAddressIndex());
+        if ('_getExternalAddressByIndex' in wallet && 'getNextFreeAddressIndex' in wallet) {
+          const index = wallet.getNextFreeAddressIndex();
+          newAddress = wallet._getExternalAddressByIndex(index);
+          if (typeof newAddress === 'string') newAddressSnapshot = { address: newAddress, index, isInternal: false };
         } else {
           newAddress = wallet.getAddress();
         }
@@ -301,7 +323,8 @@ const ReceiveDetails = () => {
       return;
     }
 
-    setAddressBIP21Encoded(newAddress);
+    newAddressSnapshot ??= resolveBhwiAddressSnapshot(wallet, newAddress);
+    setAddressBIP21Encoded(newAddress, newAddressSnapshot);
 
     try {
       await tryToObtainPermissions();
@@ -320,9 +343,31 @@ const ReceiveDetails = () => {
   useEffect(() => {
     if (isUnsupportedServiceWallet) return;
     if (address && !isCustom) {
-      setAddressBIP21Encoded(address);
+      const hint = typeof addressIndex === 'number' && typeof isInternal === 'boolean' ? { index: addressIndex, isInternal } : undefined;
+      setAddressBIP21Encoded(address, wallet ? resolveBhwiAddressSnapshot(wallet, address, hint) : undefined);
     }
-  }, [address, isCustom, isUnsupportedServiceWallet, setAddressBIP21Encoded]);
+  }, [address, addressIndex, isCustom, isInternal, isUnsupportedServiceWallet, setAddressBIP21Encoded, wallet]);
+
+  useEffect(() => {
+    setVerifiedSnapshot(undefined);
+  }, [address, addressIndex, isInternal, walletID]);
+
+  useEffect(() => {
+    if (!hardwareVerification) return;
+    setParams({ hardwareVerification: undefined });
+    const isCurrentSnapshot =
+      !!wallet &&
+      hardwareVerification.address === address &&
+      hardwareVerification.index === addressIndex &&
+      hardwareVerification.isInternal === isInternal &&
+      matchesBhwiAddressSnapshot(wallet, hardwareVerification);
+    if (isCurrentSnapshot) {
+      setVerifiedSnapshot(hardwareVerification);
+    } else {
+      setVerifiedSnapshot(undefined);
+      presentAlert({ title: loc.errors.error, message: loc.wallets.hardware_mismatch });
+    }
+  }, [address, addressIndex, hardwareVerification, isInternal, setParams, wallet]);
 
   // Derived read: the label sheet mutates addressMetadata in place, and saving re-renders this screen.
   const addressLabel = address ? (addressMetadata[address]?.label ?? '') : '';
@@ -654,6 +699,27 @@ const ReceiveDetails = () => {
     }, [wallet, address, obtainWalletAddress, setAddressBIP21Encoded, isCustom, hasIncomingCustomParams, isUnsupportedServiceWallet]),
   );
 
+  const verifyAddressOnDevice = useCallback(() => {
+    if (!walletID || !wallet || !address) {
+      presentAlert({ title: loc.errors.error, message: loc.wallets.hardware_address_unknown });
+      return;
+    }
+    const hint = typeof addressIndex === 'number' && typeof isInternal === 'boolean' ? { index: addressIndex, isInternal } : undefined;
+    const snapshot = resolveBhwiAddressSnapshot(wallet, address, hint);
+    if (!snapshot) {
+      presentAlert({ title: loc.errors.error, message: loc.wallets.hardware_address_unknown });
+      return;
+    }
+    setVerifiedSnapshot(undefined);
+    navigate('HardwareWalletAccount', { mode: 'verify-address', walletID, snapshot });
+  }, [address, addressIndex, isInternal, navigate, wallet, walletID]);
+
+  const isAddressVerified =
+    !!verifiedSnapshot &&
+    verifiedSnapshot.address === address &&
+    verifiedSnapshot.index === addressIndex &&
+    verifiedSnapshot.isInternal === isInternal;
+
   const showMoreOptionsSheet = useCallback(() => {
     if (isUnsupportedServiceWallet) {
       presentAlert({ title: loc.errors.error, message: loc._.mainnet_services_unavailable });
@@ -802,6 +868,21 @@ const ReceiveDetails = () => {
 
         <View style={styles.share}>
           <BlueCard>
+            {showAddress && currentTab === segmentControlValues[0] && hasHardwareAssociation && isBhwiAvailable() && (
+              <>
+                <BlueButtonLink
+                  style={styles.link}
+                  testID="VerifyAddressOnDevice"
+                  title={loc.wallets.hardware_verify_address}
+                  onPress={verifyAddressOnDevice}
+                />
+                {isAddressVerified && (
+                  <BlueText style={styles.verified} testID="AddressVerifiedOnDevice">
+                    {loc.wallets.hardware_address_verified}
+                  </BlueText>
+                )}
+              </>
+            )}
             {showAddress && currentTab === loc.wallets.details_address && (
               <BlueButtonLink
                 style={styles.link}
@@ -843,6 +924,10 @@ const styles = StyleSheet.create({
   link: {
     marginVertical: 16,
     paddingHorizontal: 32,
+  },
+  verified: {
+    textAlign: 'center',
+    marginBottom: 8,
   },
   amount: {
     fontWeight: '600',

@@ -19,6 +19,7 @@ import RBFCancel from '../screen/transactions/RBFCancel';
 import TransactionStatus from '../screen/transactions/TransactionStatus';
 import WalletAddresses from '../screen/wallets/WalletAddresses';
 import WalletDetails from '../screen/wallets/WalletDetails';
+import HardwareWalletAccount from '../screen/wallets/HardwareWalletAccount';
 import GenerateWord from '../screen/wallets/generateWord';
 import SelectWallet from '../screen/wallets/SelectWallet';
 import WalletsList from '../screen/wallets/WalletsList';
@@ -382,6 +383,11 @@ const DetailViewStackScreensStack = () => {
               backgroundColor: theme.colors.background,
             },
           })(theme)}
+        />
+        <DetailViewStack.Screen
+          name="HardwareWalletAccount"
+          component={HardwareWalletAccount}
+          options={navigationStyle({ title: loc.wallets.hardware_title })(theme)}
         />
         <DetailViewStack.Screen
           name="TransactionStatus"

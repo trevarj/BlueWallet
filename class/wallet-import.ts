@@ -22,14 +22,20 @@ import { WatchOnlyWallet } from './wallets/watch-only-wallet';
 import bip39WalletFormatsElectrum from './bip39_wallet_formats.json'; // https://github.com/spesmilo/electrum/blob/master/electrum/bip39_wallet_formats.json
 import bip39WalletFormatsBlueWallet from './bip39_wallet_formats_bluewallet.json';
 import type { TWallet } from './wallets/types';
-import { assertMainnetServicesEnabled, bitcoinNetwork, coinType, mapStandardAccountPath, network } from '../models/bitcoinNetwork';
+import {
+  assertMainnetServicesEnabled,
+  bitcoinNetwork,
+  coinType,
+  mapStandardAccountPath,
+  network,
+  normalizeDerivationPath,
+} from '../models/bitcoinNetwork';
 import { convertExtendedKey, decodeExtendedKey } from './wallets/extended-key';
 
 // Canonicalize a user-typed derivation path: trim, iOS smart quotes and h/H hardened notation
 // become ', a leading M becomes m. The stored form must use ' because bitcoinjs derivePath
 // rejects h notation (its schema is /^(m\/)?(\d+'?\/)*\d+'?$/).
-export const normalizeDerivationPath = (path: string): string =>
-  path.trim().replace(/[‘’]/g, "'").replace(/[hH]/g, "'").replace(/^M\//, 'm/');
+export { normalizeDerivationPath };
 
 // https://github.com/bitcoinjs/bip32/blob/master/ts-src/bip32.ts#L43
 // require m/ so bip174 does not drop the first path level (it treats index 0 as m); normalize

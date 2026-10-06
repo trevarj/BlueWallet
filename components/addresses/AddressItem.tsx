@@ -78,9 +78,11 @@ const AddressItem = ({
       navigate('ReceiveDetails', {
         walletID,
         address: item.address,
+        addressIndex: item.index,
+        isInternal: item.isInternal,
       });
     }
-  }, [navigate, walletID, item.address, onPress]);
+  }, [navigate, walletID, item.address, item.index, item.isInternal, onPress]);
 
   const navigateToSignVerify = useCallback(() => {
     navigate('SignVerifyRoot', {

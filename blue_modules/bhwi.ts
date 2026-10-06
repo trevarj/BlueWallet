@@ -1,10 +1,13 @@
 /* eslint-disable no-bitwise */
 import { PermissionsAndroid, Platform } from 'react-native';
+import Keychain, { ACCESSIBLE } from 'react-native-keychain';
+import { sha256 } from '@noble/hashes/sha256';
 import { randomBytes } from '../class/rng';
 import { decodeExtendedKey } from '../class/wallets/extended-key';
+import { uint8ArrayToHex } from './uint8array-extras';
 import NativeBhwi from '../codegen/NativeBhwi';
 import type { Account, BhwiAccountFormat, BhwiFamily, Device, DeviceInfo, Policy, Registration } from '../codegen/NativeBhwi';
-import { coinType } from '../models/bitcoinNetwork';
+import { bitcoinNetwork, coinType } from '../models/bitcoinNetwork';
 
 export const BHWI_ERROR_CODES = [
   'BHWI_UNAVAILABLE',
@@ -59,10 +62,38 @@ export type HardwareWalletAssociation = {
   format: BhwiImportFormat;
 };
 
+export type HardwareWalletRegistration = HardwareWalletAssociation & {
+  status: 'complete' | 'pending';
+  network: typeof bitcoinNetwork;
+  name: string;
+  descriptor: string;
+  hmacService?: string;
+};
+
+export type BhwiAddressSnapshot = {
+  address: string;
+  index: number;
+  isInternal: boolean;
+};
+
+export type BhwiOperationRouteParams =
+  | {
+      mode: 'register-wallet';
+      walletID: string;
+      hardwareAccount: HardwareWalletAssociation;
+    }
+  | {
+      mode: 'verify-address';
+      walletID: string;
+      snapshot: BhwiAddressSnapshot;
+    };
+
 export const BHWI_MAX_ACCOUNT_INDEX = 0x7fffffff;
 export const BHWI_SINGLESIG_FORMATS: readonly BhwiSinglesigFormat[] = ['legacy', 'nested-segwit', 'native-segwit', 'taproot'];
 
 const BHWI_FAMILIES: readonly BhwiFamily[] = ['bitbox02', 'coldcard', 'jade', 'ledger', 'keepkey', 'specter', 'trezor'];
+const BHWI_LEDGER_HMAC_SERVICE_PREFIX = 'bluewallet.bhwi.ledger-policy.';
+const HMAC_HEX_PATTERN = /^[0-9a-f]{64}$/;
 const BHWI_IMPORT_FORMATS: readonly BhwiImportFormat[] = [...BHWI_SINGLESIG_FORMATS, 'multisig-wrapped', 'multisig-native'];
 const formatPurpose: Record<BhwiImportFormat, number> = {
   legacy: 44,
@@ -123,6 +154,124 @@ export function supportsBhwiAccountFormat(info: Pick<DeviceInfo, 'family' | 'mod
     case 'trezor':
       return format !== 'taproot' || info.model === 'T';
   }
+}
+
+export const supportsBhwiRegistration = (family: BhwiFamily): boolean => family !== 'trezor' && family !== 'keepkey';
+
+export const supportsBhwiDescriptorDisplay = (family: BhwiFamily, descriptor: string): boolean => {
+  const policy = descriptor.trim().split('#', 1)[0];
+  if (family === 'ledger') return true;
+  if (family === 'specter') return !policy.startsWith('tr(');
+  if (family !== 'bitbox02' && family !== 'jade') return false;
+  if (policy.startsWith('tr(') || policy.startsWith('sh(sortedmulti(') || policy.startsWith('sh(multi(')) return false;
+  return family !== 'bitbox02' || !policy.startsWith('pkh(');
+};
+
+export const supportsBhwiRawMultisigDisplay = (family: BhwiFamily): boolean => family !== 'specter';
+
+export const getBhwiPolicyName = (descriptor: string): string => `bw_${uint8ArrayToHex(sha256(descriptor)).slice(0, 12)}`;
+
+export const getBhwiLedgerHmacService = (descriptor: string, association: HardwareWalletAssociation): string => {
+  const binding = [
+    bitcoinNetwork,
+    getBhwiPolicyName(descriptor),
+    descriptor,
+    association.family,
+    association.fingerprint,
+    association.path,
+    association.xpub,
+    association.format,
+  ].join('\0');
+  return `${BHWI_LEDGER_HMAC_SERVICE_PREFIX}${uint8ArrayToHex(sha256(binding))}`;
+};
+
+export async function storeBhwiLedgerHmac(service: string, hmacHex: string): Promise<void> {
+  const canonical = hmacHex.toLowerCase();
+  if (!service.startsWith(BHWI_LEDGER_HMAC_SERVICE_PREFIX) || !HMAC_HEX_PATTERN.test(canonical)) {
+    throw new BhwiError('BHWI_INVALID_INPUT');
+  }
+  const stored = await Keychain.setGenericPassword(service, canonical, {
+    service,
+    accessible: ACCESSIBLE.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+  });
+  if (!stored) throw new BhwiError('BHWI_INTERNAL');
+}
+
+export async function getBhwiLedgerHmac(service: string): Promise<string> {
+  if (!service.startsWith(BHWI_LEDGER_HMAC_SERVICE_PREFIX)) throw new BhwiError('BHWI_INVALID_INPUT');
+  const credentials = await Keychain.getGenericPassword({ service });
+  if (!credentials || credentials.username !== service || !HMAC_HEX_PATTERN.test(credentials.password)) {
+    throw new BhwiError('BHWI_INTERNAL');
+  }
+  return credentials.password;
+}
+
+type BhwiAddressWallet = {
+  _hdWalletInstance?: BhwiAddressWallet;
+  _getExternalAddressByIndex?: (index: number) => string;
+  _getInternalAddressByIndex?: (index: number) => string;
+  external_addresses_cache?: Record<number, string>;
+  internal_addresses_cache?: Record<number, string>;
+  next_free_address_index?: number;
+  next_free_change_address_index?: number;
+  gap_limit?: number;
+};
+
+const deriveBhwiAddress = (wallet: BhwiAddressWallet, isInternal: boolean, index: number): string | undefined => {
+  if (!Number.isSafeInteger(index) || index < 0 || index > 0x7fffffff) return undefined;
+  const target = wallet._hdWalletInstance ?? wallet;
+  const derive = isInternal ? target._getInternalAddressByIndex : target._getExternalAddressByIndex;
+  if (!derive) return undefined;
+  try {
+    return derive.call(target, index);
+  } catch {
+    return undefined;
+  }
+};
+
+export function requireBhwiDisplayedAddress(snapshot: BhwiAddressSnapshot, displayedAddress: string): void {
+  if (displayedAddress !== snapshot.address) throw new BhwiError('BHWI_INVALID_INPUT');
+}
+
+export function matchesBhwiAddressSnapshot(wallet: unknown, snapshot: BhwiAddressSnapshot): boolean {
+  if (typeof wallet !== 'object' || wallet === null || typeof snapshot.address !== 'string') return false;
+  return deriveBhwiAddress(wallet as BhwiAddressWallet, snapshot.isInternal, snapshot.index) === snapshot.address;
+}
+
+export function resolveBhwiAddressSnapshot(
+  wallet: unknown,
+  address: string,
+  hint?: Pick<BhwiAddressSnapshot, 'index' | 'isInternal'>,
+): BhwiAddressSnapshot | undefined {
+  if (typeof wallet !== 'object' || wallet === null || !address) return undefined;
+  const candidate = wallet as BhwiAddressWallet;
+  if (hint) {
+    const snapshot = { address, ...hint };
+    return matchesBhwiAddressSnapshot(candidate, snapshot) ? snapshot : undefined;
+  }
+  const target = candidate._hdWalletInstance ?? candidate;
+  const matches: BhwiAddressSnapshot[] = [];
+  const addCached = (cache: Record<number, string> | undefined, isInternal: boolean) => {
+    for (const [rawIndex, cachedAddress] of Object.entries(cache ?? {})) {
+      const index = Number(rawIndex);
+      if (cachedAddress === address && Number.isSafeInteger(index) && index >= 0) matches.push({ address, index, isInternal });
+    }
+  };
+  addCached(target.external_addresses_cache, false);
+  addCached(target.internal_addresses_cache, true);
+  if (matches.length === 1) return matches[0];
+  if (matches.length > 1) return undefined;
+
+  const gapLimit = Number.isSafeInteger(target.gap_limit) && (target.gap_limit ?? 0) >= 0 ? target.gap_limit! : 0;
+  const externalLimit = (target.next_free_address_index ?? 0) + gapLimit;
+  for (let index = 0; index < externalLimit; index++) {
+    if (deriveBhwiAddress(target, false, index) === address) matches.push({ address, index, isInternal: false });
+  }
+  const changeLimit = target.next_free_change_address_index ?? 0;
+  for (let index = 0; index <= changeLimit; index++) {
+    if (deriveBhwiAddress(target, true, index) === address) matches.push({ address, index, isInternal: true });
+  }
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 const DESCRIPTOR_INPUT_CHARSET = '0123456789()[],\'/*abcdefgh@:$%{}IJKLMNOPQRSTUVWXYZ&+-.;<=>?!^_|~ijklmnopqrstuvwxyzABCDEFGH`#"\\ ';
@@ -227,6 +376,55 @@ export function parseHardwareWalletAssociation(value: unknown): HardwareWalletAs
     xpub: candidate.xpub,
     format: candidate.format,
   };
+}
+export function parseHardwareWalletRegistration(value: unknown): HardwareWalletRegistration | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const candidate = value as Partial<HardwareWalletRegistration>;
+  const association = parseHardwareWalletAssociation(candidate);
+  if (
+    !association ||
+    !supportsBhwiRegistration(association.family) ||
+    (candidate.status !== 'complete' && candidate.status !== 'pending') ||
+    candidate.network !== bitcoinNetwork ||
+    typeof candidate.descriptor !== 'string' ||
+    candidate.descriptor.length === 0 ||
+    candidate.name !== getBhwiPolicyName(candidate.descriptor)
+  ) {
+    return undefined;
+  }
+  const expectedService = getBhwiLedgerHmacService(candidate.descriptor, association);
+  if (
+    (candidate.status === 'pending' && candidate.hmacService !== undefined) ||
+    (association.family === 'ledger' && candidate.status === 'complete' && candidate.hmacService !== expectedService) ||
+    (association.family !== 'ledger' && candidate.hmacService !== undefined)
+  ) {
+    return undefined;
+  }
+  return {
+    ...association,
+    status: candidate.status,
+    network: bitcoinNetwork,
+    name: getBhwiPolicyName(candidate.descriptor),
+    descriptor: candidate.descriptor,
+    ...(candidate.hmacService ? { hmacService: candidate.hmacService } : {}),
+  };
+}
+
+export function createHardwareWalletRegistration(
+  association: HardwareWalletAssociation,
+  descriptor: string,
+  status: Registration['status'],
+): HardwareWalletRegistration {
+  const value = parseHardwareWalletRegistration({
+    ...association,
+    status,
+    network: bitcoinNetwork,
+    name: getBhwiPolicyName(descriptor),
+    descriptor,
+    ...(association.family === 'ledger' && status === 'complete' ? { hmacService: getBhwiLedgerHmacService(descriptor, association) } : {}),
+  });
+  if (!value) throw new BhwiError('BHWI_INVALID_INPUT');
+  return value;
 }
 export function verifyBhwiAccount(
   info: DeviceInfo,

@@ -19,7 +19,7 @@ import { withLazySuspense } from './LazyLoadingIndicator';
 import { ScanQRCodeParamList } from './DetailViewStackParamList';
 import { navigationGuardRouter } from './navigationGuard';
 import { mainnetServicesEnabled } from '../models/bitcoinNetwork';
-import type { BhwiMultisigFormat, HardwareWalletAssociation } from '../blue_modules/bhwi';
+import type { BhwiMultisigFormat, BhwiOperationRouteParams, HardwareWalletAssociation } from '../blue_modules/bhwi';
 
 type HeaderRightRenderer = NonNullable<NativeStackNavigationOptions['headerRight']>;
 
@@ -50,7 +50,8 @@ export type AddWalletStackParamList = {
         mode: 'multisig-cosigner';
         format: BhwiMultisigFormat;
         returnTo: 'WalletsAddMultisigStep2';
-      };
+      }
+    | BhwiOperationRouteParams;
   ImportWalletDiscovery: {
     importText: string;
     askPassphrase: boolean;

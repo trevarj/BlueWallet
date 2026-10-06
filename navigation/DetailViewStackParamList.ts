@@ -6,6 +6,7 @@ import { PromptPasswordConfirmationParams } from '../screen/PromptPasswordConfir
 import { ElectrumServerItem } from '../screen/settings/ElectrumSettings';
 import { SendDetailsParams, TNavigationWrapper } from './SendDetailsStackParamList';
 import { ClipboardPaymentKind } from '../blue_modules/clipboardPayment';
+import type { BhwiAddressSnapshot, BhwiOperationRouteParams } from '../blue_modules/bhwi';
 
 export type ScanQRCodeParamList = {
   cameraStatusGranted?: boolean;
@@ -43,6 +44,7 @@ export type DetailViewStackParamList = {
   WalletsList: { onBarScanned?: string };
   WalletTransactions: { isLoading?: boolean; walletID: string; walletType: string; onBarScanned?: string };
   WalletDetails: { walletID: string };
+  HardwareWalletAccount: BhwiOperationRouteParams;
   // TODO: type tx properly once Transaction and ElectrumTransaction are unified
   TransactionStatus: { hash: string; walletID: string; tx?: any };
   CPFP: {
@@ -147,6 +149,9 @@ export type DetailViewStackParamList = {
   ReceiveDetails: {
     walletID?: string;
     address: string;
+    addressIndex?: number;
+    isInternal?: boolean;
+    hardwareVerification?: BhwiAddressSnapshot;
     allowBIP47?: boolean;
     isBIP47Enabled?: boolean;
     toggleBIP47RequestedAt?: number;

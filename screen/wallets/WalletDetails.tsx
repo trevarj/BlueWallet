@@ -12,6 +12,7 @@ import {
 } from '../../blue_modules/fs';
 import triggerHapticFeedback, { HapticFeedbackTypes } from '../../blue_modules/hapticFeedback';
 import { uint8ArrayToHex } from '../../blue_modules/uint8array-extras';
+import { isBhwiAvailable, supportsBhwiRegistration } from '../../blue_modules/bhwi';
 import BlueCard from '../../components/BlueCard';
 import BlueText from '../../components/BlueText';
 import { HDAezeedWallet } from '../../class/wallets/hd-aezeed-wallet';
@@ -96,6 +97,7 @@ const WalletDetails: React.FC = () => {
   const [selectedNoteOverwrites, setSelectedNoteOverwrites] = useState<Set<string>>(new Set());
   const walletTransactionsLength = useMemo<number>(() => wallet.getTransactions().length, [wallet]);
   const [coinControlStats, setCoinControlStats] = useState(() => getCoinControlStats(wallet));
+  const hardwareWalletAssociations = wallet instanceof MultisigHDWallet ? wallet.getHardwareWalletAssociations() : [];
 
   useEffect(() => {
     const w = walletRef.current;
@@ -818,6 +820,42 @@ const WalletDetails: React.FC = () => {
                 {isContactsVisible ? (
                   <SettingsListItem onPress={navigateToContacts} title={loc.bip47.contacts} chevron bottomDivider={false} />
                 ) : null}
+              </SettingsSection>
+            )}
+
+            {isBhwiAvailable() && hardwareWalletAssociations.length > 0 && wallet instanceof MultisigHDWallet && (
+              <SettingsSection title={loc.wallets.hardware_registration}>
+                {hardwareWalletAssociations.map((association, index) => {
+                  const registration = wallet.getHardwareWalletRegistration(association);
+                  const supported = supportsBhwiRegistration(association.family);
+                  const registrationStatus = !supported
+                    ? loc.wallets.hardware_registration_unsupported_on_use
+                    : registration?.status === 'pending'
+                      ? loc.wallets.hardware_registration_pending
+                      : registration?.status === 'complete'
+                        ? loc.wallets.hardware_registration_complete
+                        : loc.wallets.hardware_registration_not_registered;
+                  return (
+                    <SettingsListItem
+                      key={`${association.family}-${association.fingerprint}-${association.path}`}
+                      testID={`RegisterHardwareWallet-${association.fingerprint}`}
+                      title={supported ? loc.wallets.hardware_register_wallet : loc.wallets.hardware_registration_unsupported}
+                      subtitle={`${association.family} · ${registrationStatus}`}
+                      onPress={
+                        supported
+                          ? () =>
+                              navigate('HardwareWalletAccount', {
+                                mode: 'register-wallet',
+                                walletID,
+                                hardwareAccount: association,
+                              })
+                          : undefined
+                      }
+                      chevron={supported}
+                      bottomDivider={index < hardwareWalletAssociations.length - 1}
+                    />
+                  );
+                })}
               </SettingsSection>
             )}
 

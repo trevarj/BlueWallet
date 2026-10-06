@@ -18,11 +18,11 @@ export const assertMainnetServicesEnabled = (): void => {
 export const network = bitcoinNetwork === 'testnet' ? networks.testnet : networks.bitcoin;
 export const coinType = bitcoinNetwork === 'testnet' ? 1 : 0;
 
+export const normalizeDerivationPath = (path: string): string =>
+  path.trim().replace(/[‘’]/g, "'").replace(/[hH]/g, "'").replace(/^M\//, 'm/');
+
 export const isCompatibleOrigin = (path: string): boolean => {
-  const normalizedPath = path
-    .trim()
-    .replace(/[hH‘’]/g, "'")
-    .replace(/^M\//, 'm/');
+  const normalizedPath = normalizeDerivationPath(path);
   const conventionalOrigin = normalizedPath.match(/^m\/(?:44|48|49|84|86)'\/(\d+)'(?:\/|$)/);
   return !conventionalOrigin || Number(conventionalOrigin[1]) === coinType;
 };
@@ -30,10 +30,7 @@ export const isCompatibleOrigin = (path: string): boolean => {
 export type MultisigPathFormat = 'legacy' | 'wrapped' | 'native';
 
 export const getMultisigPathFormat = (path: string): MultisigPathFormat | undefined => {
-  const normalizedPath = path
-    .trim()
-    .replace(/[hH‘’]/g, "'")
-    .replace(/^M\//, 'm/');
+  const normalizedPath = normalizeDerivationPath(path);
   if (normalizedPath === "m/45'") return 'legacy';
   const bip48 = normalizedPath.match(/^m\/48'\/(\d+)'\/\d+'\/([12])'$/);
   if (!bip48 || Number(bip48[1]) !== coinType) return undefined;
