@@ -14,6 +14,7 @@ import {
   BHWI_SIGNING_SESSION_EXPIRED,
   assertBhwiPsbtContinuationToken,
   assertBhwiPsbtAttemptCurrent,
+  getBhwiImportedPsbtDestination,
   hydrateBhwiPsbt,
   validateBhwiBoundPsbt,
 } from '../../blue_modules/bhwiPsbt';
@@ -263,6 +264,51 @@ function makeTaprootFixture(): {
     },
   };
 }
+
+test('selects only hardware-bound imported PSBT destinations for the selected wallet', () => {
+  const singlesig = makeSinglesigFixture();
+  assert.strictEqual(getBhwiImportedPsbtDestination(singlesig.wallet), undefined);
+  singlesig.wallet.setHardwareWalletAssociation({
+    family: 'ledger',
+    fingerprint: singlesig.signer.fingerprint,
+    path: singlesig.signer.path,
+    xpub: singlesig.signer.xpub,
+    format: 'native-segwit',
+  });
+  assert.strictEqual(getBhwiImportedPsbtDestination(singlesig.wallet), 'PsbtWithHardwareWallet');
+
+  const phoneMnemonic = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
+  const hardwareRoot = bip32.fromSeed(
+    Uint8Array.from({ length: 32 }, (_unused, index) => index + 91),
+    network,
+  );
+  const hardwareAccount = hardwareRoot.derivePath(multisigPath);
+  const hardwareAssociation = {
+    family: 'ledger' as const,
+    fingerprint: fingerprint(hardwareRoot),
+    path: multisigPath,
+    xpub: hardwareAccount.neutered().toBase58(),
+    format: 'multisig-native' as const,
+  };
+  const hardwareMobile = new MultisigHDWallet();
+  hardwareMobile.setM(2);
+  hardwareMobile.setDerivationPath(multisigPath);
+  hardwareMobile.addCosigner(phoneMnemonic, undefined, multisigPath);
+  hardwareMobile.addCosigner(hardwareAssociation.xpub, hardwareAssociation.fingerprint, multisigPath);
+  hardwareMobile.addHardwareWalletAssociation(hardwareAssociation);
+  assert.strictEqual(getBhwiImportedPsbtDestination(hardwareMobile), 'PsbtMultisig');
+
+  const unrelatedMultisig = makeMultisigFixture();
+  const unrelatedSigner = required(unrelatedMultisig.signers[0]);
+  unrelatedMultisig.wallet.addHardwareWalletAssociation({
+    family: 'ledger',
+    fingerprint: unrelatedSigner.fingerprint,
+    path: unrelatedSigner.path,
+    xpub: unrelatedSigner.xpub,
+    format: 'multisig-native',
+  });
+  assert.strictEqual(getBhwiImportedPsbtDestination(unrelatedMultisig.wallet), undefined);
+});
 
 test('binds key-path Taproot verification to the observed signature sighash byte', () => {
   const fixture = makeTaprootFixture();

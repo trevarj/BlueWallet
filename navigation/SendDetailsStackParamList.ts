@@ -101,6 +101,7 @@ export type SendDetailsStackParamList = {
     txhex?: string;
     deepLinkPSBT?: string;
     onBarScanned?: string;
+    onBarScannedFromPicker?: boolean;
     bhwiBound?: boolean;
     bhwiOriginalBase64?: string;
     bhwiReturnedBase64?: string;
@@ -129,7 +130,9 @@ export type SendDetailsStackParamList = {
     walletID: string;
     launchedBy?: string;
     receivedPSBTBase64?: string;
+    onBarScannedFromPicker?: boolean;
     txhex?: string;
+    bhwiBound?: boolean;
     bhwiOriginalBase64?: string;
     bhwiReturnedBase64?: string;
     bhwiAttempt?: number;
@@ -142,6 +145,7 @@ export type SendDetailsStackParamList = {
     launchedBy?: string;
     isShowOpenScanner?: boolean;
     onBarScanned?: string;
+    onBarScannedFromPicker?: boolean;
     multisigContinuation?: string;
   };
   Success: {

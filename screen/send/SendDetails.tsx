@@ -28,7 +28,7 @@ import RNFS from 'react-native-fs';
 import { btcToSatoshi, fiatToBTC } from '../../blue_modules/currency';
 import * as fs from '../../blue_modules/fs';
 import triggerHapticFeedback, { HapticFeedbackTypes } from '../../blue_modules/hapticFeedback';
-import { getBhwiHardwareMobilePolicy } from '../../blue_modules/bhwiPsbt';
+import { getBhwiImportedPsbtDestination } from '../../blue_modules/bhwiPsbt';
 import BlueText from '../../components/BlueText';
 import { HDSegwitBech32Wallet } from '../../class/wallets/hd-segwit-bech32-wallet';
 import { MultisigHDWallet } from '../../class/wallets/multisig-hd-wallet';
@@ -766,6 +766,7 @@ const SendDetails = () => {
         walletID: wallet.getID(),
         psbt,
         launchedBy: routeParams.launchedBy,
+        ...(getBhwiImportedPsbtDestination(wallet) === 'PsbtWithHardwareWallet' ? { bhwiBound: true } : {}),
       });
       setIsLoading(false);
       return;
@@ -777,6 +778,7 @@ const SendDetails = () => {
         psbtBase64: psbt.toBase64(),
         walletID: wallet.getID(),
         launchedBy: routeParams.launchedBy,
+        ...(getBhwiImportedPsbtDestination(wallet) === 'PsbtMultisig' ? { bhwiBound: true } : {}),
       });
       setIsLoading(false);
       return;
@@ -861,6 +863,7 @@ const SendDetails = () => {
           memo: transactionMemo,
           walletID: wallet.getID(),
           psbt,
+          ...(getBhwiImportedPsbtDestination(wallet) === 'PsbtWithHardwareWallet' ? { bhwiBound: true } : {}),
         });
 
         setIsLoading(false);
@@ -891,6 +894,17 @@ const SendDetails = () => {
       if (DeeplinkSchemaMatch.isPossiblyPSBTFile(String(res.name))) {
         const file = await RNFS.readFile(res.uri, 'ascii');
         const psbt = bitcoin.Psbt.fromBase64(file, { network });
+
+        if (getBhwiImportedPsbtDestination(wallet) === 'PsbtWithHardwareWallet') {
+          navigation.navigate('PsbtWithHardwareWallet', {
+            memo: transactionMemo,
+            walletID: wallet.getID(),
+            psbt,
+            bhwiBound: true,
+          });
+          setIsLoading(false);
+          return;
+        }
 
         // first, lets check if tx signed. we will try to finalize it, and then we will
         // try to extract transaction:
@@ -930,6 +944,7 @@ const SendDetails = () => {
           memo: transactionMemo,
           walletID: wallet.getID(),
           txhex: file,
+          ...(getBhwiImportedPsbtDestination(wallet) === 'PsbtWithHardwareWallet' ? { bhwiBound: true } : {}),
         });
         setIsLoading(false);
 
@@ -980,7 +995,7 @@ const SendDetails = () => {
         const psbt = bitcoin.Psbt.fromBase64(base64, { network }); // if it doesnt throw - all good, its valid
 
         if (
-          !(wallet instanceof MultisigHDWallet && getBhwiHardwareMobilePolicy(wallet)) &&
+          getBhwiImportedPsbtDestination(wallet) !== 'PsbtMultisig' &&
           (wallet as MultisigHDWallet)?.howManySignaturesCanWeMake() > 0 &&
           (await askCosignThisTransaction())
         ) {
@@ -996,6 +1011,7 @@ const SendDetails = () => {
             memo: transactionMemo,
             psbtBase64: psbt.toBase64(),
             walletID: wallet.getID(),
+            ...(getBhwiImportedPsbtDestination(wallet) === 'PsbtMultisig' ? { bhwiBound: true } : {}),
           });
         }
       } catch (error: any) {
@@ -1040,11 +1056,22 @@ const SendDetails = () => {
       const multisigWallet = wallet as MultisigHDWallet;
       try {
         psbt = bitcoin.Psbt.fromBase64(psbtBase64, { network });
-        if (getBhwiHardwareMobilePolicy(multisigWallet)) {
+        const hardwareDestination = getBhwiImportedPsbtDestination(wallet);
+        if (hardwareDestination === 'PsbtWithHardwareWallet' && wallet instanceof WatchOnlyWallet) {
+          navigation.navigate('PsbtWithHardwareWallet', {
+            memo: transactionMemo,
+            walletID: wallet.getID(),
+            psbt,
+            bhwiBound: true,
+          });
+          return;
+        }
+        if (hardwareDestination === 'PsbtMultisig' && wallet instanceof MultisigHDWallet) {
           navigation.navigate('PsbtMultisig', {
             memo: transactionMemo,
             psbtBase64: psbt.toBase64(),
-            walletID: multisigWallet.getID(),
+            walletID: wallet.getID(),
+            bhwiBound: true,
           });
           return;
         }
@@ -1106,9 +1133,9 @@ const SendDetails = () => {
       } else {
         processAddressData(data);
       }
+      selectedDataProcessor.current = undefined;
+      setParams({ onBarScanned: undefined });
     }
-    selectedDataProcessor.current = undefined;
-    setParams({ onBarScanned: undefined });
   }, [
     importQrTransactionOnBarScanned,
     onBarScanned,
@@ -1357,7 +1384,7 @@ const SendDetails = () => {
       },
       {
         ...CommonToolTipActions.SignPSBT,
-        hidden: !(wallet as MultisigHDWallet)?.allowCosignPsbt(),
+        hidden: !(wallet.allowCosignPsbt() || getBhwiImportedPsbtDestination(wallet)),
       },
     ];
     walletActions.push(transactionActions);

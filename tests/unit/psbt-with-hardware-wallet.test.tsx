@@ -634,6 +634,56 @@ test('strictly rejects an altered staged picker result after explicit confirmati
   expect(view.queryByTestId('BhwiVerifyStagedFile')).toBeNull();
 });
 
+test('stages a scanner picker return after foreground resume and requires a fresh explicit review', async () => {
+  const fixture = makeAssociatedFixture();
+  const view = await renderPreparedAssociated(fixture);
+  const oldAttempt = mockRouteParams.bhwiAttempt;
+  const originalBase64 = required(mockRouteParams.bhwiOriginalBase64 as string | undefined);
+  const complete = bitcoin.Psbt.fromBase64(originalBase64, { network });
+  complete.signInput(0, required(fixture.children[0]));
+  complete.signInput(1, required(fixture.children[1]));
+  fireEvent.press(view.getByTestId('PsbtTxScanButton'));
+  act(() => mockAppStateChange('background'));
+  mockRouteParams = {
+    ...mockRouteParams,
+    onBarScanned: complete.toBase64(),
+    onBarScannedFromPicker: true,
+  };
+  view.rerender(<PsbtWithHardwareWallet />);
+  expect(view.queryByTestId('BhwiVerifyStagedFile')).toBeNull();
+  await act(async () => {
+    mockAppStateChange('active');
+    await Promise.resolve();
+  });
+  await view.findByTestId('BhwiVerifyStagedFile');
+  expect(mockRouteParams.bhwiAttempt).not.toBe(oldAttempt);
+  expect(view.getByTestId('BhwiTransactionReview')).toBeTruthy();
+  expect(view.queryByTestId('PsbtWithHardwareWalletBroadcastTransactionButton')).toBeNull();
+  fireEvent.press(view.getByTestId('BhwiVerifyStagedFile'));
+  await view.findByTestId('PsbtWithHardwareWalletBroadcastTransactionButton');
+});
+
+test('strictly rejects an altered scanner picker return after its fresh review', async () => {
+  const fixture = makeAssociatedFixture();
+  const view = await renderPreparedAssociated(fixture);
+  const originalBase64 = required(mockRouteParams.bhwiOriginalBase64 as string | undefined);
+  const altered = bitcoin.Psbt.fromBase64(originalBase64, { network });
+  altered.setLocktime(1);
+  altered.signInput(0, required(fixture.children[0]));
+  mockRouteParams = {
+    ...mockRouteParams,
+    onBarScanned: altered.toBase64(),
+    onBarScannedFromPicker: true,
+  };
+  view.rerender(<PsbtWithHardwareWallet />);
+  await view.findByTestId('BhwiVerifyStagedFile');
+  fireEvent.press(view.getByTestId('BhwiVerifyStagedFile'));
+  await waitFor(() =>
+    expect(mockPresentAlert).toHaveBeenCalledWith(expect.objectContaining({ message: 'Hardware wallet changed the transaction' })),
+  );
+  expect(view.queryByTestId('PsbtWithHardwareWalletBroadcastTransactionButton')).toBeNull();
+});
+
 test('refreshes the wallet after a successful verified hardware broadcast', async () => {
   const fixture = makeAssociatedFixture();
   jest.spyOn(fixture.wallet, 'broadcastTx').mockResolvedValue(true);

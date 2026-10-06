@@ -218,6 +218,7 @@ const PsbtWithHardwareWallet = () => {
       bhwiReturnedBase64: undefined,
       onBarScanned: undefined,
       deepLinkPSBT: undefined,
+      onBarScannedFromPicker: undefined,
       txhex: undefined,
     };
     navigation.setParams({
@@ -226,6 +227,7 @@ const PsbtWithHardwareWallet = () => {
       bhwiReturnedBase64: undefined,
       onBarScanned: undefined,
       deepLinkPSBT: undefined,
+      onBarScannedFromPicker: undefined,
       txhex: undefined,
     });
   }, [navigation]);
@@ -317,6 +319,23 @@ const PsbtWithHardwareWallet = () => {
     [isElectrumDisabled, navigation, preparationIsCurrent, walletID],
   );
 
+  const stageBoundResult = useCallback(
+    async (returnedBase64: string) => {
+      if (!foregroundRef.current) {
+        await new Promise<void>(resolve => {
+          foregroundResumeRef.current = resolve;
+        });
+      }
+      if (!mountedRef.current || !foregroundRef.current || !focusedRef.current) {
+        throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
+      }
+      stagedFileResultRef.current = returnedBase64;
+      setHasStagedFileResult(true);
+      await prepareHardwareSigning(true);
+    },
+    [prepareHardwareSigning],
+  );
+
   const startHardwareSigning = useCallback(() => {
     const expected = boundAttemptRef.current;
     if (!expected) {
@@ -373,6 +392,7 @@ const PsbtWithHardwareWallet = () => {
           bhwiReturnedBase64: undefined,
           deepLinkPSBT: undefined,
           onBarScanned: undefined,
+          onBarScannedFromPicker: undefined,
           txhex: undefined,
         };
         navigation.setParams({
@@ -380,6 +400,7 @@ const PsbtWithHardwareWallet = () => {
           deepLinkPSBT: undefined,
           onBarScanned: undefined,
           txhex: undefined,
+          onBarScannedFromPicker: undefined,
         });
         if (result.tx && launchedBy) {
           navigation.dispatch(StackActions.popTo(launchedBy, { psbt: result.psbt }, { merge: true }));
@@ -528,23 +549,35 @@ const PsbtWithHardwareWallet = () => {
 
   useEffect(() => {
     const data = routeParamsRef.current.onBarScanned;
+    const fromPicker = routeParamsRef.current.onBarScannedFromPicker === true;
     const bhwiBound = hardwareBoundFlow || route.params.bhwiBound === true || routeParamsRef.current.bhwiBound === true;
     const bhwiAttempt = route.params.bhwiAttempt ?? routeParamsRef.current.bhwiAttempt;
     if (!data) return;
+    routeParamsRef.current = { ...routeParamsRef.current, onBarScanned: undefined, onBarScannedFromPicker: undefined };
+    navigation.setParams({ onBarScanned: undefined, onBarScannedFromPicker: undefined });
     if (bhwiBound) {
-      consumeBoundResult(data, bhwiAttempt);
+      if (fromPicker) {
+        stageBoundResult(data).catch(error => {
+          expireHardwareAttempt();
+          presentAlert({ message: error instanceof Error ? error.message : BHWI_SIGNING_SESSION_EXPIRED });
+        });
+      } else {
+        consumeBoundResult(data, bhwiAttempt);
+      }
       return;
     }
     onBarScanned({ data });
-    navigation.setParams({ onBarScanned: undefined });
   }, [
     consumeBoundResult,
+    expireHardwareAttempt,
     hardwareBoundFlow,
     navigation,
     onBarScanned,
     route.params.bhwiAttempt,
     route.params.bhwiBound,
     route.params.onBarScanned,
+    route.params.onBarScannedFromPicker,
+    stageBoundResult,
   ]);
 
   useEffect(() => {
@@ -695,17 +728,7 @@ const PsbtWithHardwareWallet = () => {
         return;
       }
       if (!file) return;
-      if (!foregroundRef.current) {
-        await new Promise<void>(resolve => {
-          foregroundResumeRef.current = resolve;
-        });
-      }
-      if (!mountedRef.current || !foregroundRef.current || !focusedRef.current) {
-        throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
-      }
-      stagedFileResultRef.current = file;
-      setHasStagedFileResult(true);
-      await prepareHardwareSigning(true);
+      await stageBoundResult(file);
     } catch (error) {
       stagedFileResultRef.current = undefined;
       if (mountedRef.current) {

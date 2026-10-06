@@ -16,6 +16,7 @@ export type ScanQRCodeParamList = {
   urHave?: number;
   backdoorText?: string;
   onBarScanned?: (data: string, useBBQR: boolean) => void;
+  onBarScannedFromPicker?: boolean;
   showFileImportButton?: boolean;
   backdoorVisible?: boolean;
   orientation?: 'portrait';

@@ -53,6 +53,7 @@ type NavigationProps = NativeStackNavigationProp<SendDetailsStackParamList, 'Psb
 type SigningActor = 'phone' | 'hardware' | 'both';
 type HardwareAttempt = BhwiPsbtAttemptSnapshot & { acceptedBase64: string };
 type QrAttempt = BhwiPsbtAttemptSnapshot & { acceptedBase64: string; token: string };
+type StagedQrResult = Readonly<{ returnedBase64: string; attempt: QrAttempt }>;
 
 type AcceptedPsbt = {
   psbt: bitcoin.Psbt;
@@ -113,7 +114,7 @@ const PsbtMultisig = () => {
   const route = useRoute<RouteProp<SendDetailsStackParamList, 'PsbtMultisig'>>();
   const routeParamsRef = useRef(route.params);
   routeParamsRef.current = { ...routeParamsRef.current, ...route.params };
-  const { walletID, psbtBase64, memo, receivedPSBTBase64, txhex, launchedBy, multisigContinuation } = routeParamsRef.current;
+  const { walletID, psbtBase64, memo, receivedPSBTBase64, txhex, launchedBy, multisigContinuation, bhwiBound } = routeParamsRef.current;
   const walletCandidate = wallets.find(candidate => candidate.getID() === walletID);
   const wallet = walletCandidate instanceof MultisigHDWallet ? walletCandidate : undefined;
   const policy = wallet ? getBhwiHardwareMobilePolicy(wallet) : undefined;
@@ -129,7 +130,7 @@ const PsbtMultisig = () => {
       initial.current = undefined;
     }
   }
-  const hardwareBound = useRef(!!policy).current;
+  const hardwareBound = useRef(!!policy || bhwiBound === true).current;
   const [psbt, setPsbt] = useState(initial.current?.psbt ?? null);
   const [actor, setActor] = useState<SigningActor | undefined>(initial.current?.actor);
   const [pendingActor, setPendingActor] = useState<'phone' | 'hardware' | undefined>(initial.current?.pendingActor);
@@ -138,6 +139,7 @@ const PsbtMultisig = () => {
   );
   const [isHardwareLoading, setIsHardwareLoading] = useState(false);
   const [verifiedTxHex, setVerifiedTxHex] = useState<string>();
+  const [hasStagedQrResult, setHasStagedQrResult] = useState(false);
   const [flatListHeight, setFlatListHeight] = useState(0);
   const [isFiltered, setIsFiltered] = useState(true);
   const psbtRef = useRef(psbt);
@@ -162,6 +164,8 @@ const PsbtMultisig = () => {
   const handledHardwareReturnRef = useRef('');
   const qrGenerationRef = useRef(0);
   const qrAttemptRef = useRef<QrAttempt | undefined>(undefined);
+  const stagedQrResultRef = useRef<StagedQrResult | undefined>(undefined);
+  const foregroundResumeRef = useRef<(() => void) | undefined>(undefined);
   const initialBindingRef = useRef(
     wallet && policy
       ? {
@@ -178,6 +182,8 @@ const PsbtMultisig = () => {
       hardwareAttemptRef.current = undefined;
       qrGenerationRef.current += 1;
       qrAttemptRef.current = undefined;
+      stagedQrResultRef.current = undefined;
+      setHasStagedQrResult(false);
       setVerifiedTxHex(undefined);
       setIsHardwareLoading(false);
       if (hardwareBound) setHardwareStatus(message);
@@ -187,6 +193,8 @@ const PsbtMultisig = () => {
         bhwiReturnedBase64: undefined,
         bhwiAttempt: undefined,
         multisigContinuation: undefined,
+        onBarScannedFromPicker: undefined,
+        receivedPSBTBase64: undefined,
         txhex: undefined,
       };
       if (mountedRef.current) {
@@ -195,6 +203,8 @@ const PsbtMultisig = () => {
           bhwiReturnedBase64: undefined,
           bhwiAttempt: undefined,
           multisigContinuation: undefined,
+          onBarScannedFromPicker: undefined,
+          receivedPSBTBase64: undefined,
           txhex: undefined,
         });
       }
@@ -219,38 +229,42 @@ const PsbtMultisig = () => {
     };
   }, [walletID]);
 
+  const mintQrAttempt = useCallback((): QrAttempt => {
+    const current = liveBinding();
+    const originalBase64 = reviewedOriginalRef.current;
+    const accepted = psbtRef.current;
+    if (!current || !originalBase64 || !accepted || !mountedRef.current || !foregroundRef.current || !focusedRef.current) {
+      throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
+    }
+    validateBhwiPsbtOriginal(originalBase64, current.wallet, current.policy.association);
+    const generation = ++qrGenerationRef.current;
+    const snapshot: QrAttempt = Object.freeze({
+      generation,
+      token: `qr-${generation}`,
+      originalBase64,
+      acceptedBase64: accepted.toBase64(),
+      walletID,
+      walletIdentity: current.walletIdentity,
+      associationIdentity: current.associationIdentity,
+      policyIdentity: current.policyIdentity,
+      fee: getBhwiPsbtReview(bitcoin.Psbt.fromBase64(originalBase64, { network })).fee.toString(),
+    });
+    qrAttemptRef.current = snapshot;
+    return snapshot;
+  }, [liveBinding, walletID]);
+
   const openQrContinuation = useCallback(
     (source: bitcoin.Psbt, showOpenScanner: boolean) => {
-      const current = liveBinding();
-      const originalBase64 = reviewedOriginalRef.current;
-      const accepted = psbtRef.current;
-      if (!current || !originalBase64 || !accepted || !mountedRef.current || !foregroundRef.current || !focusedRef.current) {
-        throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
-      }
-      validateBhwiPsbtOriginal(originalBase64, current.wallet, current.policy.association);
-      const generation = ++qrGenerationRef.current;
-      const token = `qr-${generation}`;
-      const snapshot: QrAttempt = Object.freeze({
-        generation,
-        token,
-        originalBase64,
-        acceptedBase64: accepted.toBase64(),
-        walletID,
-        walletIdentity: current.walletIdentity,
-        associationIdentity: current.associationIdentity,
-        policyIdentity: current.policyIdentity,
-        fee: getBhwiPsbtReview(bitcoin.Psbt.fromBase64(originalBase64, { network })).fee.toString(),
-      });
-      qrAttemptRef.current = snapshot;
+      const snapshot = mintQrAttempt();
       allowedContinuationRef.current = 'qr';
       navigate('PsbtMultisigQRCode', {
         walletID,
         psbtBase64: source.toBase64(),
         isShowOpenScanner: showOpenScanner,
-        multisigContinuation: token,
+        multisigContinuation: snapshot.token,
       });
     },
-    [liveBinding, navigate, walletID],
+    [mintQrAttempt, navigate, walletID],
   );
 
   const qrContinuationIsCurrent = useCallback(
@@ -339,33 +353,66 @@ const PsbtMultisig = () => {
       hardwareAttemptRef.current = undefined;
       qrGenerationRef.current += 1;
       qrAttemptRef.current = undefined;
+      stagedQrResultRef.current = undefined;
+      setHasStagedQrResult(false);
       routeParamsRef.current = {
         ...routeParamsRef.current,
         bhwiReturnedBase64: undefined,
         receivedPSBTBase64: undefined,
         txhex: undefined,
         multisigContinuation: undefined,
+        onBarScannedFromPicker: undefined,
       };
       setParams({
         bhwiReturnedBase64: undefined,
         receivedPSBTBase64: undefined,
         txhex: undefined,
         multisigContinuation: undefined,
+        onBarScannedFromPicker: undefined,
       });
       return result;
     },
     [attemptIsCurrent, liveBinding, setParams],
   );
 
+  const applyVerifiedQrResult = useCallback(
+    (returnedBase64: string, expected: QrAttempt, token: string | undefined) => {
+      if (!qrContinuationIsCurrent(expected, token)) throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
+      const currentActor = actorRef.current;
+      const pending = pendingActorRef.current;
+      if (currentActor === 'both') throw new Error('This transaction is already fully signed.');
+      const signers: Array<'phone' | 'hardware'> = pending
+        ? [pending]
+        : currentActor === 'phone'
+          ? ['hardware']
+          : currentActor === 'hardware'
+            ? ['phone']
+            : ['phone', 'hardware'];
+      let failure: unknown;
+      for (const signer of signers) {
+        try {
+          applyVerifiedTransition(returnedBase64, signer);
+          return;
+        } catch (error) {
+          failure = error;
+        }
+      }
+      throw failure ?? new Error(loc.send.invalid_psbt);
+    },
+    [applyVerifiedTransition, qrContinuationIsCurrent],
+  );
+
   const prepareHardwareSigning = useCallback(
-    async (destination: 'hardware' | 'phone' | 'qr' = 'hardware') => {
+    async (destination: 'hardware' | 'phone' | 'qr' | 'stage' = 'hardware', stagedReturn?: string) => {
       const generation = ++attemptRef.current;
       hardwareAttemptRef.current = undefined;
+      stagedQrResultRef.current = undefined;
+      setHasStagedQrResult(false);
       if (destination !== 'qr') {
         qrGenerationRef.current += 1;
         qrAttemptRef.current = undefined;
       }
-      if (destination === 'hardware') setVerifiedTxHex(undefined);
+      if (destination === 'hardware' || destination === 'stage') setVerifiedTxHex(undefined);
       setHardwareStatus('');
       setIsHardwareLoading(true);
       try {
@@ -378,7 +425,8 @@ const PsbtMultisig = () => {
           (destination === 'hardware' &&
             (actorRef.current === 'hardware' || actorRef.current === 'both' || (!!pendingSigner && pendingSigner !== 'hardware'))) ||
           (destination === 'phone' &&
-            (actorRef.current === 'phone' || actorRef.current === 'both' || (!!pendingSigner && pendingSigner !== 'phone')))
+            (actorRef.current === 'phone' || actorRef.current === 'both' || (!!pendingSigner && pendingSigner !== 'phone'))) ||
+          (destination === 'stage' && actorRef.current === 'both')
         ) {
           throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
         }
@@ -439,6 +487,16 @@ const PsbtMultisig = () => {
         } else if (currentActor === 'phone' || currentActor === 'hardware') {
           const signer = currentActor === 'phone' ? current.policy.phone : current.policy.association;
           accepted = validateBhwiPsbt(unsignedBase64, hydrated.toBase64(), current.wallet, signer).psbt;
+        }
+        if (destination === 'stage') {
+          if (!stagedReturn) throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
+          reviewedOriginalRef.current = unsignedBase64;
+          psbtRef.current = accepted;
+          setPsbt(accepted);
+          const freshAttempt = mintQrAttempt();
+          stagedQrResultRef.current = Object.freeze({ returnedBase64: stagedReturn, attempt: freshAttempt });
+          setHasStagedQrResult(true);
+          return;
         }
         if (destination === 'phone') {
           reviewedOriginalRef.current = unsignedBase64;
@@ -511,10 +569,24 @@ const PsbtMultisig = () => {
       liveBinding,
       navigate,
       openQrContinuation,
+      mintQrAttempt,
       setParams,
       verifiedTxHex,
       walletID,
     ],
+  );
+
+  const stagePickerResult = useCallback(
+    async (returnedBase64: string) => {
+      if (!foregroundRef.current) {
+        await new Promise<void>(resolve => {
+          foregroundResumeRef.current = resolve;
+        });
+      }
+      if (!mountedRef.current || !foregroundRef.current || !focusedRef.current) throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
+      await prepareHardwareSigning('stage', returnedBase64);
+    },
+    [prepareHardwareSigning],
   );
 
   useEffect(() => {
@@ -523,7 +595,13 @@ const PsbtMultisig = () => {
     enableScreenProtect();
     const appState = AppState.addEventListener('change', nextState => {
       foregroundRef.current = nextState === 'active';
-      if (!foregroundRef.current && hardwareBound) expireHardwareAttempt();
+      if (foregroundRef.current) {
+        const resume = foregroundResumeRef.current;
+        foregroundResumeRef.current = undefined;
+        resume?.();
+        return;
+      }
+      if (hardwareBound) expireHardwareAttempt();
     });
     return () => {
       mountedRef.current = false;
@@ -533,6 +611,10 @@ const PsbtMultisig = () => {
       hardwareAttemptRef.current = undefined;
       qrGenerationRef.current += 1;
       qrAttemptRef.current = undefined;
+      stagedQrResultRef.current = undefined;
+      const resume = foregroundResumeRef.current;
+      foregroundResumeRef.current = undefined;
+      resume?.();
       appState.remove();
       disableScreenProtect();
     };
@@ -587,6 +669,7 @@ const PsbtMultisig = () => {
 
   useEffect(() => {
     if (!receivedPSBTBase64 || !psbtRef.current) return;
+    const fromPicker = routeParamsRef.current.onBarScannedFromPicker === true;
     if (!hardwareBound && receivedPSBTBase64 === psbtRef.current.toBase64()) return;
     if (!hardwareBound) {
       try {
@@ -596,47 +679,50 @@ const PsbtMultisig = () => {
         });
         psbtRef.current = combined;
         setPsbt(combined);
-        setParams({ receivedPSBTBase64: undefined });
+        setParams({ receivedPSBTBase64: undefined, onBarScannedFromPicker: undefined });
       } catch (error) {
         presentAlert({ message: error instanceof Error ? error.message : loc.send.invalid_psbt });
       }
       return;
     }
+    routeParamsRef.current = {
+      ...routeParamsRef.current,
+      receivedPSBTBase64: undefined,
+      onBarScannedFromPicker: undefined,
+      multisigContinuation: undefined,
+    };
+    setParams({ receivedPSBTBase64: undefined, onBarScannedFromPicker: undefined, multisigContinuation: undefined });
+    if (fromPicker) {
+      stagePickerResult(receivedPSBTBase64).catch(error => {
+        expireHardwareAttempt(error instanceof Error ? error.message : BHWI_SIGNING_SESSION_EXPIRED);
+      });
+      return;
+    }
     try {
       const expected = qrAttemptRef.current;
-      if (!expected || !qrContinuationIsCurrent(expected, multisigContinuation)) {
-        throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
-      }
-      const currentActor = actorRef.current;
-      const pending = pendingActorRef.current;
-      if (currentActor === 'both') throw new Error('This transaction is already fully signed.');
-      const signers: Array<'phone' | 'hardware'> = pending
-        ? [pending]
-        : currentActor === 'phone'
-          ? ['hardware']
-          : currentActor === 'hardware'
-            ? ['phone']
-            : ['phone', 'hardware'];
-      let accepted = false;
-      let failure: unknown;
-      for (const signer of signers) {
-        try {
-          applyVerifiedTransition(receivedPSBTBase64, signer);
-          accepted = true;
-          break;
-        } catch (error) {
-          failure = error;
-        }
-      }
-      if (!accepted) throw failure ?? new Error(loc.send.invalid_psbt);
+      if (!expected) throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
+      applyVerifiedQrResult(receivedPSBTBase64, expected, multisigContinuation);
     } catch (error) {
       qrGenerationRef.current += 1;
       qrAttemptRef.current = undefined;
+      stagedQrResultRef.current = undefined;
+      setHasStagedQrResult(false);
       setVerifiedTxHex(undefined);
       setHardwareStatus(error instanceof Error ? error.message : loc.send.invalid_psbt);
-      setParams({ receivedPSBTBase64: undefined, txhex: undefined, multisigContinuation: undefined });
     }
-  }, [applyVerifiedTransition, hardwareBound, multisigContinuation, qrContinuationIsCurrent, receivedPSBTBase64, setParams]);
+  }, [applyVerifiedQrResult, expireHardwareAttempt, hardwareBound, multisigContinuation, receivedPSBTBase64, setParams, stagePickerResult]);
+
+  const confirmStagedQrResult = useCallback(() => {
+    const staged = stagedQrResultRef.current;
+    stagedQrResultRef.current = undefined;
+    setHasStagedQrResult(false);
+    try {
+      if (!staged) throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
+      applyVerifiedQrResult(staged.returnedBase64, staged.attempt, staged.attempt.token);
+    } catch (error) {
+      expireHardwareAttempt(error instanceof Error ? error.message : BHWI_SIGNING_SESSION_EXPIRED);
+    }
+  }, [applyVerifiedQrResult, expireHardwareAttempt]);
 
   useEffect(() => {
     if (!txhex) return;
@@ -961,6 +1047,14 @@ const PsbtMultisig = () => {
                   />
                   {hardwareBound && actor !== 'both' && (
                     <View style={styles.hardwareActions}>
+                      {hasStagedQrResult && (
+                        <Button
+                          testID="PsbtMultisigVerifyStagedFile"
+                          title={loc.send.psbt_hardware_verify_file}
+                          onPress={confirmStagedQrResult}
+                          disabled={isHardwareLoading}
+                        />
+                      )}
                       {actor !== 'phone' && (!pendingActor || pendingActor === 'phone') && (
                         <Button
                           testID="PsbtMultisigSignWithPhone"

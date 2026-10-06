@@ -143,6 +143,16 @@ export function getBhwiHardwareMobilePolicy(wallet: MultisigHDWallet): BhwiHardw
   return { association, phone };
 }
 
+export type BhwiImportedPsbtDestination = 'PsbtWithHardwareWallet' | 'PsbtMultisig';
+
+export function getBhwiImportedPsbtDestination(wallet: unknown): BhwiImportedPsbtDestination | undefined {
+  if (wallet instanceof WatchOnlyWallet) {
+    return wallet.getHardwareWalletAssociation() ? 'PsbtWithHardwareWallet' : undefined;
+  }
+  if (wallet instanceof MultisigHDWallet && getBhwiHardwareMobilePolicy(wallet)) return 'PsbtMultisig';
+  return undefined;
+}
+
 export function getUnsignedBhwiMultisigPsbt(source: bitcoin.Psbt): bitcoin.Psbt {
   const unsigned = source.clone();
   for (const input of unsigned.data.inputs) {

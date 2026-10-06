@@ -21,6 +21,7 @@ import { hexToUint8Array, uint8ArrayToBase64, uint8ArrayToHex, uint8ArrayToStrin
 import { network } from '../../models/bitcoinNetwork';
 
 let decoder: BlueURDecoder | undefined;
+let decoderFromPicker = false;
 
 type RouteProps = RouteProp<SendDetailsStackParamList, 'ScanQRCode'>;
 
@@ -88,6 +89,7 @@ const ScanQRCode = () => {
   const [backdoorText, setBackdoorText] = useState('');
   const [backdoorVisible, setBackdoorVisible] = useState(false);
   const useBBQRRef = useRef(false);
+  const animatedQrFromPickerRef = useRef(false);
   const [animatedQRCodeData, setAnimatedQRCodeData] = useState<Record<string, string>>({});
   const [cameraStatusGranted, setCameraStatusGranted] = useState<boolean | undefined>(undefined);
   const stylesHook = StyleSheet.create({
@@ -115,18 +117,23 @@ const ScanQRCode = () => {
     return uint8ArrayToHex(sha256(s));
   };
 
-  const _onReadUniformResourceV2 = (part: string) => {
+  const _onReadUniformResourceV2 = (part: string, fromPicker = false) => {
     if (!decoder) decoder = new BlueURDecoder();
+    decoderFromPicker ||= fromPicker;
     try {
       decoder.receivePart(part);
       if (decoder.isComplete()) {
         const data = decoder.toString();
+        const decodedFromPicker = decoderFromPicker;
         decoder = undefined; // nullify for future use (?)
+        decoderFromPicker = false;
         if (onBarScanned) {
           onBarScanned(data, useBBQRRef.current);
           navigation.goBack();
         } else if (launchedBy) {
-          navigation.dispatch(StackActions.popTo(launchedBy, { onBarScanned: data }, { merge: true }));
+          navigation.dispatch(
+            StackActions.popTo(launchedBy, { onBarScanned: data, onBarScannedFromPicker: decodedFromPicker }, { merge: true }),
+          );
         }
       } else {
         setUrTotal(100);
@@ -135,6 +142,7 @@ const ScanQRCode = () => {
     } catch (error: any) {
       console.log('Invalid animated qr code fragment: ' + error.message + ' (continuing scanning)');
       decoder = undefined;
+      decoderFromPicker = false;
     }
   };
 
@@ -142,7 +150,8 @@ const ScanQRCode = () => {
    *
    * @deprecated remove when we get rid of URv1 support
    */
-  const _onReadUniformResource = (ur: string) => {
+  const _onReadUniformResource = (ur: string, fromPicker = false) => {
+    animatedQrFromPickerRef.current ||= fromPicker;
     try {
       const [index, total] = extractSingleWorkload(ur);
       animatedQRCodeData[index + 'of' + total] = ur;
@@ -150,6 +159,8 @@ const ScanQRCode = () => {
       setUrHave(Object.values(animatedQRCodeData).length);
       if (Object.values(animatedQRCodeData).length === total) {
         const payload = decodeUR(Object.values(animatedQRCodeData));
+        const decodedFromPicker = animatedQrFromPickerRef.current;
+        animatedQrFromPickerRef.current = false;
         // lets look inside that data
         let data: false | string = false;
         if (uint8ArrayToString(hexToUint8Array(String(payload))).startsWith('psbt')) {
@@ -163,7 +174,9 @@ const ScanQRCode = () => {
           onBarScanned(data, useBBQRRef.current);
           navigation.goBack();
         } else if (launchedBy) {
-          navigation.dispatch(StackActions.popTo(launchedBy, { onBarScanned: data }, { merge: true }));
+          navigation.dispatch(
+            StackActions.popTo(launchedBy, { onBarScanned: data, onBarScannedFromPicker: decodedFromPicker }, { merge: true }),
+          );
         }
       } else {
         setAnimatedQRCodeData(animatedQRCodeData);
@@ -173,7 +186,7 @@ const ScanQRCode = () => {
     }
   };
 
-  const onBarCodeRead = (ret: { data: string }) => {
+  const onBarCodeRead = (ret: { data: string }, fromPicker = false) => {
     const h = HashIt(ret.data);
     if (scannedCache[h]) {
       // this QR was already scanned by this ScanQRCode, lets prevent firing duplicate callbacks
@@ -182,39 +195,39 @@ const ScanQRCode = () => {
     scannedCache[h] = +new Date();
 
     if (ret.data.toUpperCase().startsWith('UR:CRYPTO-ACCOUNT')) {
-      return _onReadUniformResourceV2(ret.data);
+      return _onReadUniformResourceV2(ret.data, fromPicker);
     }
 
     if (ret.data.toUpperCase().startsWith('UR:CRYPTO-PSBT')) {
-      return _onReadUniformResourceV2(ret.data);
+      return _onReadUniformResourceV2(ret.data, fromPicker);
     }
 
     if (ret.data.toUpperCase().startsWith('UR:CRYPTO-OUTPUT')) {
-      return _onReadUniformResourceV2(ret.data);
+      return _onReadUniformResourceV2(ret.data, fromPicker);
     }
 
     if (ret.data.toUpperCase().startsWith('UR:CRYPTO-HDKEY')) {
-      return _onReadUniformResourceV2(ret.data);
+      return _onReadUniformResourceV2(ret.data, fromPicker);
     }
 
     if (ret.data.toUpperCase().startsWith('UR:CRYPTO-MULTI-ACCOUNTS')) {
-      return _onReadUniformResourceV2(ret.data);
+      return _onReadUniformResourceV2(ret.data, fromPicker);
     }
 
     if (ret.data.toUpperCase().startsWith('B$')) {
       useBBQRRef.current = true;
-      return _onReadUniformResourceV2(ret.data);
+      return _onReadUniformResourceV2(ret.data, fromPicker);
     }
 
     if (ret.data.toUpperCase().startsWith('UR:BYTES')) {
       const splitted = ret.data.split('/');
       if (splitted.length === 3 && splitted[1].includes('-')) {
-        return _onReadUniformResourceV2(ret.data);
+        return _onReadUniformResourceV2(ret.data, fromPicker);
       }
     }
 
     if (ret.data.toUpperCase().startsWith('UR')) {
-      return _onReadUniformResource(ret.data);
+      return _onReadUniformResource(ret.data, fromPicker);
     }
 
     // is it base43? stupid electrum desktop
@@ -227,7 +240,7 @@ const ScanQRCode = () => {
         onBarScanned(data, useBBQRRef.current);
         navigation.goBack();
       } else if (launchedBy) {
-        navigation.dispatch(StackActions.popTo(launchedBy, { onBarScanned: data }, { merge: true }));
+        navigation.dispatch(StackActions.popTo(launchedBy, { onBarScanned: data, onBarScannedFromPicker: fromPicker }, { merge: true }));
       }
       return;
     } catch (_) {
@@ -238,7 +251,9 @@ const ScanQRCode = () => {
             onBarScanned(ret.data, useBBQRRef.current);
             navigation.goBack();
           } else if (launchedBy) {
-            navigation.dispatch(StackActions.popTo(launchedBy, { onBarScanned: ret.data }, { merge: true }));
+            navigation.dispatch(
+              StackActions.popTo(launchedBy, { onBarScanned: ret.data, onBarScannedFromPicker: fromPicker }, { merge: true }),
+            );
           }
         } catch (e) {
           console.log(e);
@@ -251,7 +266,7 @@ const ScanQRCode = () => {
   const showFilePicker = async () => {
     setIsLoading(true);
     const { data } = await fs.showFilePickerAndReadFile();
-    if (data) onBarCodeRead({ data });
+    if (data) onBarCodeRead({ data }, true);
     setIsLoading(false);
   };
 
@@ -260,7 +275,7 @@ const ScanQRCode = () => {
       setIsLoading(true);
       fs.showImagePickerAndReadImage()
         .then(data => {
-          if (data) onBarCodeRead({ data });
+          if (data) onBarCodeRead({ data }, true);
         })
         .finally(() => setIsLoading(false));
     }
