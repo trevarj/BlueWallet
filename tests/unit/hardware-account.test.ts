@@ -9,6 +9,7 @@ import {
   parseHardwareWalletAssociation,
   isBhwiXpubAtPath,
   supportsBhwiAccountFormat,
+  supportsBhwiMessageSigning,
   verifyBhwiAccount,
 } from '../../blue_modules/bhwi';
 import type { HardwareWalletAssociation } from '../../blue_modules/bhwi';
@@ -77,6 +78,35 @@ it('mirrors source family/model format capabilities without offering unsupported
   expect(supportsBhwiAccountFormat({ family: 'jade', model: null }, 'taproot')).toBe(false);
   expect(supportsBhwiAccountFormat({ family: 'trezor', model: '1' }, 'taproot')).toBe(false);
   expect(supportsBhwiAccountFormat({ family: 'trezor', model: 'T' }, 'taproot')).toBe(true);
+});
+
+it('offers only locally verifiable legacy-message formats implemented by the pinned core', () => {
+  expect(supportsBhwiMessageSigning({ family: 'coldcard', model: 'mk5' }, 'native-segwit')).toBe(true);
+  for (const family of ['jade', 'ledger', 'keepkey'] as const) {
+    expect(supportsBhwiMessageSigning({ family, model: null }, 'legacy')).toBe(true);
+    expect(supportsBhwiMessageSigning({ family, model: null }, 'nested-segwit')).toBe(true);
+    expect(supportsBhwiMessageSigning({ family, model: null }, 'native-segwit')).toBe(true);
+  }
+  expect(supportsBhwiMessageSigning({ family: 'trezor', model: '1' }, 'legacy')).toBe(true);
+  expect(supportsBhwiMessageSigning({ family: 'trezor', model: 'T' }, 'legacy')).toBe(true);
+  expect(supportsBhwiMessageSigning({ family: 'trezor', model: 'unknown' }, 'legacy')).toBe(false);
+  expect(supportsBhwiMessageSigning({ family: 'trezor', model: 'T' }, 'native-segwit')).toBe(true);
+  expect(supportsBhwiMessageSigning({ family: 'bitbox02', model: null }, 'nested-segwit')).toBe(true);
+  expect(supportsBhwiMessageSigning({ family: 'bitbox02', model: null }, 'native-segwit')).toBe(true);
+  expect(supportsBhwiMessageSigning({ family: 'bitbox02', model: null }, 'legacy')).toBe(false);
+  expect(supportsBhwiMessageSigning({ family: 'specter', model: null }, 'legacy')).toBe(false);
+  expect(supportsBhwiMessageSigning({ family: 'ledger', model: null }, 'taproot')).toBe(false);
+  expect(supportsBhwiMessageSigning({ family: 'ledger', model: null }, 'multisig-native')).toBe(false);
+});
+
+it('verifies an unchanged compressed-key header against a supported SegWit address', () => {
+  const signer = new HDSegwitP2SHWallet();
+  signer.setSecret('abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about');
+  const message = 'bitbox legacy-message format';
+  const address = signer._getExternalAddressByIndex(0);
+  const signature = signer.signMessage(message, address, false);
+  expect(Buffer.from(signature, 'base64')[0]).toBeLessThan(35);
+  expect(signer.verifyMessage(message, address, signature)).toBe(true);
 });
 
 it('accepts only the exact selected-chain public account and complete origin descriptor', () => {

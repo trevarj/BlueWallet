@@ -17,6 +17,7 @@ import { AbstractHDElectrumWallet } from '../class/wallets/abstract-hd-electrum-
 import { WatchOnlyWallet } from '../class/wallets/watch-only-wallet';
 import WalletListItem from './WalletListItem';
 import { mainnetServicesEnabled } from '../models/bitcoinNetwork';
+import { isBhwiAvailable, supportsBhwiMessageSigning } from '../blue_modules/bhwi';
 
 const getHdElectrumWallet = (wallet: TWallet): AbstractHDElectrumWallet | undefined => {
   const w: unknown = wallet;
@@ -31,6 +32,17 @@ const getHdElectrumWallet = (wallet: TWallet): AbstractHDElectrumWallet | undefi
 const getWalletDisplayUnit = (wallet: TWallet): BitcoinUnit => {
   const unit = wallet.getPreferredBalanceUnit() || BitcoinUnit.BTC;
   return !mainnetServicesEnabled && unit === BitcoinUnit.LOCAL_CURRENCY ? BitcoinUnit.BTC : unit;
+};
+
+const getAddressActionEligibility = (wallet: TWallet) => {
+  const allowExportPrivateKey = wallet.allowSignVerifyMessage();
+  const association = wallet instanceof WatchOnlyWallet ? wallet.getHardwareWalletAssociation() : undefined;
+  return {
+    allowExportPrivateKey,
+    allowSignVerifyMessage:
+      allowExportPrivateKey ||
+      (!!association && isBhwiAvailable() && supportsBhwiMessageSigning({ family: association.family, model: null }, association.format)),
+  };
 };
 
 const getWalletIconImage = (walletType: string, direction: string) => {
@@ -239,6 +251,7 @@ const ManageWalletsListItem: React.FC<ManageWalletsListItemProps> = ({
     const wallet = state.wallets.find(w => w.getID() === item.data.walletID);
     if (!wallet) return null;
 
+    const addressActionEligibility = getAddressActionEligibility(wallet);
     const addressItemProps = {
       item: {
         key: item.data.address,
@@ -250,7 +263,7 @@ const ManageWalletsListItem: React.FC<ManageWalletsListItemProps> = ({
       },
       balanceUnit: getWalletDisplayUnit(wallet),
       walletID: item.data.walletID,
-      allowSignVerifyMessage: wallet.allowSignVerifyMessage(),
+      ...addressActionEligibility,
       onPress: () => navigateToAddress(item.data.address, item.data.walletID),
       searchQuery: state.searchQuery,
       renderHighlightedText,
@@ -343,6 +356,7 @@ const WalletGroupComponent: React.FC<WalletGroupProps> = ({
   const titleColor = dark ? colors.foregroundColor : colors.darkGray;
   const iconImage = getWalletIconImage(wallet.type, direction);
 
+  const addressActionEligibility = getAddressActionEligibility(wallet);
   const renderAddress = (address: AddressItem, index: number) => {
     const computedBalance = hdElectrum?.getBalanceForExternalIndex(address.data.index) ?? 0;
     const computedTransactions = hdElectrum?.getTransactionCountForExternalIndex(address.data.index) ?? 0;
@@ -361,7 +375,7 @@ const WalletGroupComponent: React.FC<WalletGroupProps> = ({
             }}
             balanceUnit={getWalletDisplayUnit(wallet)}
             walletID={address.data.walletID}
-            allowSignVerifyMessage={wallet.allowSignVerifyMessage()}
+            {...addressActionEligibility}
             onPress={() => navigateToAddress(address.data.address, address.data.walletID)}
             searchQuery={state.searchQuery}
             renderHighlightedText={renderHighlightedText}

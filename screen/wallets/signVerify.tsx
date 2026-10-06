@@ -1,8 +1,11 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { RouteProp, useRoute } from '@react-navigation/native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useIsFocused, useNavigation, useRoute } from '@react-navigation/native';
+import type { RouteProp } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import type { AlertButton } from 'react-native';
 import {
   ActivityIndicator,
-  AlertButton,
+  AppState,
   findNodeHandle,
   Keyboard,
   LayoutAnimation,
@@ -30,28 +33,61 @@ import {
 import { BlueSpacing10, BlueSpacing20, BlueSpacing40 } from '../../components/BlueSpacing';
 import useWalletSubscribe from '../../hooks/useWalletSubscribe.tsx';
 import ActionSheet from '../ActionSheet.ts';
+import {
+  isBhwiAvailable,
+  matchesBhwiAddressSnapshot,
+  resolveBhwiAddressSnapshot,
+  supportsBhwiMessageSigning,
+} from '../../blue_modules/bhwi';
+import type { BhwiAddressSnapshot, BhwiSinglesigFormat } from '../../blue_modules/bhwi';
+import { bhwiAssociationIdentity, bhwiWatchOnlyWalletIdentity } from '../../blue_modules/bhwiPsbt';
+import { WatchOnlyWallet } from '../../class/wallets/watch-only-wallet';
+import type { SignVerifyStackParamList } from '../../navigation/SignVerifyStack';
 
-type SignVerifyRouteParams = {
+type NavigationProps = NativeStackNavigationProp<SignVerifyStackParamList, 'SignVerify'>;
+type RouteProps = RouteProp<SignVerifyStackParamList, 'SignVerify'>;
+type HardwareMessageAttempt = Readonly<{
+  generation: number;
   walletID: string;
+  walletIdentity: string;
+  associationIdentity: string;
   address: string;
-};
+  message: string;
+  path: string;
+  format: BhwiSinglesigFormat;
+  snapshot: BhwiAddressSnapshot;
+}>;
 
 const SignVerify = () => {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
-  const { sleep } = useStorage();
-  const scrollViewRef = React.useRef<ScrollView>(null);
+  const { sleep, wallets } = useStorage();
+  const navigation = useNavigation<NavigationProps>();
+  const isFocused = useIsFocused();
+  const route = useRoute<RouteProps>();
+  const { address: initialAddress, walletID, bhwiMessageAttempt, bhwiMessageSignature } = route.params;
+  const scrollViewRef = useRef<ScrollView>(null);
   const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
-  const { address: _address, walletID } = useRoute<RouteProp<{ params: SignVerifyRouteParams }, 'params'>>().params;
-
-  const [address, setAddress] = useState(_address);
+  const [address, setAddress] = useState(initialAddress);
   const [message, setMessage] = useState('');
   const [signature, setSignature] = useState('');
   const [loading, setLoading] = useState(false);
   const [messageHasFocus, setMessageHasFocus] = useState(false);
   const [isShareVisible, setIsShareVisible] = useState(false);
-
   const wallet = useWalletSubscribe(walletID);
+  const walletsRef = useRef(wallets);
+  const addressRef = useRef(address);
+  const messageRef = useRef(message);
+  const mountedRef = useRef(true);
+  const foregroundRef = useRef(AppState.currentState === 'active');
+  const focusedRef = useRef(isFocused);
+  const generationRef = useRef(0);
+  const hardwareAttemptRef = useRef<HardwareMessageAttempt | undefined>(undefined);
+  const allowedHardwareBlurRef = useRef(false);
+  walletsRef.current = wallets;
+  addressRef.current = address;
+  messageRef.current = message;
+  focusedRef.current = isFocused;
   const isToolbarVisibleForAndroid = Platform.OS === 'android' && messageHasFocus && isKeyboardVisible;
 
   useEffect(() => {
@@ -106,19 +142,188 @@ const SignVerify = () => {
     [],
   );
 
-  const handleSign = async () => {
-    setLoading(true);
-    await sleep(10); // wait for loading indicator to appear
-    let newSignature;
-    try {
-      newSignature = wallet.signMessage(message, address);
-      setSignature(newSignature);
-      setIsShareVisible(true);
-    } catch (e: any) {
-      triggerHapticFeedback(HapticFeedbackTypes.NotificationError);
-      presentAlert({ title: loc.errors.error, alertMessage: e.message });
+  const clearSignedOutput = useCallback(() => {
+    setSignature('');
+    setIsShareVisible(false);
+  }, []);
+
+  const expireHardwareAttempt = useCallback(() => {
+    const hadHardwareAttempt = hardwareAttemptRef.current !== undefined || allowedHardwareBlurRef.current;
+    if (hadHardwareAttempt) generationRef.current += 1;
+    hardwareAttemptRef.current = undefined;
+    allowedHardwareBlurRef.current = false;
+    if (hadHardwareAttempt) {
+      clearSignedOutput();
+      setLoading(false);
+    }
+  }, [clearSignedOutput]);
+
+  const updateAddress = useCallback(
+    (value: string) => {
+      const nextAddress = value.replace('\n', '');
+      addressRef.current = nextAddress;
+      expireHardwareAttempt();
+      clearSignedOutput();
+      setAddress(nextAddress);
+    },
+    [clearSignedOutput, expireHardwareAttempt],
+  );
+
+  const updateMessage = useCallback(
+    (value: string) => {
+      messageRef.current = value;
+      expireHardwareAttempt();
+      clearSignedOutput();
+      setMessage(value);
+    },
+    [clearSignedOutput, expireHardwareAttempt],
+  );
+
+  useEffect(() => {
+    mountedRef.current = true;
+    foregroundRef.current = AppState.currentState === 'active';
+    const appState = AppState.addEventListener('change', nextState => {
+      foregroundRef.current = nextState === 'active';
+      if (!foregroundRef.current) expireHardwareAttempt();
+    });
+    return () => {
+      mountedRef.current = false;
+      foregroundRef.current = false;
+      focusedRef.current = false;
+      generationRef.current += 1;
+      hardwareAttemptRef.current = undefined;
+      allowedHardwareBlurRef.current = false;
+      appState.remove();
+    };
+  }, [expireHardwareAttempt]);
+
+  useEffect(() => {
+    focusedRef.current = isFocused;
+    const hasHardwareResult = bhwiMessageAttempt !== undefined || bhwiMessageSignature !== undefined;
+    if (!isFocused) {
+      if (!allowedHardwareBlurRef.current) expireHardwareAttempt();
+      return;
+    }
+    if (!hasHardwareResult) {
+      if (allowedHardwareBlurRef.current) expireHardwareAttempt();
+      return;
     }
 
+    navigation.setParams({ bhwiMessageAttempt: undefined, bhwiMessageSignature: undefined });
+    const expected = hardwareAttemptRef.current;
+    hardwareAttemptRef.current = undefined;
+    allowedHardwareBlurRef.current = false;
+    const liveWallet = walletsRef.current.find(candidate => candidate.getID() === walletID);
+    const liveAssociation = liveWallet instanceof WatchOnlyWallet ? liveWallet.getHardwareWalletAssociation() : undefined;
+    const attemptIsCurrent =
+      !!expected &&
+      Number.isSafeInteger(bhwiMessageAttempt) &&
+      bhwiMessageAttempt === expected.generation &&
+      typeof bhwiMessageSignature === 'string' &&
+      bhwiMessageSignature.length > 0 &&
+      mountedRef.current &&
+      foregroundRef.current &&
+      focusedRef.current &&
+      generationRef.current === expected.generation &&
+      expected.walletID === walletID &&
+      addressRef.current === expected.address &&
+      messageRef.current === expected.message &&
+      liveWallet instanceof WatchOnlyWallet &&
+      !!liveAssociation &&
+      bhwiAssociationIdentity(liveAssociation) === expected.associationIdentity &&
+      bhwiWatchOnlyWalletIdentity(liveWallet, liveAssociation) === expected.walletIdentity &&
+      liveAssociation.format === expected.format &&
+      `${liveAssociation.path}/${expected.snapshot.isInternal ? 1 : 0}/${expected.snapshot.index}` === expected.path &&
+      matchesBhwiAddressSnapshot(liveWallet, expected.snapshot);
+    generationRef.current += 1;
+    clearSignedOutput();
+    if (!attemptIsCurrent || !expected || typeof bhwiMessageSignature !== 'string' || !(liveWallet instanceof WatchOnlyWallet)) {
+      triggerHapticFeedback(HapticFeedbackTypes.NotificationError);
+      presentAlert({ title: loc.errors.error, alertMessage: loc.addresses.hardware_signing_expired });
+      return;
+    }
+    try {
+      if (!liveWallet.verifyMessage(expected.message, expected.address, bhwiMessageSignature)) {
+        throw new Error(loc.addresses.hardware_signature_invalid);
+      }
+      setSignature(bhwiMessageSignature);
+      setIsShareVisible(true);
+      triggerHapticFeedback(HapticFeedbackTypes.NotificationSuccess);
+    } catch {
+      triggerHapticFeedback(HapticFeedbackTypes.NotificationError);
+      presentAlert({ title: loc.errors.error, alertMessage: loc.addresses.hardware_signature_invalid });
+    }
+  }, [bhwiMessageAttempt, bhwiMessageSignature, clearSignedOutput, expireHardwareAttempt, isFocused, navigation, presentAlert, walletID]);
+
+  const handleSign = async () => {
+    clearSignedOutput();
+    const associated = wallet instanceof WatchOnlyWallet ? wallet.getHardwareWalletAssociation() : undefined;
+    if (associated) {
+      const liveWallet = walletsRef.current.find(candidate => candidate.getID() === walletID);
+      const liveAssociation = liveWallet instanceof WatchOnlyWallet ? liveWallet.getHardwareWalletAssociation() : undefined;
+      const walletIdentity =
+        liveWallet instanceof WatchOnlyWallet && liveAssociation ? bhwiWatchOnlyWalletIdentity(liveWallet, liveAssociation) : undefined;
+      if (
+        !(liveWallet instanceof WatchOnlyWallet) ||
+        !liveAssociation ||
+        !walletIdentity ||
+        bhwiAssociationIdentity(liveAssociation) !== bhwiAssociationIdentity(associated)
+      ) {
+        presentAlert({ title: loc.errors.error, alertMessage: loc.addresses.hardware_signing_expired });
+        return;
+      }
+      if (!isBhwiAvailable()) {
+        presentAlert({ title: loc.errors.error, alertMessage: loc.wallets.hardware_unavailable });
+        return;
+      }
+      if (!supportsBhwiMessageSigning({ family: liveAssociation.family, model: null }, liveAssociation.format)) {
+        presentAlert({ title: loc.errors.error, alertMessage: loc.wallets.hardware_unsupported });
+        return;
+      }
+      const messageFormat = liveAssociation.format;
+      const snapshot = resolveBhwiAddressSnapshot(liveWallet, addressRef.current);
+      if (!snapshot) {
+        presentAlert({ title: loc.errors.error, alertMessage: loc.wallets.hardware_address_unknown });
+        return;
+      }
+      const path = `${liveAssociation.path}/${snapshot.isInternal ? 1 : 0}/${snapshot.index}`;
+      const generation = generationRef.current + 1;
+      generationRef.current = generation;
+      const attempt: HardwareMessageAttempt = Object.freeze({
+        generation,
+        walletID,
+        walletIdentity,
+        associationIdentity: bhwiAssociationIdentity(liveAssociation),
+        address: addressRef.current,
+        message: messageRef.current,
+        path,
+        format: messageFormat,
+        snapshot: Object.freeze({ ...snapshot }),
+      });
+      hardwareAttemptRef.current = attempt;
+      allowedHardwareBlurRef.current = true;
+      navigation.navigate('HardwareWalletAccount', {
+        mode: 'sign-message',
+        walletID,
+        hardwareAccount: { ...liveAssociation },
+        snapshot: attempt.snapshot,
+        path: attempt.path,
+        message: attempt.message,
+        attempt: attempt.generation,
+      });
+      return;
+    }
+
+    setLoading(true);
+    await sleep(10); // wait for loading indicator to appear
+    try {
+      const newSignature = wallet.signMessage(messageRef.current, addressRef.current);
+      setSignature(newSignature);
+      setIsShareVisible(true);
+    } catch (error) {
+      triggerHapticFeedback(HapticFeedbackTypes.NotificationError);
+      presentAlert({ title: loc.errors.error, alertMessage: error instanceof Error ? error.message : loc.errors.error });
+    }
     setLoading(false);
   };
 
@@ -134,9 +339,9 @@ const SignVerify = () => {
       if (res) {
         triggerHapticFeedback(HapticFeedbackTypes.NotificationSuccess);
       }
-    } catch (e: any) {
+    } catch (error) {
       triggerHapticFeedback(HapticFeedbackTypes.NotificationError);
-      presentAlert({ title: loc.errors.error, alertMessage: e.message });
+      presentAlert({ title: loc.errors.error, alertMessage: error instanceof Error ? error.message : loc.errors.error });
     }
     setLoading(false);
   };
@@ -181,7 +386,7 @@ const SignVerify = () => {
           placeholder={loc.addresses.sign_placeholder_address}
           placeholderTextColor="#81868e"
           value={address}
-          onChangeText={t => setAddress(t.replace('\n', ''))}
+          onChangeText={updateAddress}
           testID="SignVerifyAddress"
           style={[styles.text, stylesHooks.text]}
           autoCorrect={false}
@@ -195,7 +400,7 @@ const SignVerify = () => {
           placeholder={loc.addresses.sign_placeholder_message}
           placeholderTextColor="#81868e"
           value={message}
-          onChangeText={setMessage}
+          onChangeText={updateMessage}
           testID="Message"
           inputAccessoryViewID={DoneAndDismissKeyboardInputAccessoryViewID}
           style={[styles.text, styles.messageInput, stylesHooks.text]}
@@ -239,9 +444,9 @@ const SignVerify = () => {
         {Platform.select({
           ios: (
             <DoneAndDismissKeyboardInputAccessory
-              onClearTapped={() => setMessage('')}
+              onClearTapped={() => updateMessage('')}
               onPasteTapped={text => {
-                setMessage(text);
+                updateMessage(text);
                 Keyboard.dismiss();
               }}
             />
@@ -249,11 +454,11 @@ const SignVerify = () => {
           android: isToolbarVisibleForAndroid && (
             <DoneAndDismissKeyboardInputAccessory
               onClearTapped={() => {
-                setMessage('');
+                updateMessage('');
                 Keyboard.dismiss();
               }}
               onPasteTapped={text => {
-                setMessage(text);
+                updateMessage(text);
                 Keyboard.dismiss();
               }}
             />

@@ -141,3 +141,16 @@ it('maps native codes to redacted errors and never falls back from signing', asy
   expect(native.signPsbt).toHaveBeenCalledTimes(1);
   await session.disconnect();
 });
+
+it('forwards the exact message path, legacy format, and message without rewriting the returned header', async () => {
+  const native = nativeModule();
+  const signature = 'IL3u9GLAzgG5BdtSBqUe0Fo2Zx0UlKwSsYx2TbuVX0VULFgZYRBQCW0W7QOlsB/JgGwWNhl3eYYjXtdfyR7pM+Y=';
+  native.signMessage.mockResolvedValue(signature);
+  const bhwi = load('android', native);
+  const selection = { walletId: 'wallet', accountId: 'account' };
+  const session = await bhwi.startBhwiSession(selection, () => selection);
+
+  await expect(session.signMessage("m/44'/0'/0'/1/2", 'legacy', 'message')).resolves.toBe(signature);
+  expect(native.signMessage).toHaveBeenCalledWith('000102030405060708090a0b0c0d0e0f', "m/44'/0'/0'/1/2", 'legacy', 'message');
+  await session.disconnect();
+});

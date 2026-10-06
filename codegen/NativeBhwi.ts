@@ -56,7 +56,7 @@ export interface Spec extends TurboModule {
   displayDescriptorAddress(sessionId: string, policy: Policy, change: boolean, index: Int32): Promise<string>;
   displayMultisigAddress(sessionId: string, threshold: Int32, format: string, keys: string[]): Promise<string>;
   signPsbt(sessionId: string, psbtBase64: string, policy: Policy | null): Promise<string>;
-  signMessage(sessionId: string, path: string, message: string): Promise<string>;
+  signMessage(sessionId: string, path: string, format: string, message: string): Promise<string>;
   disconnect(sessionId: string): Promise<void>;
 }
 

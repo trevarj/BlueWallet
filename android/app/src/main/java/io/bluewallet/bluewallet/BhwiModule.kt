@@ -210,6 +210,17 @@ internal fun supportsBhwiFormat(family: BhwiFamily, format: String, model: Strin
     BhwiFamily.SPECTER -> format != "taproot"
 }
 
+internal fun supportsBhwiMessageSigning(family: BhwiFamily, format: String, model: String? = null): Boolean {
+    val legacyFormat = format == "legacy" || format == "nested-segwit" || format == "native-segwit"
+    return when (family) {
+        BhwiFamily.BITBOX02 -> format == "nested-segwit" || format == "native-segwit"
+        BhwiFamily.COLDCARD -> format == "native-segwit"
+        BhwiFamily.JADE, BhwiFamily.LEDGER, BhwiFamily.KEEPKEY -> legacyFormat
+        BhwiFamily.TREZOR -> (model == null || model == "1" || model == "T") && legacyFormat
+        BhwiFamily.SPECTER -> false
+    }
+}
+
 internal fun supportsDescriptorDisplay(family: BhwiFamily, descriptor: String): Boolean {
     val policy = descriptor.trim().substringBefore('#')
     if (family == BhwiFamily.LEDGER) return true
@@ -652,8 +663,13 @@ class BhwiModule internal constructor(
         }
     }
 
-    override fun signMessage(sessionId: String, path: String, message: String, promise: Promise) {
+    override fun signMessage(sessionId: String, path: String, format: String, message: String, promise: Promise) {
         launchOwned(sessionId, promise) { state ->
+            val family = connectedFamily(state.id)
+            val accountFormat = parseAccountFormat(format)
+            if (accountFormat.singlesig == null || !supportsBhwiMessageSigning(family, format, connectedModel(state.id))) {
+                throw BhwiFailure(BHWI_UNSUPPORTED)
+            }
             deviceCall(state.id) { connectedSession(state.id).signMessage(path, message) }
         }
     }

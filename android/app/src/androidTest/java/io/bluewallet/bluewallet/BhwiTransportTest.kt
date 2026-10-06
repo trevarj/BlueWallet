@@ -363,6 +363,19 @@ class BhwiTransportTest {
         assertFalse(supportsDescriptorDisplay(BhwiFamily.JADE, "tr([deadbeef/86'/0'/0']xpub/<0;1>/*)"))
         assertFalse(supportsDescriptorDisplay(BhwiFamily.COLDCARD, "wsh(sortedmulti(2,key1,key2))"))
         assertTrue(supportsDescriptorDisplay(BhwiFamily.LEDGER, "tr(key)"))
+        assertTrue(supportsBhwiMessageSigning(BhwiFamily.COLDCARD, "native-segwit", model = "mk5"))
+        assertTrue(supportsBhwiMessageSigning(BhwiFamily.LEDGER, "legacy"))
+        assertTrue(supportsBhwiMessageSigning(BhwiFamily.LEDGER, "native-segwit"))
+        assertTrue(supportsBhwiMessageSigning(BhwiFamily.JADE, "legacy"))
+        assertTrue(supportsBhwiMessageSigning(BhwiFamily.KEEPKEY, "legacy"))
+        assertTrue(supportsBhwiMessageSigning(BhwiFamily.TREZOR, "legacy", model = "1"))
+        assertTrue(supportsBhwiMessageSigning(BhwiFamily.TREZOR, "native-segwit", model = "T"))
+        assertFalse(supportsBhwiMessageSigning(BhwiFamily.TREZOR, "legacy", model = "unknown"))
+        assertTrue(supportsBhwiMessageSigning(BhwiFamily.BITBOX02, "nested-segwit"))
+        assertTrue(supportsBhwiMessageSigning(BhwiFamily.BITBOX02, "native-segwit"))
+        assertFalse(supportsBhwiMessageSigning(BhwiFamily.BITBOX02, "legacy"))
+        assertFalse(supportsBhwiMessageSigning(BhwiFamily.SPECTER, "legacy"))
+        assertFalse(supportsBhwiMessageSigning(BhwiFamily.LEDGER, "taproot"))
     }
 
     @Test

@@ -6,9 +6,10 @@ import type { AppStateStatus } from 'react-native';
 
 import type { TWallet } from '../../class/wallets/types';
 import { WatchOnlyWallet } from '../../class/wallets/watch-only-wallet';
+import { HDLegacyP2PKHWallet } from '../../class/wallets/hd-legacy-p2pkh-wallet';
 import { MultisigHDWallet } from '../../class/wallets/multisig-hd-wallet';
 import HardwareWalletAccount from '../../screen/wallets/HardwareWalletAccount';
-import { BhwiError } from '../../blue_modules/bhwi';
+import * as Bhwi from '../../blue_modules/bhwi';
 
 const mockNavigate = jest.fn();
 const mockDispatch = jest.fn();
@@ -23,6 +24,7 @@ const mockGetAccount = jest.fn();
 const mockStartSession = jest.fn();
 const mockVerifyAccount = jest.fn();
 const mockSignPsbt = jest.fn();
+const mockSignMessage = jest.fn();
 const mockGetBhwiLedgerHmac = jest.fn();
 const mockValidateOriginal = jest.fn();
 const mockValidateResult = jest.fn();
@@ -80,6 +82,7 @@ jest.mock('../../hooks/useScreenProtect', () => ({
 jest.mock('../../components/themes', () => ({ useTheme: () => ({ colors: new Proxy({}, { get: () => '#000000' }) }) }));
 
 jest.mock('../../blue_modules/bhwi', () => {
+  const actual = jest.requireActual('../../blue_modules/bhwi') as Pick<typeof Bhwi, 'isBhwiAddressSnapshot'>;
   class MockBhwiError extends Error {
     code: string;
     constructor(code: string) {
@@ -100,8 +103,17 @@ jest.mock('../../blue_modules/bhwi', () => {
     isBhwiSinglesigFormat: (format: string) => !format.startsWith('multisig-'),
     isCanonicalBhwiFingerprint: (value: string) => value === 'd34db33f',
     isBhwiReconnectMatch: () => true,
+    isBhwiAddressSnapshot: actual.isBhwiAddressSnapshot,
     startBhwiSession: (...args: unknown[]) => mockStartSession(...args),
     supportsBhwiAccountFormat: () => true,
+    matchesBhwiAddressSnapshot: (
+      wallet: { _getInternalAddressByIndex(index: number): string; _getExternalAddressByIndex(index: number): string },
+      snapshot: { address: string; index: number; isInternal: boolean },
+    ) =>
+      (snapshot.isInternal ? wallet._getInternalAddressByIndex(snapshot.index) : wallet._getExternalAddressByIndex(snapshot.index)) ===
+      snapshot.address,
+    supportsBhwiMessageSigning: (info: { family: string; model: string | null }, format: string) =>
+      info.family === 'ledger' && info.model === null && format === 'legacy',
     verifyBhwiAccount: (...args: unknown[]) => mockVerifyAccount(...args),
   };
 });
@@ -185,6 +197,7 @@ const session = {
   connect: mockConnect,
   getAccount: mockGetAccount,
   signPsbt: mockSignPsbt,
+  signMessage: mockSignMessage,
   disconnect: mockDisconnect,
 };
 
@@ -209,6 +222,7 @@ beforeEach(() => {
     format: requestedFormat,
   }));
   mockSignPsbt.mockResolvedValue('signed-psbt');
+  mockSignMessage.mockReset();
   mockValidateResult.mockReturnValue({ psbt: {} });
   jest.spyOn(WatchOnlyWallet, 'fromBhwiAccount').mockReturnValue(draft);
 });
@@ -410,6 +424,141 @@ function makeSigningWallet(secret = publicAccount.xpub) {
   return wallet;
 }
 
+type MessageSigningFixture = {
+  wallet: WatchOnlyWallet;
+  association: Bhwi.HardwareWalletAssociation;
+  message: string;
+  address: string;
+  signature: string;
+};
+
+function makeMessageSigningWallet() {
+  const signer = new HDLegacyP2PKHWallet();
+  signer.setSecret('abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about');
+  const association: Bhwi.HardwareWalletAssociation = {
+    ...publicAccount,
+    path: "m/44'/0'/0'",
+    format: 'legacy',
+  };
+  const wallet = Object.create(WatchOnlyWallet.prototype) as WatchOnlyWallet;
+  Object.assign(wallet, {
+    getID: () => 'message-signing-wallet',
+    getSecret: () => association.xpub,
+    getMasterFingerprintHex: () => association.fingerprint,
+    getDerivationPath: () => association.path,
+    getHardwareWalletAssociation: () => ({ ...association }),
+    _getExternalAddressByIndex: (index: number) => signer._getExternalAddressByIndex(index),
+    _getInternalAddressByIndex: (index: number) => signer._getInternalAddressByIndex(index),
+    verifyMessage: (message: string, address: string, signature: string) => signer.verifyMessage(message, address, signature),
+  });
+  const message = 'hardware message';
+  const address = signer._getExternalAddressByIndex(2);
+  const fixture: MessageSigningFixture = { wallet, association, message, address, signature: signer.signMessage(message, address) };
+  return fixture;
+}
+
+function messageRoute(fixture: MessageSigningFixture, attempt = 1) {
+  return {
+    mode: 'sign-message' as const,
+    walletID: fixture.wallet.getID(),
+    hardwareAccount: fixture.association,
+    snapshot: { address: fixture.address, index: 2, isInternal: false },
+    path: `${fixture.association.path}/0/2`,
+    message: fixture.message,
+    attempt,
+  };
+}
+
+it('accepts a real locally verifiable device signature without rewriting its header', async () => {
+  const fixture = makeMessageSigningWallet();
+  mockWallets = [fixture.wallet];
+  mockRouteParams = messageRoute(fixture);
+  mockSignMessage.mockResolvedValueOnce(fixture.signature);
+  const view = render(<HardwareWalletAccount />);
+  await reachSigningOperation(view);
+  fireEvent.press(view.getByTestId('HardwareSignMessage'));
+
+  await waitFor(() => expect(mockDispatch).toHaveBeenCalledTimes(1));
+  expect(mockSignMessage).toHaveBeenCalledWith(mockRouteParams.path, 'legacy', fixture.message);
+  const returned = JSON.stringify(mockDispatch.mock.calls[0][0]);
+  expect(returned).toContain('SignVerify');
+  expect(returned).toContain(fixture.signature);
+});
+
+it('rejects a valid compact signature carrying the wrong address-format header', async () => {
+  const fixture = makeMessageSigningWallet();
+  const wrongHeader = Buffer.from(fixture.signature, 'base64');
+  wrongHeader[0] = 39;
+  mockWallets = [fixture.wallet];
+  mockRouteParams = messageRoute(fixture);
+  mockSignMessage.mockResolvedValueOnce(wrongHeader.toString('base64'));
+  const view = render(<HardwareWalletAccount />);
+  await reachSigningOperation(view);
+  fireEvent.press(view.getByTestId('HardwareSignMessage'));
+
+  await waitFor(() =>
+    expect(view.getByTestId('HardwareStatus').props.children).toBe('The hardware wallet returned an invalid message signature.'),
+  );
+  expect(mockDispatch).not.toHaveBeenCalled();
+});
+
+it('rejects an altered compact signature body', async () => {
+  const fixture = makeMessageSigningWallet();
+  const altered = Buffer.from(fixture.signature, 'base64');
+  altered[64] = altered[64] === 0 ? 1 : altered[64] - 1;
+  mockWallets = [fixture.wallet];
+  mockRouteParams = messageRoute(fixture);
+  mockSignMessage.mockResolvedValueOnce(altered.toString('base64'));
+  const view = render(<HardwareWalletAccount />);
+  await reachSigningOperation(view);
+  fireEvent.press(view.getByTestId('HardwareSignMessage'));
+
+  await waitFor(() =>
+    expect(view.getByTestId('HardwareStatus').props.children).toBe('The hardware wallet returned an invalid message signature.'),
+  );
+  expect(mockDispatch).not.toHaveBeenCalled();
+});
+
+it('drops a message signature returned after the associated wallet is deleted', async () => {
+  const fixture = makeMessageSigningWallet();
+  const pendingSign = withResolvers<string>();
+  mockWallets = [fixture.wallet];
+  mockRouteParams = messageRoute(fixture);
+  mockSignMessage.mockReturnValueOnce(pendingSign.promise);
+  const view = render(<HardwareWalletAccount />);
+  await reachSigningOperation(view);
+  fireEvent.press(view.getByTestId('HardwareSignMessage'));
+  await waitFor(() => expect(mockSignMessage).toHaveBeenCalledTimes(1));
+  mockWallets = [];
+  view.rerender(<HardwareWalletAccount />);
+  await act(async () => {
+    pendingSign.resolve(fixture.signature);
+    await pendingSign.promise;
+  });
+
+  await waitFor(() => expect(view.getByTestId('HardwareStatus').props.children).toBe('Hardware signing session expired; start again'));
+  expect(mockDispatch).not.toHaveBeenCalled();
+});
+
+it('requires an explicit fresh connection after message-signing refusal', async () => {
+  const fixture = makeMessageSigningWallet();
+  mockWallets = [fixture.wallet];
+  mockRouteParams = messageRoute(fixture);
+  mockSignMessage.mockRejectedValueOnce(new Bhwi.BhwiError('BHWI_USER_REFUSED')).mockResolvedValueOnce(fixture.signature);
+  const view = render(<HardwareWalletAccount />);
+  await reachSigningOperation(view);
+  fireEvent.press(view.getByTestId('HardwareSignMessage'));
+  await waitFor(() => expect(mockSignMessage).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(view.queryByTestId('HardwareOperationAccount')).toBeNull());
+  expect(mockDispatch).not.toHaveBeenCalled();
+
+  await reachSigningOperation(view);
+  fireEvent.press(view.getByTestId('HardwareSignMessage'));
+  await waitFor(() => expect(mockDispatch).toHaveBeenCalledTimes(1));
+  expect(mockStartSession).toHaveBeenCalledTimes(2);
+  expect(mockSignMessage).toHaveBeenCalledTimes(2);
+});
+
 it('requires a fresh connection after signing refusal and never retries automatically', async () => {
   const signingWallet = makeSigningWallet();
   mockWallets = [signingWallet];
@@ -420,7 +569,7 @@ it('requires a fresh connection after signing refusal and never retries automati
     originalBase64: 'original-psbt',
     attempt: 1,
   };
-  mockSignPsbt.mockRejectedValueOnce(new BhwiError('BHWI_USER_REFUSED')).mockResolvedValueOnce('signed-psbt');
+  mockSignPsbt.mockRejectedValueOnce(new Bhwi.BhwiError('BHWI_USER_REFUSED')).mockResolvedValueOnce('signed-psbt');
   const view = render(<HardwareWalletAccount />);
   await reachSigningOperation(view);
   fireEvent.press(view.getByTestId('HardwareSignPsbt'));

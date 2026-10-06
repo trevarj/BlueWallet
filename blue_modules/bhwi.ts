@@ -76,6 +76,19 @@ export type BhwiAddressSnapshot = {
   isInternal: boolean;
 };
 
+export const isBhwiAddressSnapshot = (value: unknown): value is BhwiAddressSnapshot =>
+  !!value &&
+  typeof value === 'object' &&
+  'address' in value &&
+  typeof value.address === 'string' &&
+  value.address.length > 0 &&
+  'index' in value &&
+  typeof value.index === 'number' &&
+  Number.isSafeInteger(value.index) &&
+  value.index >= 0 &&
+  'isInternal' in value &&
+  typeof value.isInternal === 'boolean';
+
 export type BhwiOperationRouteParams =
   | {
       mode: 'register-wallet';
@@ -92,6 +105,15 @@ export type BhwiOperationRouteParams =
       walletID: string;
       hardwareAccount: HardwareWalletAssociation;
       originalBase64: string;
+      attempt: number;
+    }
+  | {
+      mode: 'sign-message';
+      walletID: string;
+      hardwareAccount: HardwareWalletAssociation;
+      snapshot: BhwiAddressSnapshot;
+      path: string;
+      message: string;
       attempt: number;
     };
 
@@ -160,6 +182,27 @@ export function supportsBhwiAccountFormat(info: Pick<DeviceInfo, 'family' | 'mod
       return format !== 'taproot';
     case 'trezor':
       return format !== 'taproot' || info.model === 'T';
+  }
+}
+
+export function supportsBhwiMessageSigning(
+  info: Pick<DeviceInfo, 'family' | 'model'>,
+  format: BhwiImportFormat,
+): format is Exclude<BhwiSinglesigFormat, 'taproot'> {
+  if (!isBhwiSinglesigFormat(format) || format === 'taproot') return false;
+  switch (info.family) {
+    case 'coldcard':
+      return format === 'native-segwit';
+    case 'jade':
+    case 'ledger':
+    case 'keepkey':
+      return true;
+    case 'trezor':
+      return info.model === null || info.model === '1' || info.model === 'T';
+    case 'bitbox02':
+      return format === 'nested-segwit' || format === 'native-segwit';
+    case 'specter':
+      return false;
   }
 }
 
@@ -627,8 +670,8 @@ export class BhwiSession {
     return this.call(native => native.signPsbt(this.sessionId, psbtBase64, policy));
   }
 
-  signMessage(path: string, message: string): Promise<string> {
-    return this.call(native => native.signMessage(this.sessionId, path, message));
+  signMessage(path: string, format: BhwiSinglesigFormat, message: string): Promise<string> {
+    return this.call(native => native.signMessage(this.sessionId, path, format, message));
   }
 
   async disconnect(): Promise<void> {

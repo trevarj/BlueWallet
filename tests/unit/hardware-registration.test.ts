@@ -234,8 +234,8 @@ it('snapshots exact current, historical, and change origins and fails closed on 
   };
 
   const current = resolveBhwiAddressSnapshot(wallet, 'a-receive-3');
-  const historical = resolveBhwiAddressSnapshot(wallet, 'a-receive-1', { index: 1, isInternal: false });
-  const change = resolveBhwiAddressSnapshot(wallet, 'a-change-2', { index: 2, isInternal: true });
+  const historical = resolveBhwiAddressSnapshot(wallet, 'a-receive-1');
+  const change = resolveBhwiAddressSnapshot(wallet, 'a-change-2');
   expect(current).toEqual({ address: 'a-receive-3', index: 3, isInternal: false });
   expect(historical).toEqual({ address: 'a-receive-1', index: 1, isInternal: false });
   expect(change).toEqual({ address: 'a-change-2', index: 2, isInternal: true });

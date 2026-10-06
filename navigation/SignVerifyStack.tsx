@@ -6,11 +6,26 @@ import { useTheme } from '../components/themes';
 import loc from '../loc';
 import { withLazySuspense } from './LazyLoadingIndicator';
 import { labelForNetwork } from '../models/bitcoinNetwork';
+import type { BhwiOperationRouteParams } from '../blue_modules/bhwi';
 
-const Stack = createNativeStackNavigator();
+export type SignVerifyScreenParams = {
+  walletID: string;
+  address: string;
+  bhwiMessageAttempt?: number;
+  bhwiMessageSignature?: string;
+};
+
+export type SignVerifyStackParamList = {
+  SignVerify: SignVerifyScreenParams;
+  HardwareWalletAccount: BhwiOperationRouteParams;
+};
+
+const Stack = createNativeStackNavigator<SignVerifyStackParamList>();
 
 const SignVerify = lazy(() => import('../screen/wallets/signVerify'));
+const HardwareWalletAccount = lazy(() => import('../screen/wallets/HardwareWalletAccount'));
 const SignVerifyComponent = withLazySuspense(SignVerify);
+const HardwareWalletAccountComponent = withLazySuspense(HardwareWalletAccount);
 
 const SignVerifyStackRoot = () => {
   const theme = useTheme();
@@ -26,6 +41,11 @@ const SignVerifyStackRoot = () => {
           title: labelForNetwork(loc.addresses.sign_title),
           closeButtonPosition: CloseButtonPosition.Right,
         })(theme)}
+      />
+      <Stack.Screen
+        name="HardwareWalletAccount"
+        component={HardwareWalletAccountComponent}
+        options={navigationStyle({ title: loc.wallets.hardware_title })(theme)}
       />
     </Stack.Navigator>
   );

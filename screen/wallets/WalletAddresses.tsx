@@ -14,6 +14,7 @@ import { useSettings } from '../../hooks/context/useSettings';
 import { useScreenProtect } from '../../hooks/useScreenProtect';
 import { mainnetServicesEnabled } from '../../models/bitcoinNetwork';
 import type { TWallet } from '../../class/wallets/types';
+import { isBhwiAvailable, supportsBhwiMessageSigning } from '../../blue_modules/bhwi';
 
 export const TABS = {
   EXTERNAL: 'receive',
@@ -126,8 +127,13 @@ const WalletAddresses: React.FC = () => {
   const balanceUnit = !mainnetServicesEnabled && preferredUnit === BitcoinUnit.LOCAL_CURRENCY ? BitcoinUnit.BTC : preferredUnit;
   const isWatchOnly = wallet?.type === WatchOnlyWallet.type;
   const walletInstance = isWatchOnly ? wallet._hdWalletInstance : wallet;
-  const allowSignVerifyMessage = (wallet && 'allowSignVerifyMessage' in wallet && wallet.allowSignVerifyMessage()) ?? false;
-
+  const allowExportPrivateKey = (wallet && 'allowSignVerifyMessage' in wallet && wallet.allowSignVerifyMessage()) ?? false;
+  const hardwareAssociation = wallet instanceof WatchOnlyWallet ? wallet.getHardwareWalletAssociation() : undefined;
+  const allowSignVerifyMessage =
+    allowExportPrivateKey ||
+    (!!hardwareAssociation &&
+      isBhwiAvailable() &&
+      supportsBhwiMessageSigning({ family: hardwareAssociation.family, model: null }, hardwareAssociation.format));
   const { colors } = useTheme();
   const { isPrivacyBlurEnabled } = useSettings();
   const { enableScreenProtect, disableScreenProtect } = useScreenProtect();
@@ -214,10 +220,11 @@ const WalletAddresses: React.FC = () => {
           balanceUnit={balanceUnit}
           walletID={walletID}
           allowSignVerifyMessage={allowSignVerifyMessage}
+          allowExportPrivateKey={allowExportPrivateKey}
         />
       );
     },
-    [balanceUnit, walletID, allowSignVerifyMessage],
+    [allowExportPrivateKey, allowSignVerifyMessage, balanceUnit, walletID],
   );
 
   if (!wallet) {

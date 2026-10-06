@@ -12,7 +12,7 @@ import {
 } from '../../blue_modules/fs';
 import triggerHapticFeedback, { HapticFeedbackTypes } from '../../blue_modules/hapticFeedback';
 import { uint8ArrayToHex } from '../../blue_modules/uint8array-extras';
-import { isBhwiAvailable, supportsBhwiRegistration } from '../../blue_modules/bhwi';
+import { isBhwiAvailable, supportsBhwiMessageSigning, supportsBhwiRegistration } from '../../blue_modules/bhwi';
 import BlueCard from '../../components/BlueCard';
 import BlueText from '../../components/BlueText';
 import { HDAezeedWallet } from '../../class/wallets/hd-aezeed-wallet';
@@ -98,6 +98,12 @@ const WalletDetails: React.FC = () => {
   const walletTransactionsLength = useMemo<number>(() => wallet.getTransactions().length, [wallet]);
   const [coinControlStats, setCoinControlStats] = useState(() => getCoinControlStats(wallet));
   const hardwareWalletAssociations = wallet instanceof MultisigHDWallet ? wallet.getHardwareWalletAssociations() : [];
+  const hardwareMessageAssociation = wallet instanceof WatchOnlyWallet ? wallet.getHardwareWalletAssociation() : undefined;
+  const allowSignVerifyMessage =
+    wallet.allowSignVerifyMessage() ||
+    (!!hardwareMessageAssociation &&
+      isBhwiAvailable() &&
+      supportsBhwiMessageSigning({ family: hardwareMessageAssociation.family, model: null }, hardwareMessageAssociation.format));
 
   useEffect(() => {
     const w = walletRef.current;
@@ -938,7 +944,7 @@ const WalletDetails: React.FC = () => {
               {wallet.allowXpub && wallet.allowXpub() && (
                 <SettingsListItem onPress={navigateToXPub} title={loc.wallets.details_show_xpub} testID="XpubButton" bottomDivider />
               )}
-              {wallet.allowSignVerifyMessage && wallet.allowSignVerifyMessage() && (
+              {allowSignVerifyMessage && (
                 <SettingsListItem
                   onPress={navigateToSignVerify}
                   title={loc.addresses.sign_title}

@@ -25,6 +25,7 @@ interface AddressItemProps {
   balanceUnit: BitcoinUnit;
   walletID: string;
   allowSignVerifyMessage: boolean;
+  allowExportPrivateKey: boolean;
   onPress?: () => void; // example: ManageWallets uses this
   searchQuery?: string;
   renderHighlightedText?: (text: string, query: string) => React.ReactElement;
@@ -37,6 +38,7 @@ const AddressItem = ({
   balanceUnit,
   walletID,
   allowSignVerifyMessage,
+  allowExportPrivateKey,
   onPress,
   searchQuery = '',
   renderHighlightedText,
@@ -104,10 +106,10 @@ const AddressItem = ({
       },
       {
         ...CommonToolTipActions.ExportPrivateKey,
-        hidden: !allowSignVerifyMessage,
+        hidden: !allowExportPrivateKey,
       },
     ],
-    [allowSignVerifyMessage],
+    [allowExportPrivateKey, allowSignVerifyMessage],
   );
 
   const balance = formatBalance(item.balance, balanceUnit, true);
@@ -157,9 +159,9 @@ const AddressItem = ({
         handleCopyPress();
       } else if (id === CommonToolTipActions.Share.id) {
         handleSharePress();
-      } else if (id === CommonToolTipActions.SignVerify.id) {
+      } else if (id === CommonToolTipActions.SignVerify.id && allowSignVerifyMessage) {
         navigateToSignVerify();
-      } else if (id === CommonToolTipActions.ExportPrivateKey.id) {
+      } else if (id === CommonToolTipActions.ExportPrivateKey.id && allowExportPrivateKey) {
         if (await confirm(loc.addresses.sensitive_private_key)) {
           if (await isBiometricUseCapableAndEnabled()) {
             if (!(await unlockWithBiometrics())) {
@@ -170,7 +172,15 @@ const AddressItem = ({
         }
       }
     },
-    [handleCopyPress, handleSharePress, navigateToSignVerify, handleCopyPrivkeyPress, isBiometricUseCapableAndEnabled],
+    [
+      allowExportPrivateKey,
+      allowSignVerifyMessage,
+      handleCopyPress,
+      handleSharePress,
+      navigateToSignVerify,
+      handleCopyPrivkeyPress,
+      isBiometricUseCapableAndEnabled,
+    ],
   );
 
   // Render address with highlighting if a search query is provided

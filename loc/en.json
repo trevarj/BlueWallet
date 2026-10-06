@@ -750,6 +750,8 @@
     "sign_verify": "Verify",
     "sign_signature_correct": "Verification successful!",
     "sign_signature_incorrect": "Verification failed!",
+    "hardware_signature_invalid": "The hardware wallet returned an invalid message signature.",
+    "hardware_signing_expired": "Hardware message signing expired; start again.",
     "sign_placeholder_address": "Address",
     "sign_placeholder_message": "Message",
     "sign_placeholder_signature": "Signature",
