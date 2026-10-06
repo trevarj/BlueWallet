@@ -38,6 +38,10 @@ declare module 'coinselect' {
   export type CoinSelectOutput = {
     address?: string; // if output has no address - this is a change output
     value: number;
+    script?: {
+      length: number;
+      hex?: string;
+    };
   };
 
   export default function coinSelect(
@@ -50,6 +54,12 @@ declare module 'coinselect' {
     outputs: CoinSelectOutput[];
     fee: number;
   };
+}
+
+declare module 'coinselect/utils' {
+  import { CoinSelectOutput, CoinSelectReturnInput } from 'coinselect';
+
+  export function transactionBytes(inputs: CoinSelectReturnInput[], outputs: CoinSelectOutput[]): number;
 }
 
 declare module 'coinselect/split' {

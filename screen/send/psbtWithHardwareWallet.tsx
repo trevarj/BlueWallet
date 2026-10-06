@@ -9,14 +9,16 @@ import triggerHapticFeedback, { HapticFeedbackTypes } from '../../blue_modules/h
 import { isBhwiAvailable } from '../../blue_modules/bhwi';
 import {
   BHWI_SIGNING_SESSION_EXPIRED,
+  assertBhwiCpfpPackageTarget,
   assertBhwiPsbtAttemptCurrent,
   bhwiAssociationIdentity,
   bhwiWatchOnlyWalletIdentity,
   getBhwiPsbtReview,
   hydrateBhwiPsbt,
+  requireBhwiCpfpContext,
   validateBhwiBoundPsbt,
 } from '../../blue_modules/bhwiPsbt';
-import type { BhwiPsbtAttemptSnapshot, BhwiPsbtReview } from '../../blue_modules/bhwiPsbt';
+import type { BhwiCpfpContext, BhwiPsbtAttemptSnapshot, BhwiPsbtReview } from '../../blue_modules/bhwiPsbt';
 import { validateBhwiPsbtOriginal } from '../../blue_modules/validateBhwiPsbt';
 import BlueCard from '../../components/BlueCard';
 import BlueText from '../../components/BlueText';
@@ -37,6 +39,7 @@ import { BlueSpacing10, BlueSpacing20 } from '../../components/BlueSpacing';
 import { SendDetailsStackParamList } from '../../navigation/SendDetailsStackParamList';
 import { WatchOnlyWallet } from '../../class/wallets/watch-only-wallet';
 import { network } from '../../models/bitcoinNetwork';
+import { isAssociatedWatchOnlySegwitBech32 } from '../../util/isWatchOnlySegwitBech32';
 
 type NavigationProps = NativeStackNavigationProp<SendDetailsStackParamList, 'PsbtWithHardwareWallet'>;
 
@@ -47,6 +50,17 @@ const PsbtWithHardwareWallet = () => {
   const { enableScreenProtect, disableScreenProtect } = useScreenProtect();
   const navigation = useNavigation<NavigationProps>();
   const route = useRoute<RouteProp<SendDetailsStackParamList, 'PsbtWithHardwareWallet'>>();
+  const cpfpRouteSnapshotRef = useRef<{ initialized: boolean; invalid: boolean; value?: BhwiCpfpContext }>({
+    initialized: false,
+    invalid: false,
+  });
+  if (!cpfpRouteSnapshotRef.current.initialized) {
+    try {
+      cpfpRouteSnapshotRef.current = { initialized: true, invalid: false, value: requireBhwiCpfpContext(route.params.cpfp) };
+    } catch {
+      cpfpRouteSnapshotRef.current = { initialized: true, invalid: true };
+    }
+  }
   const routeParamsRef = useRef(route.params);
   routeParamsRef.current = { ...routeParamsRef.current, ...route.params };
   const { walletID, memo, psbt, launchedBy } = routeParamsRef.current;
@@ -65,7 +79,7 @@ const PsbtWithHardwareWallet = () => {
   const { colors } = useTheme();
   const [isLoading, setIsLoading] = useState(false);
   const [displayPsbt, setDisplayPsbt] = useState(psbt);
-  const [review, setReview] = useState<BhwiPsbtReview>();
+  const [review, setReview] = useState<BhwiPsbtReview & { cpfp?: BhwiCpfpContext }>();
   const [hardwareStatus, setHardwareStatus] = useState('');
   const [txHex, setTxHex] = useState<string | undefined>(hardwareBoundFlow ? undefined : routeParamsRef.current.txhex);
   const [hardwareRouteBound, setHardwareRouteBound] = useState(!hardwareBoundFlow || route.params.bhwiBound === true);
@@ -125,7 +139,15 @@ const PsbtWithHardwareWallet = () => {
       if (!liveAssociation || bhwiAssociationIdentity(liveAssociation) !== associationIdentity) return false;
       if (bhwiWatchOnlyWalletIdentity(liveWallet, liveAssociation) !== walletIdentity) return false;
       try {
+        const currentCpfp = requireBhwiCpfpContext(routeParamsRef.current.cpfp);
+        const expectedCpfp = cpfpRouteSnapshotRef.current;
+        const sameCpfp =
+          currentCpfp?.parentFee === expectedCpfp.value?.parentFee &&
+          currentCpfp?.parentVsize === expectedCpfp.value?.parentVsize &&
+          currentCpfp?.targetFeeRate === expectedCpfp.value?.targetFeeRate;
         return (
+          !expectedCpfp.invalid &&
+          sameCpfp &&
           routeParamsPSBT.current?.toBase64() === sourceBase64 &&
           (!routeParamsRef.current.psbt || routeParamsRef.current.psbt.toBase64() === sourceBase64)
         );
@@ -159,11 +181,18 @@ const PsbtWithHardwareWallet = () => {
       const liveWallet = walletsRef.current.find(candidate => candidate.getID() === expected.walletID);
       if (!(liveWallet instanceof WatchOnlyWallet)) throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
       const liveAssociation = liveWallet.getHardwareWalletAssociation();
+      if (expected.cpfp && !isAssociatedWatchOnlySegwitBech32(liveWallet)) throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
       if (!liveAssociation) throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
       const walletIdentity = bhwiWatchOnlyWalletIdentity(liveWallet, liveAssociation);
+      let currentCpfp: BhwiCpfpContext | undefined;
+      try {
+        currentCpfp = requireBhwiCpfpContext(routeParamsRef.current.cpfp);
+      } catch {
+        throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
+      }
       const current =
         walletIdentity && bhwiAssociationIdentity(liveAssociation) === expected.associationIdentity
-          ? { ...expected, walletIdentity, associationIdentity: bhwiAssociationIdentity(liveAssociation) }
+          ? { ...expected, walletIdentity, associationIdentity: bhwiAssociationIdentity(liveAssociation), cpfp: currentCpfp }
           : undefined;
       assertBhwiPsbtAttemptCurrent(expected, current);
       return { wallet: liveWallet, association: liveAssociation };
@@ -214,12 +243,15 @@ const PsbtWithHardwareWallet = () => {
         setHasStagedFileResult(false);
       }
       try {
+        const cpfpSnapshot = cpfpRouteSnapshotRef.current;
+        if (cpfpSnapshot.invalid) throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
         const walletCandidate = walletsRef.current.find(candidate => candidate.getID() === walletID);
         const source = routeParamsPSBT.current;
         if (!(walletCandidate instanceof WatchOnlyWallet) || !source) throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
         if (!isBhwiAvailable()) throw new Error(loc.wallets.hardware_unavailable);
         const liveWallet = walletCandidate;
         const liveAssociation = liveWallet.getHardwareWalletAssociation();
+        if (cpfpSnapshot.value && !isAssociatedWatchOnlySegwitBech32(liveWallet)) throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
         if (!liveAssociation) throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
         const walletIdentity = bhwiWatchOnlyWalletIdentity(liveWallet, liveAssociation);
         if (!walletIdentity) throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
@@ -240,7 +272,8 @@ const PsbtWithHardwareWallet = () => {
         assertPreparationCurrent();
         const originalBase64 = hydrated.toBase64();
         validateBhwiPsbtOriginal(originalBase64, liveWallet, liveAssociation);
-        const nextReview = getBhwiPsbtReview(hydrated);
+        const baseReview = getBhwiPsbtReview(hydrated);
+        const nextReview = Object.freeze({ ...baseReview, cpfp: cpfpSnapshot.value });
         const snapshot: BhwiPsbtAttemptSnapshot = Object.freeze({
           generation,
           originalBase64,
@@ -249,6 +282,7 @@ const PsbtWithHardwareWallet = () => {
           associationIdentity,
           policyIdentity: 'none',
           fee: nextReview.fee.toString(),
+          cpfp: cpfpSnapshot.value,
         });
         boundAttemptRef.current = snapshot;
         setDisplayPsbt(hydrated);
@@ -323,6 +357,9 @@ const PsbtWithHardwareWallet = () => {
         const { wallet: liveWallet, association: liveAssociation } = requireCurrentAttempt(expected);
         const result = validateBhwiBoundPsbt(routeParamsRef.current.bhwiOriginalBase64, returnedBase64, liveWallet, liveAssociation);
         requireCurrentAttempt(expected);
+        const returnedReview = getBhwiPsbtReview(result.psbt);
+        if (returnedReview.fee.toString() !== expected.fee) throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
+        if (result.tx && expected.cpfp) assertBhwiCpfpPackageTarget(expected.cpfp, returnedReview.fee, result.tx);
         setDisplayPsbt(result.psbt);
         if (result.tx) {
           verifiedAttemptRef.current = expected;
@@ -487,7 +524,7 @@ const PsbtWithHardwareWallet = () => {
       expireHardwareAttempt();
       setHardwareStatus(BHWI_SIGNING_SESSION_EXPIRED);
     }
-  }, [currentWalletIdentity, expireHardwareAttempt, isFocused, requireCurrentAttempt]);
+  }, [currentWalletIdentity, expireHardwareAttempt, isFocused, requireCurrentAttempt, route.params.cpfp]);
 
   useEffect(() => {
     const data = routeParamsRef.current.onBarScanned;
@@ -575,6 +612,10 @@ const PsbtWithHardwareWallet = () => {
       if (!connected) throw new Error(loc.errors.network);
       const liveWallet = walletsRef.current.find(candidate => candidate.getID() === walletID);
       if (!(liveWallet instanceof WatchOnlyWallet)) throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
+      const txDecoded = bitcoin.Transaction.fromHex(txHex);
+      if (expected?.cpfp) {
+        assertBhwiCpfpPackageTarget(expected.cpfp, BigInt(expected.fee), txDecoded);
+      }
       const result = await liveWallet.broadcastTx(txHex);
       requireBroadcastAttempt();
       if (!result) {
@@ -582,7 +623,6 @@ const PsbtWithHardwareWallet = () => {
         throw new Error(loc.errors.broadcast);
       }
       setIsLoading(false);
-      const txDecoded = bitcoin.Transaction.fromHex(txHex);
       const txid = txDecoded.getId();
       majorTomToGroundControl([], [], [txid]);
       if (memo) txMetadata[txid] = { memo };

@@ -11,6 +11,63 @@ import type { HardwareWalletAssociation } from './bhwi';
 import { validateBhwiPsbt } from './validateBhwiPsbt';
 
 export const BHWI_SIGNING_SESSION_EXPIRED = 'Hardware signing session expired; start again';
+export const CPFP_FEE_TARGET_NOT_REACHED = 'CPFP fee target not reached; rebuild with a higher fee';
+export type BhwiCpfpContext = Readonly<{
+  parentFee: number;
+  parentVsize: number;
+  targetFeeRate: number;
+}>;
+
+const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
+
+export function requireBhwiCpfpContext(value: unknown): BhwiCpfpContext | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object') throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
+  const keys = Object.keys(value);
+  if (
+    keys.length !== 3 ||
+    !Object.prototype.hasOwnProperty.call(value, 'parentFee') ||
+    !Object.prototype.hasOwnProperty.call(value, 'parentVsize') ||
+    !Object.prototype.hasOwnProperty.call(value, 'targetFeeRate')
+  ) {
+    throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
+  }
+  const { parentFee, parentVsize, targetFeeRate } = value as Partial<BhwiCpfpContext>;
+  if (
+    typeof parentFee !== 'number' ||
+    !Number.isSafeInteger(parentFee) ||
+    parentFee < 0 ||
+    typeof parentVsize !== 'number' ||
+    !Number.isSafeInteger(parentVsize) ||
+    parentVsize <= 0 ||
+    typeof targetFeeRate !== 'number' ||
+    !Number.isFinite(targetFeeRate) ||
+    targetFeeRate <= 0 ||
+    targetFeeRate > Number.MAX_SAFE_INTEGER
+  ) {
+    throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
+  }
+  return Object.freeze({ parentFee, parentVsize, targetFeeRate });
+}
+
+export function assertBhwiCpfpPackageTarget(context: BhwiCpfpContext, childFee: bigint, child: bitcoin.Transaction): void {
+  const childFeeNumber = Number(childFee);
+  const childVsize = child.virtualSize();
+  const packageFee = context.parentFee + childFeeNumber;
+  const packageVsize = context.parentVsize + childVsize;
+  if (
+    childFee < 0n ||
+    childFee > MAX_SAFE_BIGINT ||
+    !Number.isSafeInteger(childVsize) ||
+    childVsize <= 0 ||
+    !Number.isSafeInteger(packageFee) ||
+    !Number.isSafeInteger(packageVsize) ||
+    packageFee / packageVsize < context.targetFeeRate
+  ) {
+    throw new Error(CPFP_FEE_TARGET_NOT_REACHED);
+  }
+}
+
 export const assertBhwiPsbtContinuationToken = (expected: string | undefined, returned: string | undefined): void => {
   if (!expected || returned !== expected) throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
 };
@@ -24,6 +81,7 @@ export type BhwiPsbtAttemptSnapshot = Readonly<{
   associationIdentity: string;
   policyIdentity: string;
   fee: string;
+  cpfp?: BhwiCpfpContext;
 }>;
 
 export type BhwiPsbtReview = {
@@ -154,7 +212,10 @@ export function assertBhwiPsbtAttemptCurrent(
     expected.walletIdentity !== current.walletIdentity ||
     expected.associationIdentity !== current.associationIdentity ||
     expected.policyIdentity !== current.policyIdentity ||
-    expected.fee !== current.fee
+    expected.fee !== current.fee ||
+    expected.cpfp?.parentFee !== current.cpfp?.parentFee ||
+    expected.cpfp?.parentVsize !== current.cpfp?.parentVsize ||
+    expected.cpfp?.targetFeeRate !== current.cpfp?.targetFeeRate
   ) {
     throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
   }

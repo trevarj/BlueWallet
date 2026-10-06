@@ -44,7 +44,7 @@ import loc, { formatBalanceWithoutSuffix } from '../../loc';
 import { BitcoinUnit } from '../../models/bitcoinUnits';
 import { DetailViewStackParamList } from '../../navigation/DetailViewStackParamList';
 import { isOnChainTransaction, resolveTxDisplayState } from '../../blue_modules/transactionDisplayState';
-import { isWatchOnlySegwitBech32 } from '../../util/isWatchOnlySegwitBech32';
+import { isAssociatedWatchOnlySegwitBech32, isWatchOnlySegwitBech32 } from '../../util/isWatchOnlySegwitBech32';
 import { mainnetServicesEnabled } from '../../models/bitcoinNetwork';
 
 dayjs.extend(relativeTime);
@@ -679,11 +679,14 @@ const TransactionStatus: React.FC = () => {
     if (!wallet || !tx?.hash) {
       return setIsCPFPPossible(ButtonStatus.Unknown);
     }
-    if (!wallet?.allowRBF() || isWatchOnlySegwitBech32(wallet)) {
+    const isHardwareCpfp = isAssociatedWatchOnlySegwitBech32(wallet);
+    if (!wallet.allowRBF() || (wallet.type !== HDSegwitBech32Wallet.type && !isHardwareCpfp)) {
       return setIsCPFPPossible(ButtonStatus.NotPossible);
     }
 
-    const cpfbTx = new HDSegwitBech32Transaction(null, tx.hash, wallet as HDSegwitBech32Wallet);
+    const cpfbTx = isHardwareCpfp
+      ? new HDSegwitBech32Transaction(null, tx.hash, wallet._hdWalletInstance, wallet.getMasterFingerprint())
+      : new HDSegwitBech32Transaction(null, tx.hash, wallet as HDSegwitBech32Wallet);
 
     if ((await cpfbTx.isToUsTransaction()) && (await cpfbTx.getRemoteConfirmationsNum()) === 0) {
       return setIsCPFPPossible(ButtonStatus.Possible);

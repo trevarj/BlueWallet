@@ -681,6 +681,7 @@ test('rejects stale, backgrounded, deleted, edited, and replaced hardware signin
     associationIdentity: 'association',
     policyIdentity: 'none',
     fee: '1000',
+    cpfp: { parentFee: 100, parentVsize: 200, targetFeeRate: 5 },
   };
   assert.doesNotThrow(() => assertBhwiPsbtAttemptCurrent(snapshot, { ...snapshot }));
   for (const current of [
@@ -692,6 +693,10 @@ test('rejects stale, backgrounded, deleted, edited, and replaced hardware signin
     { ...snapshot, associationIdentity: 'replaced' },
     { ...snapshot, policyIdentity: 'changed-policy' },
     { ...snapshot, fee: '1001' },
+    { ...snapshot, cpfp: { ...snapshot.cpfp!, parentFee: 101 } },
+    { ...snapshot, cpfp: { ...snapshot.cpfp!, parentVsize: 201 } },
+    { ...snapshot, cpfp: { ...snapshot.cpfp!, targetFeeRate: 4 } },
+    { ...snapshot, cpfp: undefined },
   ]) {
     expectMessage(() => assertBhwiPsbtAttemptCurrent(snapshot, current), BHWI_SIGNING_SESSION_EXPIRED);
   }

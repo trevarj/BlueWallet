@@ -190,7 +190,8 @@ describe('HDSegwitBech32Transaction', () => {
     );
 
     const { tx, fee } = await tt.createCPFPbumpFee(20);
+    assert.ok(tx, 'hot wallet CPFP must return a signed transaction');
     const avgFeeRate = (oldFee + fee) / (tt._txDecoded.virtualSize() + tx.virtualSize());
-    assert.ok(Math.round(avgFeeRate) >= 20);
+    assert.ok(avgFeeRate >= 20);
   });
 });

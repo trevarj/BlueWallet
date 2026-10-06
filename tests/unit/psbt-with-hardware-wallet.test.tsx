@@ -14,7 +14,8 @@ import { isBhwiReconnectMatch } from '../../blue_modules/bhwi';
 import type { HardwareWalletAssociation } from '../../blue_modules/bhwi';
 import ecc from '../../blue_modules/noble_ecc';
 import { network } from '../../models/bitcoinNetwork';
-import { BHWI_SIGNING_SESSION_EXPIRED } from '../../blue_modules/bhwiPsbt';
+import { BHWI_SIGNING_SESSION_EXPIRED, CPFP_FEE_TARGET_NOT_REACHED } from '../../blue_modules/bhwiPsbt';
+import type { BhwiCpfpContext } from '../../blue_modules/bhwiPsbt';
 import PsbtWithHardwareWallet from '../../screen/send/psbtWithHardwareWallet';
 
 bitcoin.initEccLib(ecc);
@@ -156,6 +157,11 @@ jest.mock('../../blue_modules/BlueElectrum', () => ({
   ensureConnected: (...args: unknown[]) => mockEnsureConnected(...args),
   multiGetTransactionByTxid: (...args: unknown[]) => mockMultiGetTransaction(...args),
 }));
+jest.mock('../../blue_modules/hapticFeedback', () => ({
+  __esModule: true,
+  default: jest.fn(),
+  HapticFeedbackTypes: { NotificationError: 'notificationError' },
+}));
 jest.mock('../../blue_modules/fs', () => ({
   openSignedTransactionRaw: (...args: unknown[]) => mockOpenSignedTransactionRaw(...args),
 }));
@@ -202,9 +208,9 @@ jest.mock('../../components/SecondButton', () => {
   };
 });
 
-async function renderPreparedAssociated(fixture: AssociatedFixture): Promise<RenderAPI> {
+async function renderPreparedAssociated(fixture: AssociatedFixture, cpfp?: BhwiCpfpContext): Promise<RenderAPI> {
   setMockWallet(fixture.wallet);
-  mockRouteParams = { walletID: fixture.wallet.getID(), psbt: fixture.psbt };
+  mockRouteParams = { walletID: fixture.wallet.getID(), psbt: fixture.psbt, cpfp };
   mockMultiGetTransaction.mockResolvedValue(parentMap(fixture));
   const view = render(<PsbtWithHardwareWallet />);
   await waitFor(() => {
@@ -323,6 +329,81 @@ test('uses the real verifier to keep a valid partial exportable and expose only 
   mockRouteParams = { ...mockRouteParams, bhwiReturnedBase64: complete.toBase64() };
   completeView.rerender(<PsbtWithHardwareWallet />);
   await completeView.findByTestId('PsbtWithHardwareWalletBroadcastTransactionButton');
+});
+
+test('rejects a signed CPFP whose real child virtual size misses the package target before confirmation', async () => {
+  const fixture = makeAssociatedFixture();
+  const signed = fixture.psbt.clone();
+  signed.signInput(0, required(fixture.children[0]));
+  signed.signInput(1, required(fixture.children[1]));
+  const childVsize = signed.clone().finalizeAllInputs().extractTransaction().virtualSize();
+  const view = await renderPreparedAssociated(fixture, {
+    parentFee: 0,
+    parentVsize: 100,
+    targetFeeRate: 1_000 / (100 + childVsize) + 0.01,
+  });
+  const originalBase64 = required(mockRouteParams.bhwiOriginalBase64 as string | undefined);
+  const complete = bitcoin.Psbt.fromBase64(originalBase64, { network });
+  complete.signInput(0, required(fixture.children[0]));
+  complete.signInput(1, required(fixture.children[1]));
+  mockRouteParams = { ...mockRouteParams, bhwiReturnedBase64: complete.toBase64() };
+  view.rerender(<PsbtWithHardwareWallet />);
+
+  await waitFor(() => expect(mockPresentAlert).toHaveBeenCalledWith(expect.objectContaining({ message: CPFP_FEE_TARGET_NOT_REACHED })));
+  expect(view.queryByTestId('PsbtWithHardwareWalletBroadcastTransactionButton')).toBeNull();
+});
+
+test('rejects malformed and stale CPFP metadata from the route', async () => {
+  const malformedFixture = makeAssociatedFixture();
+  setMockWallet(malformedFixture.wallet);
+  mockRouteParams = {
+    walletID: malformedFixture.wallet.getID(),
+    psbt: malformedFixture.psbt,
+    cpfp: { parentFee: -1, parentVsize: 100, targetFeeRate: Number.NaN },
+  };
+  mockMultiGetTransaction.mockResolvedValue(parentMap(malformedFixture));
+  const malformedView = render(<PsbtWithHardwareWallet />);
+  await waitFor(() => expect(malformedView.getByTestId('BhwiHardwareStatus').props.children).toBe(BHWI_SIGNING_SESSION_EXPIRED));
+  expect(malformedView.queryByTestId('BhwiTransactionReview')).toBeNull();
+  malformedView.unmount();
+
+  const staleFixture = makeAssociatedFixture();
+  const staleView = await renderPreparedAssociated(staleFixture, { parentFee: 0, parentVsize: 100, targetFeeRate: 0.1 });
+  const originalBase64 = required(mockRouteParams.bhwiOriginalBase64 as string | undefined);
+  const complete = bitcoin.Psbt.fromBase64(originalBase64, { network });
+  complete.signInput(0, required(staleFixture.children[0]));
+  complete.signInput(1, required(staleFixture.children[1]));
+  mockRouteParams = {
+    ...mockRouteParams,
+    cpfp: { parentFee: 0, parentVsize: 100, targetFeeRate: 0.01 },
+    bhwiReturnedBase64: complete.toBase64(),
+  };
+  staleView.rerender(<PsbtWithHardwareWallet />);
+  await waitFor(() => {
+    const alerted = mockPresentAlert.mock.calls.some(([value]) => value?.message === BHWI_SIGNING_SESSION_EXPIRED);
+    const status = staleView.queryByTestId('BhwiHardwareStatus')?.props.children === BHWI_SIGNING_SESSION_EXPIRED;
+    expect(alerted || status).toBe(true);
+  });
+  expect(staleView.queryByTestId('PsbtWithHardwareWalletBroadcastTransactionButton')).toBeNull();
+});
+
+test('rechecks the real signed CPFP package immediately before broadcast and clears the ready state on failure', async () => {
+  const fixture = makeAssociatedFixture();
+  const broadcastTx = jest.spyOn(fixture.wallet, 'broadcastTx').mockResolvedValue(true);
+  const view = await renderPreparedAssociated(fixture, { parentFee: 0, parentVsize: 100, targetFeeRate: 0.1 });
+  const originalBase64 = required(mockRouteParams.bhwiOriginalBase64 as string | undefined);
+  const complete = bitcoin.Psbt.fromBase64(originalBase64, { network });
+  complete.signInput(0, required(fixture.children[0]));
+  complete.signInput(1, required(fixture.children[1]));
+  mockRouteParams = { ...mockRouteParams, bhwiReturnedBase64: complete.toBase64() };
+  view.rerender(<PsbtWithHardwareWallet />);
+  await view.findByTestId('PsbtWithHardwareWalletBroadcastTransactionButton');
+
+  jest.spyOn(bitcoin.Transaction.prototype, 'virtualSize').mockReturnValue(1_000_000);
+  fireEvent.press(view.getByTestId('PsbtWithHardwareWalletBroadcastTransactionButton'));
+  await waitFor(() => expect(mockPresentAlert).toHaveBeenCalledWith(expect.objectContaining({ message: CPFP_FEE_TARGET_NOT_REACHED })));
+  expect(broadcastTx).not.toHaveBeenCalled();
+  expect(view.queryByTestId('PsbtWithHardwareWalletBroadcastTransactionButton')).toBeNull();
 });
 
 test('rejects an altered scanner return without downgrading the associated flow', async () => {

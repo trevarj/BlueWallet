@@ -6,6 +6,7 @@ import { ScanQRCodeParamList } from './DetailViewStackParamList';
 import { IFee } from '../screen/send/SendDetails';
 import { NetworkTransactionFeeType } from '../models/networkTransactionFees';
 import type { BhwiOperationRouteParams } from '../blue_modules/bhwi';
+import type { BhwiCpfpContext } from '../blue_modules/bhwiPsbt';
 
 type HeaderRightRenderer = NonNullable<NativeStackNavigationOptions['headerRight']>;
 
@@ -104,6 +105,7 @@ export type SendDetailsStackParamList = {
     bhwiOriginalBase64?: string;
     bhwiReturnedBase64?: string;
     bhwiAttempt?: number;
+    cpfp?: BhwiCpfpContext;
   };
   HardwareWalletAccount: Extract<BhwiOperationRouteParams, { mode: 'sign-psbt' }>;
   PsbtRaw: {

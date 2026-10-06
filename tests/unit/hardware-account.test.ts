@@ -17,6 +17,8 @@ import { WatchOnlyWallet } from '../../class/wallets/watch-only-wallet';
 import { MultisigHDWallet } from '../../class/wallets/multisig-hd-wallet';
 import { convertExtendedKey } from '../../class/wallets/extended-key';
 import type { Account, DeviceInfo } from '../../codegen/NativeBhwi';
+import { HDSegwitP2SHWallet } from '../../class/wallets/hd-segwit-p2sh-wallet';
+import { isAssociatedWatchOnlySegwitBech32 } from '../../util/isWatchOnlySegwitBech32';
 
 const bip32 = BIP32Factory(ecc);
 const fingerprint = '086ee178';
@@ -162,6 +164,19 @@ it('serializes only validated public association data without changing wallet id
   const invalidChain = WatchOnlyWallet.fromJson(JSON.stringify(tainted)).init();
   expect(invalidChain.getHardwareWalletAssociation()).toBeUndefined();
   expect(invalidChain.useWithHardwareWalletEnabled()).toBe(false);
+});
+
+it('enables hardware CPFP only for an exactly associated BIP84 watch-only wallet', () => {
+  const associated = WatchOnlyWallet.fromBhwiAccount(info, account, path, 'native-segwit');
+  expect(isAssociatedWatchOnlySegwitBech32(associated)).toBe(true);
+
+  const unassociated = new WatchOnlyWallet().setSecret(account.descriptor!).init();
+  unassociated.setMasterFingerprintFromHex(fingerprint);
+  expect(isAssociatedWatchOnlySegwitBech32(unassociated)).toBe(false);
+
+  const oppositeFormat = WatchOnlyWallet.fromBhwiAccount(info, account, path, 'native-segwit');
+  oppositeFormat._hdWalletInstance = new HDSegwitP2SHWallet();
+  expect(isAssociatedWatchOnlySegwitBech32(oppositeFormat)).toBe(false);
 });
 
 it('binds a multisig hardware cosigner by public account identity rather than slot index', () => {

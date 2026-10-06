@@ -5,8 +5,8 @@ import assert from 'assert';
 import * as BlueElectrum from '../blue_modules/BlueElectrum';
 import { HDSegwitBech32Wallet } from './wallets/hd-segwit-bech32-wallet';
 import { SegwitBech32Wallet } from './wallets/segwit-bech32-wallet';
-import { CreateTransactionUtxo } from './wallets/types.ts';
-import { CoinSelectOutput, CoinSelectReturnInput } from 'coinselect';
+import { CreateTransactionResult, CreateTransactionUtxo } from './wallets/types.ts';
+import { transactionBytes } from 'coinselect/utils';
 import { isUint8Array, uint8ArrayToHex } from '../blue_modules/uint8array-extras';
 
 /**
@@ -150,15 +150,14 @@ export class HDSegwitBech32Transaction {
   }
 
   /**
-   * Returns all the info about current transaction which is needed to do a replacement TX
-   * * fee - current tx fee
-   * * utxos - UTXOs current tx consumes
-   * * changeAmount - amount of satoshis that sent to change address (or addresses) we control
-   * * feeRate - sat/byte for current tx
+   * Returns all the information needed to replace or child-pay-for-parent this transaction:
+   * * fee - current transaction fee
+   * * parentVsize - current transaction virtual size
+   * * utxos - UTXOs current transaction consumes
+   * * changeAmount - amount of satoshis sent to change addresses we control
+   * * feeRate - sat/vbyte for current transaction
    * * targets - destination(s) of funds (outputs we do not control)
-   * * unconfirmedUtxos - UTXOs created by this transaction (only the ones we control)
-   *
-   * @returns {Promise<{fee: number, utxos: Array, unconfirmedUtxos: Array, changeAmount: number, feeRate: number, targets: Array}>}
+   * * unconfirmedUtxos - UTXOs created by this transaction that we control
    */
   async getInfo() {
     if (!this._wallet) throw new Error('Wallet required for this method');
@@ -228,7 +227,7 @@ export class HDSegwitBech32Transaction {
       }
     }
 
-    return { fee, feeRate, targets, changeAmount, utxos, unconfirmedUtxos };
+    return { fee, feeRate, parentVsize: this._txDecoded.virtualSize(), targets, changeAmount, utxos, unconfirmedUtxos };
   }
 
   /**
@@ -377,51 +376,84 @@ export class HDSegwitBech32Transaction {
   }
 
   /**
-   * Creates a CPFP transaction that can bumps fee of previous one (spends created but not confirmed outputs
-   * that belong to us). Note, this cannot add more utxo in CPFP transaction if newFeerate is too high
+   * Creates a CPFP transaction that bumps the fee of the parent transaction. This intentionally
+   * spends only outputs created by the parent transaction.
    *
-   * @param newFeerate {number} sat/byte
-   * @returns {Promise<{outputs: Array, tx: Transaction, inputs: Array, fee: Number}>}
+   * @param newFeerate {number} sat/vbyte
    */
-  async createCPFPbumpFee(newFeerate: number) {
+  async createCPFPbumpFee(newFeerate: number): Promise<CreateTransactionResult> {
     if (!this._wallet) throw new Error('Wallet required for this method');
     if (!this._remoteTx) await this._fetchRemoteTx();
 
-    const { feeRate, fee: oldFee, unconfirmedUtxos } = await this.getInfo();
+    const { fee: parentFee, unconfirmedUtxos } = await this.getInfo();
+    const parentVsize = this._txDecoded!.virtualSize();
+    if (
+      !Number.isFinite(newFeerate) ||
+      newFeerate <= 0 ||
+      newFeerate > Number.MAX_SAFE_INTEGER ||
+      !Number.isSafeInteger(parentFee) ||
+      parentFee < 0 ||
+      !Number.isSafeInteger(parentVsize) ||
+      parentVsize <= 0 ||
+      unconfirmedUtxos.length === 0 ||
+      unconfirmedUtxos.some(utxo => !Number.isSafeInteger(utxo.value) || utxo.value <= 0)
+    ) {
+      throw new Error('Invalid CPFP fee calculation');
+    }
+    if (newFeerate <= parentFee / parentVsize) throw new Error('New feerate should be bigger than the old one');
 
-    if (newFeerate <= feeRate) throw new Error('New feerate should be bigger than the old one');
     const myAddress = await this._wallet.getChangeAddressAsync();
+    let childFeeRate = newFeerate;
 
-    // calculating feerate for CPFP tx so that average between current and CPFP tx will equal newFeerate.
-    // this works well if both txs are +/- equal size in bytes
-    const targetFeeRate = 2 * newFeerate - feeRate;
-
-    let add = 0;
-    let tx: bitcoin.Transaction | undefined, inputs: CoinSelectReturnInput[], outputs: CoinSelectOutput[], fee: number;
-    while (add <= 128) {
-      const createdTx = this._wallet.createTransaction(
+    // Coin selection can change the child size. Rebuild a bounded number of times from the measured
+    // result rather than relying on the old assumption that parent and child have equal sizes.
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const created = this._wallet.createTransaction(
         unconfirmedUtxos,
         [{ address: myAddress }],
-        targetFeeRate + add,
+        childFeeRate,
         myAddress,
         HDSegwitBech32Wallet.defaultRBFSequence,
+        !this._wallet.secret,
+        this._mfp ?? 0,
       );
-      tx = createdTx.tx;
-      inputs = createdTx.inputs;
-      outputs = createdTx.outputs;
-      fee = createdTx.fee;
-      assert(tx, 'tx is createCPFPbumpFee() is undefined');
-      const combinedFeeRate = (oldFee + fee) / (this._txDecoded!.virtualSize() + tx.virtualSize()); // avg
-      if (combinedFeeRate < newFeerate) {
-        add *= 2;
-        if (!add) add = 2;
-      } else {
-        // reached target feerate
-        break;
+      if (
+        created.inputs.length === 0 ||
+        created.outputs.length === 0 ||
+        created.inputs.some(input => !Number.isSafeInteger(input.value) || input.value <= 0) ||
+        created.outputs.some(output => !Number.isSafeInteger(output.value) || output.value <= 0)
+      ) {
+        throw new Error('Insufficient value for CPFP transaction');
+      }
+      const childVsize = created.tx?.virtualSize() ?? transactionBytes(created.inputs, created.outputs);
+      const packageFee = parentFee + created.fee;
+      const packageVsize = parentVsize + childVsize;
+      if (
+        !Number.isSafeInteger(created.fee) ||
+        created.fee < 0 ||
+        !Number.isSafeInteger(childVsize) ||
+        childVsize <= 0 ||
+        !Number.isSafeInteger(packageFee) ||
+        !Number.isSafeInteger(packageVsize) ||
+        packageVsize <= 0
+      ) {
+        throw new Error('Invalid CPFP fee calculation');
+      }
+
+      const packageFeeRate = packageFee / packageVsize;
+      if (!Number.isFinite(packageFeeRate)) throw new Error('Invalid CPFP fee calculation');
+      if (packageFeeRate >= newFeerate) return created;
+
+      const requiredChildFee = Math.ceil(newFeerate * packageVsize - parentFee);
+      if (!Number.isSafeInteger(requiredChildFee) || requiredChildFee <= created.fee) {
+        throw new Error('Invalid CPFP fee calculation');
+      }
+      childFeeRate += Math.max(1, Math.ceil((requiredChildFee - created.fee) / childVsize));
+      if (!Number.isFinite(childFeeRate) || childFeeRate > Number.MAX_SAFE_INTEGER) {
+        throw new Error('Invalid CPFP fee calculation');
       }
     }
 
-    // Non-null assertions are safe here because the while loop always runs at least once (add starts at 0)
-    return { tx: tx!, inputs: inputs!, outputs: outputs!, fee: fee! };
+    throw new Error('Unable to reach CPFP fee target');
   }
 }

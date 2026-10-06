@@ -19,6 +19,8 @@ import ReplaceFeeSuggestions from '../../components/ReplaceFeeSuggestions';
 import { majorTomToGroundControl } from '../../blue_modules/notifications';
 import { BlueSpacing, BlueSpacing20 } from '../../components/BlueSpacing';
 import { useKeyboard } from '../../hooks/useKeyboard';
+import { isAssociatedWatchOnlySegwitBech32 } from '../../util/isWatchOnlySegwitBech32';
+import { BHWI_SIGNING_SESSION_EXPIRED, bhwiAssociationIdentity, bhwiWatchOnlyWalletIdentity } from '../../blue_modules/bhwiPsbt';
 
 const styles = StyleSheet.create({
   root: {
@@ -100,6 +102,7 @@ export default class CPFP extends Component {
     let wallet;
     if (props.route.params) txid = props.route.params.txid;
     if (props.route.params) wallet = props.route.params.wallet;
+    this._isMounted = true;
 
     this.state = {
       isLoading: true,
@@ -143,6 +146,10 @@ export default class CPFP extends Component {
     });
   }
 
+  componentWillUnmount() {
+    this._isMounted = false;
+  }
+
   async componentDidMount() {
     console.log('transactions/CPFP - componentDidMount');
     this.setState({
@@ -154,22 +161,54 @@ export default class CPFP extends Component {
       await this.checkPossibilityOfCPFP();
     } catch (_) {
       // if anything goes wrong we just show "this is not bumpable" message
-      this.setState({ nonReplaceable: true, isLoading: false });
+      if (this._isMounted) this.setState({ nonReplaceable: true, isLoading: false });
     }
   }
 
   async checkPossibilityOfCPFP() {
-    if (this.state.wallet.type !== HDSegwitBech32Wallet.type) {
-      return this.setState({ nonReplaceable: true, isLoading: false });
-    }
-    const tx = new HDSegwitBech32Transaction(null, this.state.txid, this.state.wallet);
-    if ((await tx.isToUsTransaction()) && (await tx.getRemoteConfirmationsNum()) === 0) {
-      const info = await tx.getInfo();
-      return this.setState({ nonReplaceable: false, feeRate: info.feeRate + 1, isLoading: false, tx });
-      // 1 sat makes a lot of difference, since sometimes because of rounding created tx's fee might be insufficient
+    const wallet = this.state.wallet;
+    let tx;
+    if (isAssociatedWatchOnlySegwitBech32(wallet)) {
+      tx = new HDSegwitBech32Transaction(null, this.state.txid, wallet._hdWalletInstance, wallet.getMasterFingerprint());
+    } else if (wallet?.type === HDSegwitBech32Wallet.type) {
+      tx = new HDSegwitBech32Transaction(null, this.state.txid, wallet);
     } else {
       return this.setState({ nonReplaceable: true, isLoading: false });
     }
+
+    const association = isAssociatedWatchOnlySegwitBech32(wallet) ? wallet.getHardwareWalletAssociation() : undefined;
+    const associationIdentity = association ? bhwiAssociationIdentity(association) : undefined;
+    const walletIdentity = association ? bhwiWatchOnlyWalletIdentity(wallet, association) : undefined;
+    const isCurrent = () => {
+      if (!this._isMounted || this.props.navigation.isFocused?.() === false || this.state.wallet !== wallet) return false;
+      if (!association) return true;
+      const liveWallet = this.context.wallets.find(candidate => candidate.getID() === wallet.getID());
+      const liveAssociation = isAssociatedWatchOnlySegwitBech32(liveWallet) ? liveWallet.getHardwareWalletAssociation() : undefined;
+      return (
+        !!liveAssociation &&
+        bhwiAssociationIdentity(liveAssociation) === associationIdentity &&
+        bhwiWatchOnlyWalletIdentity(liveWallet, liveAssociation) === walletIdentity
+      );
+    };
+
+    const isToUs = await tx.isToUsTransaction();
+    if (!isCurrent()) return;
+    const confirmations = await tx.getRemoteConfirmationsNum();
+    if (!isCurrent()) return;
+    if (isToUs && confirmations === 0) {
+      const info = await tx.getInfo();
+      if (!isCurrent()) return;
+      return this.setState({
+        nonReplaceable: false,
+        feeRate: info.feeRate + 1,
+        isLoading: false,
+        parentFee: info.fee,
+        parentVsize: info.parentVsize,
+        tx,
+      });
+      // 1 sat makes a lot of difference, since sometimes because of rounding created tx's fee might be insufficient
+    }
+    return this.setState({ nonReplaceable: true, isLoading: false });
   }
 
   async createTransaction() {
@@ -177,14 +216,54 @@ export default class CPFP extends Component {
     if (newFeeRate > this.state.feeRate) {
       /** @type {HDSegwitBech32Transaction} */
       const tx = this.state.tx;
+      const { parentFee, parentVsize } = this.state;
+      const hardwareWallet = isAssociatedWatchOnlySegwitBech32(this.state.wallet) ? this.state.wallet : undefined;
+      const hardwareAssociation = hardwareWallet?.getHardwareWalletAssociation();
+      const hardwareWalletIdentity =
+        hardwareWallet && hardwareAssociation ? bhwiWatchOnlyWalletIdentity(hardwareWallet, hardwareAssociation) : undefined;
+      const hardwareAssociationIdentity = hardwareAssociation ? bhwiAssociationIdentity(hardwareAssociation) : undefined;
       this.setState({ isLoading: true });
       try {
-        const { tx: newTx } = await tx.createCPFPbumpFee(newFeeRate);
-        this.setState({ stage: 2, txhex: newTx.toHex(), newTxid: newTx.getId() });
-        this.setState({ isLoading: false });
+        const { tx: newTx, psbt } = await tx.createCPFPbumpFee(newFeeRate);
+        if (hardwareWallet) {
+          const liveWallet = this.context.wallets.find(candidate => candidate.getID() === hardwareWallet.getID());
+          const liveAssociation = isAssociatedWatchOnlySegwitBech32(liveWallet) ? liveWallet.getHardwareWalletAssociation() : undefined;
+          if (
+            !this._isMounted ||
+            this.state.tx !== tx ||
+            this.props.navigation.isFocused?.() === false ||
+            !liveAssociation ||
+            bhwiWatchOnlyWalletIdentity(liveWallet, liveAssociation) !== hardwareWalletIdentity ||
+            bhwiAssociationIdentity(liveAssociation) !== hardwareAssociationIdentity
+          ) {
+            throw new Error(BHWI_SIGNING_SESSION_EXPIRED);
+          }
+          this.props.navigation
+            .getParent()
+            ?.getParent()
+            ?.navigate('SendDetailsRoot', {
+              screen: 'PsbtWithHardwareWallet',
+              params: {
+                memo: 'Child pays for parent (CPFP)',
+                walletID: liveWallet.getID(),
+                psbt,
+                cpfp: {
+                  parentFee,
+                  parentVsize,
+                  targetFeeRate: newFeeRate,
+                },
+              },
+            });
+          if (this._isMounted) this.setState({ isLoading: false });
+          return;
+        }
+        if (!newTx) throw new Error('Signed CPFP transaction missing');
+        if (this._isMounted) this.setState({ stage: 2, txhex: newTx.toHex(), newTxid: newTx.getId(), isLoading: false });
       } catch (_) {
-        this.setState({ isLoading: false });
-        presentAlert({ message: loc.errors.error + ': ' + _.message });
+        if (this._isMounted) {
+          this.setState({ isLoading: false });
+          presentAlert({ message: loc.errors.error + ': ' + _.message });
+        }
       }
     }
   }
@@ -267,6 +346,8 @@ export default class CPFP extends Component {
 
 CPFP.propTypes = {
   navigation: PropTypes.shape({
+    getParent: PropTypes.func,
+    isFocused: PropTypes.func,
     popToTop: PropTypes.func,
     navigate: PropTypes.func,
   }),
