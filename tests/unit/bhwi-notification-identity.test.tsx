@@ -209,7 +209,7 @@ beforeEach(() => {
 it.each([
   ['io.bluewallet.bluewallet.bhwi', true, false],
   ['io.bluewallet.bluewallet.bhwi', false, true],
-  ['io.bluewallet.bluewallet.bhwi.testnet', true, false],
+  ['io.bluewallet.bluewallet.bhwi.testnet4', true, false],
 ] as const)('blocks remote initialization and retained-token services for %s with GMS=%s HMS=%s', async (bundleId, gms, hms) => {
   const subject = loadNotifications('android', bundleId, gms, hms);
   assert.strictEqual(subject.isNotificationsCapable, false);

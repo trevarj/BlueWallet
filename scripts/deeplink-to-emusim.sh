@@ -3,7 +3,7 @@
 profile=${1:-mainnet}
 case "$profile" in
   mainnet) androidScheme=bluewallet-bhwi; androidAppId=io.bluewallet.bluewallet.bhwi ;;
-  testnet) androidScheme=bluewallet-bhwi-testnet; androidAppId=io.bluewallet.bluewallet.bhwi.testnet ;;
+  testnet) androidScheme=bluewallet-bhwi-testnet4; androidAppId=io.bluewallet.bluewallet.bhwi.testnet4 ;;
   *) echo "Usage: $0 [mainnet|testnet]" >&2; exit 1 ;;
 esac
 

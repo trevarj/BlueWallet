@@ -139,7 +139,7 @@ export class MultisigCosigner {
       const json = JSON.parse(data);
       if (
         json &&
-        json.chain === (bitcoinNetwork === 'testnet' ? 'XTN' : 'BTC') &&
+        json.chain === (bitcoinNetwork === 'testnet4' ? 'XTN' : 'BTC') &&
         json.xfp &&
         (json.bip48_1 || json.bip48_2 || json.bip45)
       ) {

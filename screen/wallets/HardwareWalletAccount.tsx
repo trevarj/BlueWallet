@@ -7,6 +7,7 @@ import { ActivityIndicator, AppState, StyleSheet, TextInput, View } from 'react-
 import {
   BHWI_SINGLESIG_FORMATS,
   BhwiError,
+  addBhwiHostActiveListener,
   createHardwareWalletRegistration,
   getBhwiLedgerHmac,
   getBhwiPolicyName,
@@ -846,9 +847,9 @@ const HardwareWalletAccount = () => {
   useEffect(() => {
     mountedRef.current = true;
     if (!signingMode) enableScreenProtect();
-    const appState = AppState.addEventListener('change', nextState => {
-      foregroundRef.current = nextState === 'active';
-      if (foregroundRef.current) return;
+    const onHostActiveChange = (active: boolean) => {
+      foregroundRef.current = active;
+      if (active) return;
       restartRequiredRef.current = true;
       const hadHardwareWork = attemptRef.current > 0 || operationRef.current || !!sessionRef.current || !!stagedAssociationRef.current;
       const hasDraft = !!draftRef.current || !!stagedAssociationRef.current;
@@ -860,7 +861,11 @@ const HardwareWalletAccount = () => {
         setDevices([]);
         setDeviceInfo(undefined);
       }
-    });
+    };
+    // ponytail: native owns the distinction between USB permission pause and actual background.
+    const lifecycle =
+      addBhwiHostActiveListener(onHostActiveChange) ??
+      AppState.addEventListener('change', nextState => onHostActiveChange(nextState === 'active'));
     return () => {
       mountedRef.current = false;
       foregroundRef.current = false;
@@ -870,7 +875,7 @@ const HardwareWalletAccount = () => {
       const session = sessionRef.current;
       sessionRef.current = undefined;
       if (session) session.disconnect().catch(() => undefined);
-      appState.remove();
+      lifecycle.remove();
       if (!signingMode) disableScreenProtect();
     };
   }, [disableScreenProtect, enableScreenProtect, retireSession, signingMode]);

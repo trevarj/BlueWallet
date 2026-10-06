@@ -193,12 +193,13 @@ function readMap(buffer: Buffer, start: number): { entries: RawKeyValue[]; offse
     offset = keySize.offset;
     if (keySize.value === 0) return { entries, offset };
     if (keySize.value > buffer.length - offset) unsupported();
-    const key = buffer.subarray(offset, offset + keySize.value);
+    // ponytail: zero-copy Buffer views; Hermes subarray loses Buffer's prototype.
+    const key = Buffer.from(buffer.buffer, buffer.byteOffset + offset, keySize.value);
     offset += keySize.value;
     const valueSize = readCompactSize(buffer, offset);
     offset = valueSize.offset;
     if (valueSize.value > buffer.length - offset) unsupported();
-    const value = buffer.subarray(offset, offset + valueSize.value);
+    const value = Buffer.from(buffer.buffer, buffer.byteOffset + offset, valueSize.value);
     offset += valueSize.value;
     const id = key.toString('latin1');
     if (keys.has(id)) unsupported();
@@ -734,8 +735,8 @@ function indexMap(map: RawKeyValue[]): Map<string, RawKeyValue> {
   return result;
 }
 function compareExactMap(original: RawKeyValue[], returned: RawKeyValue[]): void {
-  if (original.length !== returned.length) changed();
   const returnedByKey = indexMap(returned);
+  if (original.length !== returned.length) changed();
   for (const entry of original) {
     const candidate = returnedByKey.get(entry.id);
     if (!candidate || !equal(entry.key, candidate.key) || !equal(entry.value, candidate.value)) changed();
@@ -750,7 +751,19 @@ function compareInputMap(original: RawKeyValue[], returned: RawKeyValue[]): bool
     if (!candidate) {
       if (!finalized || !FINALIZER_CLEANUP_TYPES[entry.key[0]]) changed();
     } else if (!equal(entry.value, candidate.value)) {
-      changed();
+      if (entry.key.length !== 1 || entry.key[0] !== 0x00) changed();
+      try {
+        // Jade/libwally removes all parent witnesses; the canonical non-witness body must remain byte-identical.
+        // Preflight already canonical-checked the original parent and bound it to the outpoint and prevout.
+        assertCanonicalTransactionEncoding(candidate.value, false);
+        const originalParent = bitcoin.Transaction.fromBuffer(entry.value);
+        const returnedParent = bitcoin.Transaction.fromBuffer(candidate.value);
+        if (!originalParent.hasWitnesses() || returnedParent.hasWitnesses()) changed();
+        originalParent.stripWitnesses();
+        if (!equal(originalParent.toBuffer(), candidate.value)) changed();
+      } catch {
+        changed();
+      }
     }
   }
   for (const entry of returned) {

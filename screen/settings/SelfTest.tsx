@@ -146,7 +146,7 @@ export default class SelfTest extends Component {
         if (bitcoinNetwork === 'bitcoin') {
           assertStrictEqual(aezeedAddress, 'bc1qdjj7lhj9lnjye7xq3dzv3r4z0cta294xy78txn', 'Aezeed failed');
         } else {
-          assertStrictEqual(aezeedAddress, 'tb1q9awz6sg6900z8znza8ulaz2ax4ffpqyuuukh85', 'Testnet3 Aezeed failed');
+          assertStrictEqual(aezeedAddress, 'tb1q9awz6sg6900z8znza8ulaz2ax4ffpqyuuukh85', 'Testnet4 Aezeed failed');
         }
       } else {
         // skipping RN-specific test
@@ -290,7 +290,7 @@ export default class SelfTest extends Component {
           false,
           0,
         );
-        assertStrictEqual(spend.tx?.ins.length, 1, 'Testnet3 transaction input failed');
+        assertStrictEqual(spend.tx?.ins.length, 1, 'Testnet4 transaction input failed');
         assertStrictEqual(bitcoin.address.fromOutputScript(spend.tx!.outs[0].script, network), destinationAddress);
       }
 
@@ -382,7 +382,7 @@ export default class SelfTest extends Component {
         if (bitcoinNetwork === 'bitcoin') {
           assertStrictEqual(slip39Address, '18pvMjy7AJbCDtv4TLYbGPbR7SzGzjqUpj', 'SLIP39 failed');
         } else {
-          assertStrictEqual(slip39Address, 'mvjjdJevEAfqkeoSoVAx2j98ne4HqoXQMW', 'Testnet3 SLIP39 failed');
+          assertStrictEqual(slip39Address, 'mvjjdJevEAfqkeoSoVAx2j98ne4HqoXQMW', 'Testnet4 SLIP39 failed');
         }
       }
 

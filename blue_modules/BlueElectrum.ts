@@ -95,9 +95,9 @@ const mainnetPeers: Peer[] = [
   { host: 'electrum1.bluewallet.io', ssl: 443 },
   { host: 'electrum.acinq.co', ssl: 50002 },
 ];
-const testnetPeers: Peer[] = [{ host: 'blackie.c3-soft.com', ssl: 57006 }];
-export const hardcodedPeers: Peer[] = bitcoinNetwork === 'testnet' ? testnetPeers : mainnetPeers;
-const defaultPeer = bitcoinNetwork === 'testnet' ? testnetPeers[0] : { host: 'electrum1.bluewallet.io', ssl: 443 };
+const testnetPeers: Peer[] = [{ host: 'blackie.c3-soft.com', ssl: 57010 }];
+export const hardcodedPeers: Peer[] = bitcoinNetwork === 'testnet4' ? testnetPeers : mainnetPeers;
+const defaultPeer = bitcoinNetwork === 'testnet4' ? testnetPeers[0] : { host: 'electrum1.bluewallet.io', ssl: 443 };
 
 export const suggestedServers: Peer[] = hardcodedPeers.map(peer => ({
   ...peer,
@@ -451,7 +451,7 @@ async function attemptConnectOnce(): Promise<{ ok: boolean; peer: Peer; client?:
   let client: typeof ElectrumClient;
   try {
     client =
-      bitcoinNetwork === 'testnet'
+      bitcoinNetwork === 'testnet4'
         ? new ElectrumClient(net, tls, usingPeer.ssl, usingPeer.host, 'tls', { rejectUnauthorized: true })
         : new ElectrumClient(net, tls, usingPeer.ssl || usingPeer.tcp, usingPeer.host, usingPeer.ssl ? 'tls' : 'tcp');
   } catch (e) {
@@ -496,7 +496,7 @@ async function attemptConnectOnce(): Promise<{ ok: boolean; peer: Peer; client?:
       if (tip.headerHex) {
         const header = decodeHeader(tip.headerHex);
         blockTime = new DataView(header.buffer, header.byteOffset, header.byteLength).getUint32(68, true);
-      } else if (bitcoinNetwork === 'testnet') {
+      } else if (bitcoinNetwork === 'testnet4') {
         const header = decodeHeader(await client.blockchainBlock_header(tip.height));
         assertActive();
         blockTime = new DataView(header.buffer, header.byteOffset, header.byteLength).getUint32(68, true);
@@ -1526,20 +1526,20 @@ export const broadcastV2 = async function (hex: string): Promise<string> {
 
 export const estimateCurrentBlockheight = function (): number {
   if (latestBlock.height) {
-    if (bitcoinNetwork === 'testnet') return latestBlock.height;
+    if (bitcoinNetwork === 'testnet4') return latestBlock.height;
     const timeDiff = Math.floor(Date.now() / 1000) - latestBlock.time;
     const extraBlocks = Math.floor(timeDiff / (9.93 * 60));
     return latestBlock.height + extraBlocks;
   }
 
-  if (bitcoinNetwork === 'testnet') return 0;
+  if (bitcoinNetwork === 'testnet4') return 0;
   const baseTs = 1587570465609; // uS
   const baseHeight = 627179;
   return Math.floor(baseHeight + (Date.now() - baseTs) / 1000 / 60 / 9.93);
 };
 
 export const calculateBlockTime = function (height: number): number {
-  if (bitcoinNetwork === 'testnet') {
+  if (bitcoinNetwork === 'testnet4') {
     return latestBlock.height === height ? (latestBlock.blockTime ?? 0) : 0;
   }
   if (latestBlock.height) {
@@ -1556,11 +1556,11 @@ export const calculateBlockTime = function (height: number): number {
  */
 export const testConnection = async function (host: string, tcpPort?: number, sslPort?: number): Promise<boolean> {
   host = host.trim();
-  if (!host || (bitcoinNetwork === 'testnet' && !sslPort)) return false;
+  if (!host || (bitcoinNetwork === 'testnet4' && !sslPort)) return false;
   let client: typeof ElectrumClient;
   try {
     client =
-      bitcoinNetwork === 'testnet'
+      bitcoinNetwork === 'testnet4'
         ? new ElectrumClient(net, tls, sslPort, host, 'tls', { rejectUnauthorized: true })
         : new ElectrumClient(net, tls, sslPort || tcpPort, host, sslPort ? 'tls' : 'tcp');
   } catch {
@@ -1587,7 +1587,7 @@ export const testConnection = async function (host: string, tcpPort?: number, ss
       assertActive();
       const tip = parseTip(await client.blockchainHeaders_subscribe());
       assertActive();
-      if (bitcoinNetwork === 'testnet' && !tip.headerHex) {
+      if (bitcoinNetwork === 'testnet4' && !tip.headerHex) {
         decodeHeader(await client.blockchainBlock_header(tip.height));
         assertActive();
       } else if (tip.headerHex) {
@@ -1661,7 +1661,7 @@ async function fetchBlockTipFromServer(): Promise<number | null> {
     if (tip.headerHex) {
       const bytes = decodeHeader(tip.headerHex);
       blockTime = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(68, true);
-    } else if (bitcoinNetwork === 'testnet') {
+    } else if (bitcoinNetwork === 'testnet4') {
       const bytes = decodeHeader(await client.blockchainBlock_header(tip.height));
       if (mainClient !== client || verifiedClient !== client) return latestBlock.height ?? null;
       blockTime = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(68, true);
@@ -1687,7 +1687,7 @@ export async function getCurrentBlockTip(): Promise<number> {
 
   const refreshed = await fetchBlockTipFromServer();
   if (refreshed) return refreshed;
-  if (bitcoinNetwork === 'testnet') throw new Error('Verified Testnet3 block tip is unavailable');
+  if (bitcoinNetwork === 'testnet4') throw new Error('Verified Testnet4 block tip is unavailable');
   return estimateCurrentBlockheight();
 }
 

@@ -16,11 +16,11 @@ const mainnetBlockExplorers: { [key: string]: BlockExplorer } = {
 };
 
 const testnetBlockExplorers: { [key: string]: BlockExplorer } = {
-  default: { key: 'default', name: 'Blockstream.info', url: 'https://blockstream.info/testnet' },
+  default: { key: 'default', name: 'Mempool.space', url: 'https://mempool.space/testnet4' },
   custom: { key: 'custom', name: 'Custom', url: '' },
 };
 
-export const BLOCK_EXPLORERS = bitcoinNetwork === 'testnet' ? testnetBlockExplorers : mainnetBlockExplorers;
+export const BLOCK_EXPLORERS = bitcoinNetwork === 'testnet4' ? testnetBlockExplorers : mainnetBlockExplorers;
 
 export const getBlockExplorersList = (): BlockExplorer[] => {
   return Object.values(BLOCK_EXPLORERS);

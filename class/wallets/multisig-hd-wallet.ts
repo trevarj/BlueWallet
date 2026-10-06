@@ -846,7 +846,7 @@ export class MultisigHDWallet extends AbstractHDElectrumWallet {
     }
 
     // is it caravan?
-    if (json && json.network === (bitcoinNetwork === 'testnet' ? 'testnet' : 'mainnet') && json.quorum) {
+    if (json && json.network === (bitcoinNetwork === 'testnet4' ? 'testnet' : 'mainnet') && json.quorum) {
       this.setM(+json.quorum.requiredSigners);
       if (json.name) this.setLabel(json.name);
 

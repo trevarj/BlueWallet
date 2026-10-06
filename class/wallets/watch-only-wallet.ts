@@ -1,7 +1,7 @@
 import BIP32Factory from 'bip32';
 import * as bitcoin from 'bitcoinjs-lib';
 import ecc from '../../blue_modules/noble_ecc';
-import { bitcoinNetwork, coinType, network } from '../../models/bitcoinNetwork';
+import { coinType, network } from '../../models/bitcoinNetwork';
 import { HDLegacyP2PKHWallet } from './hd-legacy-p2pkh-wallet';
 import { HDSegwitBech32Wallet } from './hd-segwit-bech32-wallet';
 import { HDSegwitP2SHWallet } from './hd-segwit-p2sh-wallet';
@@ -9,7 +9,7 @@ import { LegacyWallet } from './legacy-wallet';
 import type { THDWalletForWatchOnly } from './types';
 import { HDTaprootWallet } from './hd-taproot-wallet';
 import { WalletDescriptor } from '../wallet-descriptor.ts';
-import { convertExtendedKey, decodeExtendedKey, decodeRecognizedExtendedKey, looksLikeExtendedKey } from './extended-key';
+import { convertExtendedKey, decodeExtendedKey, looksLikeExtendedKey } from './extended-key';
 import type { Account, DeviceInfo } from '../../codegen/NativeBhwi';
 import {
   isBhwiSinglesigFormat,
@@ -433,9 +433,8 @@ export class WatchOnlyWallet extends LegacyWallet {
   setSecretForCustomPathImport(importText: string, path: string): this {
     const trimmed = importText.trim();
     if (looksLikeExtendedKey(trimmed)) {
-      const decoded = decodeRecognizedExtendedKey(trimmed);
+      const decoded = decodeExtendedKey(trimmed);
       if (decoded.kind !== 'public') throw new Error('Watch-only imports require an extended public key');
-      if (decoded.chain !== bitcoinNetwork) throw new Error(`Extended key is not valid for ${bitcoinNetwork}`);
 
       const wrapPath = new RegExp(`^m/(49|84|86)'/${coinType}'/\\d+'$`).test(path);
       if (wrapPath && decoded.format === 'legacy') {

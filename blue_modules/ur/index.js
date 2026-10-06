@@ -32,7 +32,7 @@ import { splitQRs } from '../bbqr/split';
 import { decodeUR as origDecodeUr, encodeUR as origEncodeUR, extractSingleWorkload as origExtractSingleWorkload } from '../bc-ur/dist';
 
 const bip32 = BIP32Factory(ecc);
-const urNetwork = bitcoinNetwork === 'testnet' ? CryptoCoinInfoNetwork.testnet : CryptoCoinInfoNetwork.mainnet;
+const urNetwork = bitcoinNetwork === 'testnet4' ? CryptoCoinInfoNetwork.testnet : CryptoCoinInfoNetwork.mainnet;
 const urCoinInfo = new CryptoCoinInfo(CryptoCoinInfoType.bitcoin, urNetwork);
 
 const USE_UR_V1 = 'USE_UR_V1';

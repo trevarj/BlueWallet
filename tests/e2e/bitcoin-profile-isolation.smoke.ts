@@ -65,8 +65,8 @@ it('keeps both Android profiles isolated without resetting their app data', asyn
     mutationAttempted = false;
 
     for (const [profile, scheme, foreignScheme] of [
-      ['mainnet', 'bluewallet-bhwi', 'bluewallet-bhwi-testnet'],
-      ['testnet', 'bluewallet-bhwi-testnet', 'bluewallet-bhwi'],
+      ['mainnet', 'bluewallet-bhwi', 'bluewallet-bhwi-testnet4'],
+      ['testnet', 'bluewallet-bhwi-testnet4', 'bluewallet-bhwi'],
     ]) {
       await device.selectApp(profile);
       await device.launchApp({ newInstance: true });
@@ -83,13 +83,15 @@ it('keeps both Android profiles isolated without resetting their app data', asyn
         .toBeVisible()
         .withTimeout(10_000);
 
-      // A fresh instrumented launch injects the URI into the selected MainActivity; openURL would resolve the other installed app.
-      await device.launchApp({ newInstance: true, url: `${foreignScheme}:setelectrumserver?server=foreign.invalid:443:s` });
-      await waitFor(element(by.id('WalletsList')))
-        .toBeVisible()
-        .withTimeout(30_000);
-      await detoxExpect(element(by.id('ElectrumSettingsScrollView'))).not.toExist();
-      await detoxExpect(cancel).not.toExist();
+      // Inject into the selected MainActivity: openURL could resolve the separately installed funded Testnet3 app.
+      for (const foreign of [foreignScheme, 'bluewallet-bhwi-testnet']) {
+        await device.launchApp({ newInstance: true, url: `${foreign}:setelectrumserver?server=foreign.invalid:443:s` });
+        await waitFor(element(by.id('WalletsList')))
+          .toBeVisible()
+          .withTimeout(30_000);
+        await detoxExpect(element(by.id('ElectrumSettingsScrollView'))).not.toExist();
+        await detoxExpect(cancel).not.toExist();
+      }
       await device.terminateApp();
     }
   } finally {

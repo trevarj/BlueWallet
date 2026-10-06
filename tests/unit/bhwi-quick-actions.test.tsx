@@ -74,8 +74,8 @@ beforeEach(() => {
 });
 
 describe.each([
-  ['bitcoin', 'bluewallet-bhwi', 'bluewallet-bhwi-testnet'],
-  ['testnet', 'bluewallet-bhwi-testnet', 'bluewallet-bhwi'],
+  ['bitcoin', 'bluewallet-bhwi', 'bluewallet-bhwi-testnet4'],
+  ['testnet4', 'bluewallet-bhwi-testnet4', 'bluewallet-bhwi'],
 ])('Android %s wallet shortcuts', (_bitcoinNetwork, scheme, foreignScheme) => {
   beforeAll(() => {
     mockAppScheme = scheme;
@@ -87,7 +87,7 @@ describe.each([
     await waitFor(() => expect(shortcuts.setShortcutItems).toHaveBeenCalled());
     expect(shortcuts.setShortcutItems.mock.calls[0][0][0].userInfo.url).toBe(ownedUrl);
 
-    for (const foreign of ['bluewallet', foreignScheme]) {
+    for (const foreign of ['bluewallet', foreignScheme, 'bluewallet-bhwi-testnet']) {
       const action = {
         userInfo: { url: `${foreign}://wallet/${mockWallet.getID()}` },
       };

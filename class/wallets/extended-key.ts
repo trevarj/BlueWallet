@@ -4,7 +4,7 @@ import { bitcoinNetwork } from '../../models/bitcoinNetwork';
 import { concatUint8Arrays } from '../../blue_modules/uint8array-extras';
 
 export type ExtendedKeyFormat = 'legacy' | 'nested' | 'native' | 'multisigNested' | 'multisigNative';
-export type ExtendedKeyChain = 'bitcoin' | 'testnet';
+export type ExtendedKeyEncoding = 'bitcoin' | 'testnet';
 type ExtendedKeyKind = 'public' | 'private';
 
 type Version = {
@@ -14,7 +14,7 @@ type Version = {
   prefix: string;
 };
 
-const versions: Record<ExtendedKeyChain, readonly Version[]> = {
+const versions: Record<ExtendedKeyEncoding, readonly Version[]> = {
   bitcoin: [
     { format: 'legacy', kind: 'public', value: 0x0488b21e, prefix: 'xpub' },
     { format: 'legacy', kind: 'private', value: 0x0488ade4, prefix: 'xprv' },
@@ -81,8 +81,12 @@ const versions: Record<ExtendedKeyChain, readonly Version[]> = {
   ],
 };
 
-const selectedVersions = versions[bitcoinNetwork];
-const allVersions = (Object.keys(versions) as ExtendedKeyChain[]).flatMap(chain => versions[chain].map(version => ({ chain, version })));
+// Testnet4 shares the test key encoding family; version bytes cannot identify its chain.
+const selectedEncoding = bitcoinNetwork === 'bitcoin' ? 'bitcoin' : 'testnet';
+const selectedVersions = versions[selectedEncoding];
+const allVersions = (Object.keys(versions) as ExtendedKeyEncoding[]).flatMap(encoding =>
+  versions[encoding].map(version => ({ encoding, version })),
+);
 const recognizedExtendedKeyPrefixes = allVersions.map(candidate => candidate.version.prefix);
 
 export const looksLikeExtendedKey = (key: string): boolean => recognizedExtendedKeyPrefixes.includes(key.substring(0, 4));
@@ -103,7 +107,7 @@ export type DecodedExtendedKey = {
   payload: Uint8Array;
   format: ExtendedKeyFormat;
   kind: ExtendedKeyKind;
-  chain: ExtendedKeyChain;
+  encoding: ExtendedKeyEncoding;
 };
 
 export const decodeRecognizedExtendedKey = (key: string, expectedKind?: ExtendedKeyKind): DecodedExtendedKey => {
@@ -124,13 +128,13 @@ export const decodeRecognizedExtendedKey = (key: string, expectedKind?: Extended
     payload,
     format: source.version.format,
     kind: source.version.kind,
-    chain: source.chain,
+    encoding: source.encoding,
   };
 };
 
 export const decodeExtendedKey = (key: string, expectedKind?: ExtendedKeyKind): DecodedExtendedKey => {
   const decoded = decodeRecognizedExtendedKey(key, expectedKind);
-  if (decoded.chain !== bitcoinNetwork) throw new Error(`Extended key is not valid for ${bitcoinNetwork}`);
+  if (decoded.encoding !== selectedEncoding) throw new Error(`Extended key is not valid for ${bitcoinNetwork}`);
   return decoded;
 };
 

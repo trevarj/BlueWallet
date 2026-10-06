@@ -1,6 +1,6 @@
 import type * as BlockExplorerModel from '../../models/blockExplorer';
 
-let mockBitcoinNetwork: 'bitcoin' | 'testnet' = 'bitcoin';
+let mockBitcoinNetwork: 'bitcoin' | 'testnet4' = 'bitcoin';
 
 jest.mock('../../models/bitcoinNetwork', () => ({
   get bitcoinNetwork() {
@@ -8,7 +8,7 @@ jest.mock('../../models/bitcoinNetwork', () => ({
   },
 }));
 
-function loadBlockExplorer(network: 'bitcoin' | 'testnet'): typeof BlockExplorerModel {
+function loadBlockExplorer(network: 'bitcoin' | 'testnet4'): typeof BlockExplorerModel {
   mockBitcoinNetwork = network;
   let model: typeof BlockExplorerModel | undefined;
   jest.isolateModules(() => {
@@ -32,14 +32,16 @@ describe('block explorer network profile', () => {
     expect(model.findMatchingExplorer('https://blockstream.info/')).toBe(model.BLOCK_EXPLORERS.blockstream);
   });
 
-  it('selects the complete Testnet3 Blockstream base rather than matching only its hostname', async () => {
-    const model = loadBlockExplorer('testnet');
+  it('selects the complete Testnet4 Mempool base rather than matching only its hostname', async () => {
+    const model = loadBlockExplorer('testnet4');
 
     await model.removeBlockExplorer();
-    await expect(model.getBlockExplorerUrl()).resolves.toBe('https://blockstream.info/testnet');
-    expect(model.BLOCK_EXPLORERS.default.url).toBe('https://blockstream.info/testnet');
+    await expect(model.getBlockExplorerUrl()).resolves.toBe('https://mempool.space/testnet4');
+    expect(model.BLOCK_EXPLORERS.default.url).toBe('https://mempool.space/testnet4');
     expect(model.getBlockExplorersList()).toEqual([model.BLOCK_EXPLORERS.default, model.BLOCK_EXPLORERS.custom]);
-    expect(model.findMatchingExplorer('https://blockstream.info')).toBeNull();
-    expect(model.findMatchingExplorer('https://blockstream.info/testnet/')).toBe(model.BLOCK_EXPLORERS.default);
+    expect(model.findMatchingExplorer('https://mempool.space')).toBeNull();
+    expect(model.findMatchingExplorer('https://mempool.space/testnet')).toBeNull();
+    expect(model.findMatchingExplorer('https://blockstream.info/testnet')).toBeNull();
+    expect(model.findMatchingExplorer('https://mempool.space/testnet4/')).toBe(model.BLOCK_EXPLORERS.default);
   });
 });

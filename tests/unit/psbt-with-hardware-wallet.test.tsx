@@ -110,6 +110,8 @@ const mockOpenSignedTransactionRaw = jest.fn();
 const mockMajorTomToGroundControl = jest.fn();
 let mockNavigation = { navigate: mockNavigate, dispatch: mockDispatch, setParams: mockSetParams };
 let mockBhwiAvailable = true;
+let mockBhwiHostActiveAvailable = true;
+let mockHostActiveChange: (active: boolean) => void = () => undefined;
 let mockIsFocused = true;
 let mockAppStateChange: (state: AppStateStatus) => void = () => undefined;
 let mockRouteParams: Record<string, unknown>;
@@ -133,7 +135,16 @@ jest.mock('@react-navigation/native', () => {
 
 jest.mock('../../blue_modules/bhwi', () => {
   const actual = jest.requireActual('../../blue_modules/bhwi');
-  return { ...actual, isBhwiAvailable: () => mockBhwiAvailable };
+  return {
+    ...actual,
+    isBhwiAvailable: () => mockBhwiAvailable,
+    addBhwiHostActiveListener: (listener: (active: boolean) => void) => {
+      if (!mockBhwiAvailable || !mockBhwiHostActiveAvailable) return undefined;
+      mockHostActiveChange = listener;
+      listener(true);
+      return { remove: jest.fn() };
+    },
+  };
 });
 
 jest.mock('../../hooks/context/useStorage', () => ({
@@ -230,6 +241,9 @@ beforeEach(() => {
     mockRouteParams = { ...mockRouteParams, ...params };
   });
   mockBhwiAvailable = true;
+  mockBhwiHostActiveAvailable = true;
+  mockHostActiveChange = () => undefined;
+  mockAppStateChange = () => undefined;
   mockIsFocused = true;
   mockNavigation = { navigate: mockNavigate, dispatch: mockDispatch, setParams: mockSetParams };
   mockEnsureConnected.mockResolvedValue(true);
@@ -475,7 +489,8 @@ test('invalidates pending and completed work on unexpected blur but preserves an
   expect(scannerView.getByTestId('PsbtTxScanButton')).toBeTruthy();
 });
 
-test('clears a verified associated result on background and requires a new preparation', async () => {
+test('falls back to AppState to clear a verified associated result on background', async () => {
+  mockBhwiHostActiveAvailable = false;
   const fixture = makeAssociatedFixture();
   const view = await renderPreparedAssociated(fixture);
   const originalBase64 = required(mockRouteParams.bhwiOriginalBase64 as string | undefined);
@@ -537,6 +552,74 @@ test('keeps parent screen protection active across the intentional hardware chil
   expect(mockDisableScreenProtect).toHaveBeenCalledTimes(disableCallsBeforeChild);
 });
 
+test.each(['permission-pause', 'native-inactive', 'unexpected-blur', 'unmount', 'app-state-fallback'] as const)(
+  'coordinates the parent hardware return with %s without accepting an expired snapshot',
+  async transition => {
+    mockBhwiHostActiveAvailable = transition !== 'app-state-fallback';
+    AppState.currentState = mockBhwiHostActiveAvailable ? 'background' : 'active';
+    const fixture = makeAssociatedFixture();
+    const broadcastTx = jest.spyOn(fixture.wallet, 'broadcastTx').mockResolvedValue(true);
+    let view = await renderPreparedAssociated(fixture);
+    const originalBase64 = required(mockRouteParams.bhwiOriginalBase64 as string | undefined);
+    const attempt = required(mockRouteParams.bhwiAttempt as number | undefined);
+    const complete = bitcoin.Psbt.fromBase64(originalBase64, { network });
+    complete.signInput(0, required(fixture.children[0]));
+    complete.signInput(1, required(fixture.children[1]));
+    const returnedBase64 = complete.finalizeAllInputs().toBase64();
+    fireEvent.press(view.getByTestId('BhwiSignPsbt'));
+    mockIsFocused = false;
+    view.rerender(<PsbtWithHardwareWallet />);
+    act(() => {
+      AppState.currentState = 'background';
+      mockAppStateChange('background');
+    });
+    if (mockBhwiHostActiveAvailable) {
+      expect(AppState.addEventListener).not.toHaveBeenCalled();
+      expect(mockRouteParams.bhwiOriginalBase64).toBe(originalBase64);
+      expect(mockRouteParams.bhwiAttempt).toBe(attempt);
+      expect(view.getByTestId('BhwiTransactionReview')).toBeTruthy();
+    }
+    if (transition === 'native-inactive') {
+      act(() => mockHostActiveChange(false));
+      expect(view.queryByTestId('BhwiTransactionReview')).toBeNull();
+      act(() => mockHostActiveChange(true));
+    } else if (transition === 'unexpected-blur') {
+      mockIsFocused = true;
+      view.rerender(<PsbtWithHardwareWallet />);
+      mockIsFocused = false;
+      view.rerender(<PsbtWithHardwareWallet />);
+    } else if (transition === 'unmount') {
+      view.unmount();
+    } else if (transition === 'app-state-fallback') {
+      act(() => mockAppStateChange('active'));
+    } else {
+      act(() => mockHostActiveChange(true));
+    }
+    mockIsFocused = true;
+    mockRouteParams = {
+      ...mockRouteParams,
+      bhwiBound: true,
+      bhwiOriginalBase64: originalBase64,
+      bhwiAttempt: attempt,
+      bhwiReturnedBase64: returnedBase64,
+    };
+    if (transition === 'unmount') view = render(<PsbtWithHardwareWallet />);
+    else view.rerender(<PsbtWithHardwareWallet />);
+    if (transition === 'permission-pause') {
+      await view.findByTestId('PsbtWithHardwareWalletBroadcastTransactionButton');
+      expect(mockPresentAlert).not.toHaveBeenCalled();
+      expect(mockRouteParams.bhwiReturnedBase64).toBeUndefined();
+    } else {
+      await waitFor(() =>
+        expect(mockPresentAlert).toHaveBeenCalledWith(expect.objectContaining({ message: BHWI_SIGNING_SESSION_EXPIRED })),
+      );
+      expect(view.queryByTestId('PsbtWithHardwareWalletBroadcastTransactionButton')).toBeNull();
+    }
+    expect(broadcastTx).not.toHaveBeenCalled();
+    view.unmount();
+  },
+);
+
 test('discards a stale first preparation and publishes the current lifecycle retry', async () => {
   const fixture = makeAssociatedFixture();
   setMockWallet(fixture.wallet);
@@ -578,8 +661,7 @@ test('stages a picker result after resume and requires explicit verification aga
   mockOpenSignedTransactionRaw.mockReturnValueOnce(pendingFile);
   fireEvent.press(view.getByTestId('PsbtTxOpenButton'));
   act(() => {
-    mockAppStateChange('inactive');
-    mockAppStateChange('background');
+    mockHostActiveChange(false);
   });
   await act(async () => {
     resolveFile(complete.toBase64());
@@ -588,7 +670,7 @@ test('stages a picker result after resume and requires explicit verification aga
   });
   expect(view.queryByTestId('PsbtWithHardwareWalletBroadcastTransactionButton')).toBeNull();
   await act(async () => {
-    mockAppStateChange('active');
+    mockHostActiveChange(true);
     await Promise.resolve();
   });
   await view.findByTestId('BhwiVerifyStagedFile');
@@ -609,7 +691,7 @@ test('clears a staged picker result on a new background before confirmation', as
   mockOpenSignedTransactionRaw.mockResolvedValueOnce(complete.toBase64());
   fireEvent.press(view.getByTestId('PsbtTxOpenButton'));
   await view.findByTestId('BhwiVerifyStagedFile');
-  act(() => mockAppStateChange('background'));
+  act(() => mockHostActiveChange(false));
   await view.findByTestId('BhwiPreparePsbt');
   expect(view.queryByTestId('BhwiVerifyStagedFile')).toBeNull();
   expect(view.queryByTestId('PsbtWithHardwareWalletBroadcastTransactionButton')).toBeNull();
@@ -643,7 +725,7 @@ test('stages a scanner picker return after foreground resume and requires a fres
   complete.signInput(0, required(fixture.children[0]));
   complete.signInput(1, required(fixture.children[1]));
   fireEvent.press(view.getByTestId('PsbtTxScanButton'));
-  act(() => mockAppStateChange('background'));
+  act(() => mockHostActiveChange(false));
   mockRouteParams = {
     ...mockRouteParams,
     onBarScanned: complete.toBase64(),
@@ -652,7 +734,7 @@ test('stages a scanner picker return after foreground resume and requires a fres
   view.rerender(<PsbtWithHardwareWallet />);
   expect(view.queryByTestId('BhwiVerifyStagedFile')).toBeNull();
   await act(async () => {
-    mockAppStateChange('active');
+    mockHostActiveChange(true);
     await Promise.resolve();
   });
   await view.findByTestId('BhwiVerifyStagedFile');

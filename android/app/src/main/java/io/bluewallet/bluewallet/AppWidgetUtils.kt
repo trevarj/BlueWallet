@@ -41,7 +41,7 @@ object AppWidgetUtils {
             views.setViewVisibility(R.id.last_updated_time, View.GONE)
             views.setViewVisibility(R.id.price_arrow_container, View.GONE)
             views.setViewVisibility(R.id.network_status, View.GONE)
-            views.setTextViewText(R.id.price_value, "Testnet3 unavailable")
+            views.setTextViewText(R.id.price_value, "Testnet4 unavailable")
             appWidgetManager.updateAppWidget(priceWidgetIds, views)
         }
 
@@ -49,7 +49,7 @@ object AppWidgetUtils {
         if (marketWidgetIds.isNotEmpty()) {
             val views = RemoteViews(context.packageName, R.layout.widget_market)
             views.setViewVisibility(R.id.network_status, View.GONE)
-            views.setTextViewText(R.id.next_block_value, "Testnet3")
+            views.setTextViewText(R.id.next_block_value, "Testnet4")
             views.setTextViewText(R.id.sats_value, "Unavailable")
             views.setTextViewText(R.id.price_value, "Unavailable")
             appWidgetManager.updateAppWidget(marketWidgetIds, views)

@@ -21,7 +21,8 @@ react {
     //   The list of variants to that are debuggable. For those we're going to
     //   skip the bundling of the JS bundle and the assets. Default is "debug", "debugOptimized".
     //   If you add flavors like lite, prod, etc. you'll have to list your debuggableVariants.
-    debuggableVariants = ["mainnetDebug", "bitcoinTestnetDebug"]
+    // ponytail: bundle debug APKs too, so USB hardware wallets do not require a Metro connection.
+    debuggableVariants = []
 
     /* Bundling */
     //   A list containing the node command and its flags. Default is just 'node'.
@@ -110,11 +111,11 @@ android {
         }
         bitcoinTestnet {
             dimension "bitcoinNetwork"
-            applicationIdSuffix ".testnet"
-            buildConfigField "String", "BITCOIN_NETWORK", '"testnet"'
-            resValue "string", "app_name", "BHWI PoC Testnet3"
-            resValue "string", "app_settings_name", "BHWI PoC Testnet3 Settings"
-            manifestPlaceholders = [appScheme: "bluewallet-bhwi-testnet", widgetsEnabled: "false"]
+            applicationIdSuffix ".testnet4"
+            buildConfigField "String", "BITCOIN_NETWORK", '"testnet4"'
+            resValue "string", "app_name", "BHWI PoC Testnet4"
+            resValue "string", "app_settings_name", "BHWI PoC Testnet4 Settings"
+            manifestPlaceholders = [appScheme: "bluewallet-bhwi-testnet4", widgetsEnabled: "false"]
         }
     }
 
@@ -131,6 +132,9 @@ android {
     }
 
     buildTypes {
+        debug {
+            resValue "string", "app_name", "Bluewallet (bhwi debug)"
+        }
         release {
             minifyEnabled enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"

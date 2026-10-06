@@ -110,7 +110,7 @@ internal fun trustedPinServerUrl(value: String): URL {
     }
     if (
         uri.scheme != "https" ||
-        uri.host != "jadepin.blockstream.com" ||
+        (uri.host != "jadepin.blockstream.com" && uri.host != "j8d.io") ||
         (uri.port != -1 && uri.port != 443) ||
         uri.rawUserInfo != null ||
         uri.rawFragment != null

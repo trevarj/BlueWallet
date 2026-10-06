@@ -12,6 +12,7 @@ import ecc from '../../blue_modules/noble_ecc';
 import { MultisigHDWallet } from '../../class/wallets/multisig-hd-wallet';
 import type { HardwareWalletAssociation } from '../../blue_modules/bhwi';
 import { network } from '../../models/bitcoinNetwork';
+import { BHWI_SIGNING_SESSION_EXPIRED } from '../../blue_modules/bhwiPsbt';
 import PsbtMultisig from '../../screen/send/psbtMultisig';
 
 bitcoin.initEccLib(ecc);
@@ -23,6 +24,7 @@ type MockRouteParams = {
   walletID: string;
   psbtBase64: string;
   bhwiBound: boolean;
+  bhwiOriginalBase64?: string;
   bhwiReturnedBase64?: string;
   bhwiAttempt?: number;
   receivedPSBTBase64?: string;
@@ -33,6 +35,8 @@ type MockRouteParams = {
 let mockRouteParams: MockRouteParams;
 let mockWallets: MultisigHDWallet[] = [];
 let mockIsFocused = true;
+let mockBhwiHostActiveAvailable = true;
+let mockHostActiveChange: (active: boolean) => void = () => undefined;
 let mockAppStateChange: (state: AppStateStatus) => void = () => undefined;
 const mockNavigate = jest.fn();
 const mockDispatch = jest.fn();
@@ -58,7 +62,16 @@ jest.mock('../../hooks/useScreenProtect', () => ({
 }));
 jest.mock('../../blue_modules/bhwi', () => {
   const actual = jest.requireActual('../../blue_modules/bhwi');
-  return { ...actual, isBhwiAvailable: () => true };
+  return {
+    ...actual,
+    isBhwiAvailable: () => true,
+    addBhwiHostActiveListener: (listener: (active: boolean) => void) => {
+      if (!mockBhwiHostActiveAvailable) return undefined;
+      mockHostActiveChange = listener;
+      listener(true);
+      return { remove: jest.fn() };
+    },
+  };
 });
 jest.mock('../../components/Alert', () => ({ __esModule: true, default: (...args: unknown[]) => mockPresentAlert(...args) }));
 jest.mock('../../blue_modules/currency', () => ({
@@ -252,9 +265,9 @@ async function rerenderSettled(view: RenderAPI): Promise<void> {
   });
 }
 
-async function changeAppState(state: AppStateStatus): Promise<void> {
+async function changeHostActive(active: boolean): Promise<void> {
   await act(async () => {
-    mockAppStateChange(state);
+    mockHostActiveChange(active);
     await Promise.resolve();
   });
 }
@@ -262,6 +275,9 @@ beforeEach(() => {
   Object.defineProperty(AppState, 'currentState', { configurable: true, value: 'active', writable: true });
   jest.clearAllMocks();
   mockIsFocused = true;
+  mockBhwiHostActiveAvailable = true;
+  mockHostActiveChange = () => undefined;
+  mockAppStateChange = () => undefined;
   mockSetParams.mockImplementation((params: Record<string, unknown>) => {
     Object.assign(mockRouteParams, params);
   });
@@ -296,6 +312,72 @@ test('preserves the phone signature through the strict hardware return and enabl
   const confirmed = confirmedPsbt();
   expect(Buffer.from(required(confirmed.data.inputs[0]?.finalScriptWitness)).includes(Buffer.from(phoneSignature))).toBe(true);
 });
+
+test.each(['permission-pause', 'native-inactive', 'unexpected-blur', 'unmount', 'app-state-fallback'] as const)(
+  'coordinates the multisig parent hardware return with %s without accepting an expired snapshot',
+  async transition => {
+    mockBhwiHostActiveAvailable = transition !== 'app-state-fallback';
+    AppState.currentState = mockBhwiHostActiveAvailable ? 'background' : 'active';
+    const fixture = makeFixture();
+    setFixture(fixture);
+    let view = render(<PsbtMultisig />);
+    await pressEnabled(view, 'PsbtMultisigSignWithPhone');
+    await waitFor(() => expect(view.getAllByTestId('ItemSigned')).toHaveLength(1));
+    await pressEnabled(view, 'PsbtMultisigSignWithHardware');
+    await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith('HardwareWalletAccount', expect.any(Object)));
+    const request = hardwareNavigation();
+    const returnedBase64 = signHardware(request.originalBase64, fixture).finalizeAllInputs().toBase64();
+    mockIsFocused = false;
+    await rerenderSettled(view);
+    act(() => {
+      AppState.currentState = 'background';
+      mockAppStateChange('background');
+    });
+    if (mockBhwiHostActiveAvailable) {
+      expect(AppState.addEventListener).not.toHaveBeenCalled();
+      expect(mockRouteParams.bhwiOriginalBase64).toBe(request.originalBase64);
+      expect(mockRouteParams.bhwiAttempt).toBe(request.attempt);
+    }
+    expectConfirmDisabled(view);
+    if (transition === 'native-inactive') {
+      await changeHostActive(false);
+      expect(mockRouteParams.bhwiOriginalBase64).toBeUndefined();
+      await changeHostActive(true);
+    } else if (transition === 'unexpected-blur') {
+      mockIsFocused = true;
+      await rerenderSettled(view);
+      mockIsFocused = false;
+      await rerenderSettled(view);
+    } else if (transition === 'unmount') {
+      view.unmount();
+    } else if (transition === 'app-state-fallback') {
+      act(() => mockAppStateChange('active'));
+    } else {
+      await changeHostActive(true);
+    }
+    mockIsFocused = true;
+    mockRouteParams = {
+      ...mockRouteParams,
+      bhwiOriginalBase64: request.originalBase64,
+      bhwiReturnedBase64: returnedBase64,
+      bhwiAttempt: request.attempt,
+    };
+    if (transition === 'unmount') view = render(<PsbtMultisig />);
+    else await rerenderSettled(view);
+    if (transition === 'permission-pause') {
+      const confirm = view.getByTestId('PsbtMultisigConfirmButton');
+      await waitFor(() => expect(confirm.props.accessibilityState?.disabled ?? confirm.props.disabled ?? false).toBe(false));
+      expect(view.getAllByTestId('ItemSigned')).toHaveLength(2);
+      expect(mockRouteParams.bhwiReturnedBase64).toBeUndefined();
+    } else {
+      await waitFor(() => expect(view.getByTestId('PsbtMultisigHardwareStatus').props.children).toBe(BHWI_SIGNING_SESSION_EXPIRED));
+      expectConfirmDisabled(view);
+    }
+    expect(mockNavigate).not.toHaveBeenCalledWith('Confirm', expect.any(Object));
+    expect(mockDispatch).not.toHaveBeenCalled();
+    view.unmount();
+  },
+);
 
 test('keeps an incomplete hardware result exportable, retries that actor, and preserves it through phone completion', async () => {
   const fixture = makeFixture();
@@ -342,7 +424,7 @@ test('stages a scanner picker result after resume, re-reviews it, and rejects al
   const altered = bitcoin.Psbt.fromBase64(qr.psbtBase64, { network });
   altered.setLocktime(1);
   for (const [index, child] of fixture.hardwareChildren.entries()) altered.signInput(index, child);
-  await changeAppState('background');
+  await changeHostActive(false);
   mockRouteParams = {
     ...mockRouteParams,
     receivedPSBTBase64: altered.toBase64(),
@@ -352,7 +434,7 @@ test('stages a scanner picker result after resume, re-reviews it, and rejects al
   mockIsFocused = true;
   await rerenderSettled(view);
   expect(view.queryByTestId('PsbtMultisigVerifyStagedFile')).toBeNull();
-  await changeAppState('active');
+  await changeHostActive(true);
   await view.findByTestId('PsbtMultisigVerifyStagedFile');
   expectConfirmDisabled(view);
   await pressAndSettle(view, 'PsbtMultisigVerifyStagedFile');
@@ -371,7 +453,7 @@ test('accepts a valid staged scanner picker result only after explicit confirmat
   mockIsFocused = false;
   await rerenderSettled(view);
   const returned = signHardware(qr.psbtBase64, fixture);
-  await changeAppState('background');
+  await changeHostActive(false);
   mockRouteParams = {
     ...mockRouteParams,
     receivedPSBTBase64: returned.toBase64(),
@@ -380,13 +462,13 @@ test('accepts a valid staged scanner picker result only after explicit confirmat
   };
   mockIsFocused = true;
   await rerenderSettled(view);
-  await changeAppState('active');
+  await changeHostActive(true);
   await view.findByTestId('PsbtMultisigVerifyStagedFile');
   expectConfirmDisabled(view);
-  await changeAppState('background');
+  await changeHostActive(false);
   expect(view.queryByTestId('PsbtMultisigVerifyStagedFile')).toBeNull();
 
-  await changeAppState('active');
+  await changeHostActive(true);
   mockRouteParams = {
     ...mockRouteParams,
     receivedPSBTBase64: returned.toBase64(),

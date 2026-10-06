@@ -32,6 +32,8 @@ const mockSaveToDisk = jest.fn(async () => true);
 let mockWallets: TWallet[] = [];
 let mockRouteParams: Record<string, unknown> = { mode: 'wallet' };
 let mockAppStateChange: (state: AppStateStatus) => void = () => undefined;
+let mockHostActiveChange: (active: boolean) => void = () => undefined;
+let mockInitialHostActive = true;
 let mockIsFocused = true;
 
 type PromiseResolvers<T> = {
@@ -104,6 +106,11 @@ jest.mock('../../blue_modules/bhwi', () => {
     isCanonicalBhwiFingerprint: (value: string) => value === 'd34db33f',
     isBhwiReconnectMatch: () => true,
     isBhwiAddressSnapshot: actual.isBhwiAddressSnapshot,
+    addBhwiHostActiveListener: (listener: (active: boolean) => void) => {
+      mockHostActiveChange = listener;
+      listener(mockInitialHostActive);
+      return { remove: jest.fn() };
+    },
     startBhwiSession: (...args: unknown[]) => mockStartSession(...args),
     supportsBhwiAccountFormat: () => true,
     matchesBhwiAddressSnapshot: (
@@ -203,6 +210,9 @@ const session = {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockAppStateChange = () => undefined;
+  mockHostActiveChange = () => undefined;
+  mockInitialHostActive = true;
   Object.defineProperty(AppState, 'currentState', { configurable: true, value: 'active', writable: true });
   jest.spyOn(AppState, 'addEventListener').mockImplementation((_event, listener) => {
     mockAppStateChange = listener as (state: AppStateStatus) => void;
@@ -280,7 +290,7 @@ it('invalidates an attempt backgrounded while session ownership is still startin
   fireEvent.press(view.getByTestId('HardwareDiscover'));
   await waitFor(() => expect(mockStartSession).toHaveBeenCalledTimes(1));
 
-  act(() => mockAppStateChange('background'));
+  act(() => mockHostActiveChange(false));
   await act(async () => {
     pendingSession.resolve(session);
     await pendingSession.promise;
@@ -288,7 +298,7 @@ it('invalidates an attempt backgrounded while session ownership is still startin
   await waitFor(() => expect(mockDisconnect).toHaveBeenCalledTimes(1));
   expect(mockDiscover).not.toHaveBeenCalled();
 
-  act(() => mockAppStateChange('active'));
+  act(() => mockHostActiveChange(true));
   expect(mockStartSession).toHaveBeenCalledTimes(1);
   fireEvent.press(view.getByTestId('HardwareDiscover'));
   await view.findByTestId('HardwareDevice-usb:ledger');
@@ -302,19 +312,80 @@ it('drops discovery results delivered after backgrounding and requires an explic
   fireEvent.press(view.getByTestId('HardwareDiscover'));
   await waitFor(() => expect(mockDiscover).toHaveBeenCalledTimes(1));
 
-  act(() => mockAppStateChange('background'));
+  act(() => mockHostActiveChange(false));
   await act(async () => {
     pendingDiscovery.resolve([{ id: 'late', name: 'Late device', family: 'ledger', transport: 'usb' }]);
     await pendingDiscovery.promise;
   });
   expect(view.queryByTestId('HardwareDevice-late')).toBeNull();
 
-  act(() => mockAppStateChange('active'));
+  act(() => mockHostActiveChange(true));
   expect(mockStartSession).toHaveBeenCalledTimes(1);
   fireEvent.press(view.getByTestId('HardwareDiscover'));
   await view.findByTestId('HardwareDevice-usb:ledger');
   expect(mockStartSession).toHaveBeenCalledTimes(2);
 });
+
+it.each(['inactive-at-mount', 'resume', 'home', 'stop', 'destroy', 'unmount', 'focus'] as const)(
+  'keeps the owned permission pause and handles %s without accepting abandoned results',
+  async lifecycle => {
+    mockInitialHostActive = lifecycle !== 'inactive-at-mount';
+    AppState.currentState = mockInitialHostActive ? 'background' : 'active';
+    const view = render(<HardwareWalletAccount />);
+    fireEvent.press(view.getByTestId('HardwareDiscover'));
+    if (lifecycle === 'inactive-at-mount') {
+      await act(async () => Promise.resolve());
+      expect(mockStartSession).not.toHaveBeenCalled();
+      view.unmount();
+      return;
+    }
+    const pendingConnect = withResolvers<{ family: 'ledger'; fingerprint: string; version: string; model: null }>();
+    mockConnect.mockReturnValueOnce(pendingConnect.promise);
+    fireEvent.press(await view.findByTestId('HardwareDevice-usb:ledger'));
+    await waitFor(() => expect(mockConnect).toHaveBeenCalledTimes(1));
+    const getSelection = mockStartSession.mock.calls[0][1] as () => unknown;
+    const selection = getSelection();
+    expect(selection).not.toBeNull();
+
+    act(() => {
+      AppState.currentState = 'background';
+      mockAppStateChange('background');
+    });
+    expect(mockDisconnect).not.toHaveBeenCalled();
+    expect(getSelection()).toEqual(selection);
+    expect(AppState.addEventListener).not.toHaveBeenCalled();
+
+    if (lifecycle === 'unmount') {
+      view.unmount();
+    } else if (lifecycle === 'focus') {
+      mockIsFocused = false;
+      view.rerender(<HardwareWalletAccount />);
+    } else if (lifecycle !== 'resume') {
+      // Native publishes inactive for real pause, stop and destroy, even during permission.
+      act(() => mockHostActiveChange(false));
+    }
+    await act(async () => {
+      // Resume may reach JS before the generic AppState "active" notification.
+      if (lifecycle === 'resume') mockHostActiveChange(true);
+      pendingConnect.resolve({ family: 'ledger', fingerprint: 'd34db33f', version: '1', model: null });
+      await pendingConnect.promise;
+    });
+    if (lifecycle === 'resume') {
+      await view.findByTestId('HardwareGetAccount');
+      expect(getSelection()).toEqual(selection);
+      expect(mockDisconnect).not.toHaveBeenCalled();
+    } else {
+      expect(getSelection()).toBeNull();
+      await waitFor(() => expect(mockDisconnect).toHaveBeenCalledTimes(1));
+      if (lifecycle !== 'unmount') {
+        act(() => mockHostActiveChange(true));
+        expect(view.queryByTestId('HardwareGetAccount')).toBeNull();
+        expect(view.queryByTestId('HardwareDevice-usb:ledger')).toBeNull();
+      }
+    }
+    if (lifecycle !== 'unmount') view.unmount();
+  },
+);
 
 it('does not publish or navigate for a save that completes after backgrounding', async () => {
   const pendingSave = withResolvers<boolean>();
@@ -323,12 +394,12 @@ it('does not publish or navigate for a save that completes after backgrounding',
   fireEvent.press(view.getByTestId('HardwareFinish'));
   await waitFor(() => expect(mockAddAndSaveWallet).toHaveBeenCalledTimes(1));
 
-  act(() => mockAppStateChange('background'));
+  act(() => mockHostActiveChange(false));
   await act(async () => {
     pendingSave.resolve(true);
     await pendingSave.promise;
   });
-  act(() => mockAppStateChange('active'));
+  act(() => mockHostActiveChange(true));
   expect(mockParentGoBack).not.toHaveBeenCalled();
 
   fireEvent.press(view.getByTestId('HardwareFinish'));

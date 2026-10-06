@@ -631,7 +631,7 @@ const startImport = (
     try {
       const json = JSON.parse(text);
 
-      if (json.chain === (bitcoinNetwork === 'testnet' ? 'XTN' : 'BTC') && json.xfp) {
+      if (json.chain === (bitcoinNetwork === 'testnet4' ? 'XTN' : 'BTC') && json.xfp) {
         for (const account of ['bip86', 'bip84', 'bip49', 'bip44']) {
           if (json[account] && json[account].desc) {
             const wallet = new WatchOnlyWallet();

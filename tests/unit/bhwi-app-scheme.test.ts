@@ -43,8 +43,8 @@ beforeEach(() => {
 });
 
 describe.each([
-  ['bitcoin', 'bluewallet-bhwi', 'bluewallet-bhwi-testnet'],
-  ['testnet', 'bluewallet-bhwi-testnet', 'bluewallet-bhwi'],
+  ['bitcoin', 'bluewallet-bhwi', 'bluewallet-bhwi-testnet4'],
+  ['testnet4', 'bluewallet-bhwi-testnet4', 'bluewallet-bhwi'],
 ])('Android %s app-owned links', (_bitcoinNetwork, scheme, foreignScheme) => {
   beforeAll(() => {
     mockAppScheme = scheme;
@@ -69,7 +69,7 @@ describe.each([
   });
 
   it('rejects foreign wrappers, settings, widgets and files', () => {
-    for (const foreign of ['bluewallet', foreignScheme]) {
+    for (const foreign of ['bluewallet', foreignScheme, 'bluewallet-bhwi-testnet']) {
       for (const suffix of [`bitcoin:${address}`, 'setelectrumserver?server=foreign', '//widget?action=openSend', '//import/tx.psbt']) {
         const url = `${foreign}:${suffix}`;
         const complete = jest.fn();

@@ -89,13 +89,13 @@ it('presents the Detected sheet after a plain resume', async () => {
   expect(navigationRef.dispatch).toHaveBeenCalledWith(expect.objectContaining({ name: 'ClipboardDetected' }));
 });
 
-it('shows the Testnet3 unavailable message for an unsupported clipboard payment', async () => {
+it('shows the Testnet4 unavailable message for an unsupported clipboard payment', async () => {
   jest.mocked(readClipboardForDetection).mockResolvedValue({ content: BIP47, pasteBlocked: false });
   renderHook(useClipboardDetection, { initialProps: true });
 
   await flush(CLIPBOARD_IDLE_DELAY_MS + 1);
 
-  expect(presentAlert).toHaveBeenCalledWith({ message: expect.stringContaining('Testnet3') });
+  expect(presentAlert).toHaveBeenCalledWith({ message: expect.stringContaining('Testnet4') });
   expect(navigationRef.dispatch).not.toHaveBeenCalled();
 });
 

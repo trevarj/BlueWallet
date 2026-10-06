@@ -32,6 +32,8 @@ jest.mock('../../class/rng', () => ({
 
 function nativeModule(): Record<string, jest.Mock> {
   return {
+    onHostActiveChange: jest.fn(() => ({ remove: jest.fn() })),
+    getHostActive: jest.fn(() => true),
     discover: jest.fn(async () => []),
     connect: jest.fn(),
     getAccount: jest.fn(),
@@ -71,6 +73,7 @@ it.each([
   const selection = { walletId: 'wallet', accountId: null };
 
   expect(bhwi.isBhwiAvailable()).toBe(false);
+  expect(bhwi.addBhwiHostActiveListener(jest.fn())).toBeUndefined();
   await expect(bhwi.startBhwiSession(selection, () => selection)).rejects.toMatchObject({ code: 'BHWI_UNAVAILABLE' });
   if (native) expect(native.discover).not.toHaveBeenCalled();
 });

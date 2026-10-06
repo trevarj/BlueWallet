@@ -31,7 +31,7 @@ export const isNotificationsCapable =
   mainnetServicesEnabled &&
   (Platform.OS !== 'android' ||
     (androidBundleId !== 'io.bluewallet.bluewallet.bhwi' &&
-      androidBundleId !== 'io.bluewallet.bluewallet.bhwi.testnet' &&
+      androidBundleId !== 'io.bluewallet.bluewallet.bhwi.testnet4' &&
       (hasGmsSync() || hasHmsSync())));
 const baseURI = groundControlUri;
 let notificationSubscriptions: EmitterSubscription[] = [];

@@ -73,7 +73,11 @@ function makeSinglesigFixture(inputCount = 1, value = 100_000n): SinglesigFixtur
     network,
   );
   const account = root.derivePath(singlesigPath);
-  const signer = { fingerprint: fingerprint(root), path: singlesigPath, xpub: account.neutered().toBase58() };
+  const signer = {
+    fingerprint: fingerprint(root),
+    path: singlesigPath,
+    xpub: account.neutered().toBase58(),
+  };
   const wallet = new WatchOnlyWallet();
   wallet.setSecret(convertExtendedKey(signer.xpub, 'native')).init();
   wallet.setDerivationPath(singlesigPath);
@@ -101,8 +105,16 @@ function makeSinglesigFixture(inputCount = 1, value = 100_000n): SinglesigFixtur
     children.push(child);
     parents.push(parent);
   }
-  const destination = required(bitcoin.payments.p2wpkh({ pubkey: account.derive(1).derive(0).publicKey, network }).output);
-  psbt.addOutput({ script: destination, value: value * BigInt(inputCount) - 1_000n });
+  const destination = required(
+    bitcoin.payments.p2wpkh({
+      pubkey: account.derive(1).derive(0).publicKey,
+      network,
+    }).output,
+  );
+  psbt.addOutput({
+    script: destination,
+    value: value * BigInt(inputCount) - 1_000n,
+  });
   return { wallet, signer, psbt, children, parents };
 }
 
@@ -201,7 +213,12 @@ function makeMultisigFixture(
     }),
   });
   const firstAccount = required(accounts[0]);
-  const destination = required(bitcoin.payments.p2wpkh({ pubkey: firstAccount.derive(1).derive(0).publicKey, network }).output);
+  const destination = required(
+    bitcoin.payments.p2wpkh({
+      pubkey: firstAccount.derive(1).derive(0).publicKey,
+      network,
+    }).output,
+  );
   psbt.addOutput({ script: destination, value: 149_000n });
   return { wallet, signers, children, psbt };
 }
@@ -223,7 +240,11 @@ function makeTaprootFixture(): {
   const payment = bitcoin.payments.p2tr({ internalPubkey, network });
   const taprootOutput = required(payment.output);
   const parent = makeParent(taprootOutput, 80_000n, 121);
-  const signer = { fingerprint: fingerprint(root), path, xpub: account.neutered().toBase58() };
+  const signer = {
+    fingerprint: fingerprint(root),
+    path,
+    xpub: account.neutered().toBase58(),
+  };
   const wallet = new WatchOnlyWallet();
   wallet.setSecret(signer.xpub);
   wallet.segwitType = 'p2tr';
@@ -245,7 +266,12 @@ function makeTaprootFixture(): {
       },
     ],
   });
-  const destination = required(bitcoin.payments.p2wpkh({ pubkey: account.derive(1).derive(0).publicKey, network }).output);
+  const destination = required(
+    bitcoin.payments.p2wpkh({
+      pubkey: account.derive(1).derive(0).publicKey,
+      network,
+    }).output,
+  );
   psbt.addOutput({ script: destination, value: 79_000n });
   const childPrivateKey = required(child.privateKey);
   const privateKey = child.publicKey[0] === 3 ? ecc.privateNegate(childPrivateKey) : childPrivateKey;
@@ -427,7 +453,9 @@ test('counts the minimum real signatures per input and returns zero without inpu
     nonWitnessUtxo: parent.toBuffer(),
     witnessUtxo: { ...firstPrevout },
     witnessScript: required(firstInput.witnessScript),
-    bip32Derivation: required(firstInput.bip32Derivation).map(derivation => ({ ...derivation })),
+    bip32Derivation: required(firstInput.bip32Derivation).map(derivation => ({
+      ...derivation,
+    })),
   });
   const unsigned = psbt.clone();
   psbt.signInput(0, required(fixture.children[0]));
@@ -480,6 +508,126 @@ test('accepts a real finalized 16-of-16 P2WSH witness with 18 stack items', () =
   assert.strictEqual(result.tx.toHex(), finalized.extractTransaction().toHex());
 });
 
+test('accepts only complete canonical parent-witness stripping and retains trusted parents through multisig signing', () => {
+  const fixture = makeMultisigFixture();
+  const signer = required(fixture.signers[0]);
+  const selected = required(fixture.children[0]);
+  const phone = required(fixture.children[1]);
+  const raw = parseRaw(fixture.psbt.toBase64());
+  const parentEntry = required(required(raw.inputs[0]).find(entry => entry.key.length === 1 && entry.key[0] === 0));
+  const parent = bitcoin.Transaction.fromBuffer(parentEntry.value);
+  parent.setInputScript(0, Uint8Array.of(0x51));
+  parent.addInput(new Uint8Array(32).fill(91), 1, 0xfffffffe, Uint8Array.of(0x52));
+  parent.addOutput(Uint8Array.of(0x51), 1_000n);
+  parent.setWitness(0, [Uint8Array.of(1, 2, 3), selected.publicKey]);
+  parent.setWitness(1, [Uint8Array.of(4, 5, 6), phone.publicKey]);
+  const fullParentBytes = asBuffer(parent.toBuffer());
+  parentEntry.value = fullParentBytes;
+  required(raw.transaction.ins[0]).hash = parent.getHash();
+  const unsigned = bitcoin.Psbt.fromBase64(serializeRaw(raw.transaction, raw.globals, raw.inputs, raw.outputs), { network });
+  const strippedParent = parent.clone();
+  strippedParent.stripWitnesses();
+  const strippedParentBytes = asBuffer(strippedParent.toBuffer());
+  const withParent = (signed: bitcoin.Psbt, value?: Uint8Array): string => {
+    const returned = parseRaw(signed.toBase64());
+    const input = required(returned.inputs[0]);
+    if (value) {
+      required(input.find(entry => entry.key.length === 1 && entry.key[0] === 0)).value = asBuffer(value);
+    } else {
+      returned.inputs[0] = input.filter(entry => entry.key.length !== 1 || entry.key[0] !== 0);
+    }
+    return serializeRaw(returned.transaction, returned.globals, returned.inputs, returned.outputs);
+  };
+  const partial = unsigned.clone().signInput(0, selected);
+  const phoneSigned = unsigned.clone().signInput(0, phone);
+  const fullySigned = phoneSigned.clone().signInput(0, selected);
+  const finalized = fullySigned.clone().finalizeAllInputs();
+  for (const [original, signed, complete] of [
+    [unsigned, partial, false],
+    [phoneSigned, fullySigned, true],
+    [phoneSigned, finalized, true],
+  ] as const) {
+    for (const returnedParentBytes of [fullParentBytes, strippedParentBytes]) {
+      const result = validateBhwiPsbt(original.toBase64(), withParent(signed, returnedParentBytes), fixture.wallet, signer);
+      assert.strictEqual(!!result.tx, complete);
+      assert.strictEqual(result.selectedSignerSignedAllInputs, true);
+      assert.strictEqual(fixture.wallet.calculateHowManySignaturesWeHaveFromPsbt(result.psbt), complete ? 2 : 1);
+      if (result.tx) assert.strictEqual(result.tx.toHex(), finalized.extractTransaction().toHex());
+      for (const psbt of [result.psbt, result.continuationPsbt]) {
+        assert.deepStrictEqual(asBuffer(required(psbt.data.inputs[0]?.nonWitnessUtxo)), fullParentBytes);
+      }
+    }
+    expectMessage(() => validateBhwiPsbt(original.toBase64(), withParent(signed), fixture.wallet, signer), CHANGED);
+  }
+
+  const bodyMutations: Array<(transaction: bitcoin.Transaction) => void> = [
+    transaction => {
+      transaction.version++;
+    },
+    transaction => {
+      required(transaction.ins[0]).hash = new Uint8Array(32).fill(92);
+    },
+    transaction => {
+      required(transaction.ins[1]).index++;
+    },
+    transaction => {
+      transaction.setInputScript(0, Uint8Array.of(0x53));
+    },
+    transaction => {
+      required(transaction.ins[1]).sequence--;
+    },
+    transaction => {
+      required(transaction.outs[0]).value--;
+    },
+    transaction => {
+      required(transaction.outs[1]).value--;
+    },
+    transaction => {
+      required(transaction.outs[0]).script = Uint8Array.of(0x51);
+    },
+    transaction => {
+      required(transaction.outs[1]).script = Uint8Array.of(0x52);
+    },
+    transaction => {
+      transaction.locktime++;
+    },
+  ];
+  for (const mutate of bodyMutations) {
+    const changedParent = strippedParent.clone();
+    mutate(changedParent);
+    expectMessage(
+      () => validateBhwiPsbt(unsigned.toBase64(), withParent(partial, changedParent.toBuffer()), fixture.wallet, signer),
+      CHANGED,
+    );
+  }
+  for (const witness of [[Uint8Array.of(9), selected.publicKey], [selected.publicKey], []]) {
+    const changedParent = parent.clone();
+    changedParent.setWitness(0, witness);
+    expectMessage(
+      () => validateBhwiPsbt(unsigned.toBase64(), withParent(partial, changedParent.toBuffer()), fixture.wallet, signer),
+      CHANGED,
+    );
+  }
+
+  const noncanonicalReturnedParent = Buffer.concat([
+    strippedParentBytes.subarray(0, 4),
+    Buffer.from('fd0200', 'hex'),
+    strippedParentBytes.subarray(5),
+  ]);
+  expectMessage(
+    () => validateBhwiPsbt(unsigned.toBase64(), withParent(partial, noncanonicalReturnedParent), fixture.wallet, signer),
+    CHANGED,
+  );
+  const noncanonicalOriginalParent = Buffer.concat([
+    fullParentBytes.subarray(0, 6),
+    Buffer.from('fd0200', 'hex'),
+    fullParentBytes.subarray(7),
+  ]);
+  expectMessage(() => validateBhwiPsbtOriginal(withParent(unsigned, noncanonicalOriginalParent), fixture.wallet, signer), UNSUPPORTED);
+  assert.deepStrictEqual(asBuffer(parent.toBuffer()), fullParentBytes);
+  assert.deepStrictEqual(asBuffer(required(unsigned.data.inputs[0]?.nonWitnessUtxo)), fullParentBytes);
+});
+
 test('rejects changed unsigned transactions and immutable input metadata', () => {
   const fixture = makeSinglesigFixture();
   const changedTransaction = fixture.psbt.clone();
@@ -487,7 +635,10 @@ test('rejects changed unsigned transactions and immutable input metadata', () =>
   expectMessage(() => validateBhwiPsbt(fixture.psbt.toBase64(), changedTransaction.toBase64(), fixture.wallet, fixture.signer), CHANGED);
 
   const added = fixture.psbt.clone();
-  added.addUnknownKeyValToInput(0, { key: Uint8Array.of(0xfc, 1), value: Uint8Array.of(1) });
+  added.addUnknownKeyValToInput(0, {
+    key: Uint8Array.of(0xfc, 1),
+    value: Uint8Array.of(1),
+  });
   added.signInput(0, fixture.children[0]);
   expectMessage(() => validateBhwiPsbt(fixture.psbt.toBase64(), added.toBase64(), fixture.wallet, fixture.signer), CHANGED);
 
@@ -502,6 +653,35 @@ test('rejects changed unsigned transactions and immutable input metadata', () =>
   replacedInput.witnessUtxo = { ...replacedWitnessUtxo, value: 99_999n };
   replaced.signInput(0, fixture.children[0]);
   expectMessage(() => validateBhwiPsbt(fixture.psbt.toBase64(), replaced.toBase64(), fixture.wallet, fixture.signer), CHANGED);
+});
+
+test('strictly validates original and signed PSBTs when subarray loses the Buffer prototype on Hermes', () => {
+  const fixture = makeSinglesigFixture();
+  fixture.psbt.addUnknownKeyValToGlobal({
+    key: Uint8Array.of(0xfc, 1, 0x61, 0),
+    value: Uint8Array.of(1),
+  });
+  const originalBase64 = fixture.psbt.toBase64();
+  const returnedBase64 = fixture.psbt.clone().signInput(0, required(fixture.children[0])).toBase64();
+  const buffer = Buffer.from(originalBase64, 'base64');
+  const noncanonical = Buffer.concat([buffer.subarray(0, 5), Buffer.from('fd0100', 'hex'), buffer.subarray(6)]).toString('base64');
+  const subarray = jest.spyOn<Buffer, 'subarray'>(Buffer.prototype, 'subarray').mockImplementation(function (
+    this: Buffer,
+    start?: number,
+    end?: number,
+  ) {
+    return new Uint8Array(this.buffer, this.byteOffset, this.byteLength).subarray(start, end) as Buffer;
+  });
+  try {
+    assert.strictEqual(Buffer.isBuffer(buffer.subarray(0, 1)), false);
+    const validated = validateBhwiPsbtOriginal(originalBase64, fixture.wallet, fixture.signer);
+    assert.strictEqual(validated.toBase64(), originalBase64);
+    expectMessage(() => validateBhwiPsbtOriginal(noncanonical, fixture.wallet, fixture.signer), UNSUPPORTED);
+    const result = validateBhwiPsbt(originalBase64, returnedBase64, fixture.wallet, fixture.signer);
+    assert.ok(result.tx);
+  } finally {
+    subarray.mockRestore();
+  }
 });
 
 test('strictly rejects noncanonical, duplicate, and trailing PSBT framing', () => {
@@ -636,21 +816,27 @@ test('keeps mixed finalized and partial returns exportable without exposing a tr
   assert.ok(result.psbt.toBase64().length > 0);
 });
 
-test('hydrates immutable parents and rejects remote txid, vout, value, and script conflicts before signing', async () => {
+test('hydrates immutable SegWit parents and rejects remote txid, vout, value, and script conflicts before signing', async () => {
   const fixture = makeSinglesigFixture();
   const source = fixture.psbt.clone();
   delete required(source.data.inputs[0]).nonWitnessUtxo;
   const parent = required(fixture.parents[0]);
-  const fetchParent = jest.fn(async () => ({ [parent.getId()]: parent.toHex() }));
+  parent.setWitness(0, [Uint8Array.of(1, 2, 3), required(fixture.children[0]).publicKey]);
+  const fetchParent = jest.fn(async () => ({
+    [parent.getId()]: parent.toHex(),
+  }));
   const hydrated = await hydrateBhwiPsbt(source, fetchParent);
   assert.strictEqual(source.data.inputs[0]?.nonWitnessUtxo, undefined);
   assert.ok(hydrated.data.inputs[0]?.nonWitnessUtxo);
+  assert.strictEqual(Buffer.from(required(hydrated.data.inputs[0]?.nonWitnessUtxo)).toString('hex'), parent.toHex());
   assert.strictEqual(fetchParent.mock.calls.length, 1);
   validateBhwiPsbtOriginal(hydrated.toBase64(), fixture.wallet, fixture.signer);
 
   const wrongParent = makeParent(required(parent.outs[0]).script, required(parent.outs[0]).value, 201);
   await assert.rejects(
-    hydrateBhwiPsbt(source, async () => ({ [parent.getId()]: wrongParent.toHex() })),
+    hydrateBhwiPsbt(source, async () => ({
+      [parent.getId()]: wrongParent.toHex(),
+    })),
     error => error instanceof Error && error.message === UNSUPPORTED,
   );
 
@@ -669,9 +855,14 @@ test('hydrates immutable parents and rejects remote txid, vout, value, and scrip
       },
     ],
   });
-  missingVout.addOutput({ script: parentOutput.script, value: parentOutput.value - 1n });
+  missingVout.addOutput({
+    script: parentOutput.script,
+    value: parentOutput.value - 1n,
+  });
   await assert.rejects(
-    hydrateBhwiPsbt(missingVout, async () => ({ [parent.getId()]: parent.toHex() })),
+    hydrateBhwiPsbt(missingVout, async () => ({
+      [parent.getId()]: parent.toHex(),
+    })),
     error => error instanceof Error && error.message === UNSUPPORTED,
   );
 
@@ -680,22 +871,33 @@ test('hydrates immutable parents and rejects remote txid, vout, value, and scrip
   const witness = required(wrongValueInput.witnessUtxo);
   wrongValueInput.witnessUtxo = { ...witness, value: witness.value - 1n };
   await assert.rejects(
-    hydrateBhwiPsbt(wrongValue, async () => ({ [parent.getId()]: parent.toHex() })),
+    hydrateBhwiPsbt(wrongValue, async () => ({
+      [parent.getId()]: parent.toHex(),
+    })),
     error => error instanceof Error && error.message === UNSUPPORTED,
   );
 
   const wrongScript = source.clone();
   const wrongScriptInput = required(wrongScript.data.inputs[0]);
-  wrongScriptInput.witnessUtxo = { ...required(wrongScriptInput.witnessUtxo), script: Uint8Array.of(0x51) };
+  wrongScriptInput.witnessUtxo = {
+    ...required(wrongScriptInput.witnessUtxo),
+    script: Uint8Array.of(0x51),
+  };
   await assert.rejects(
-    hydrateBhwiPsbt(wrongScript, async () => ({ [parent.getId()]: parent.toHex() })),
+    hydrateBhwiPsbt(wrongScript, async () => ({
+      [parent.getId()]: parent.toHex(),
+    })),
     error => error instanceof Error && error.message === UNSUPPORTED,
   );
 });
 
 test('the direct and route hardware-bound consumer accepts verified partial/full returns and rejects altered/raw returns', () => {
   const fixture = makeSinglesigFixture(2);
-  const association = { ...fixture.signer, family: 'ledger' as const, format: 'native-segwit' as const };
+  const association = {
+    ...fixture.signer,
+    family: 'ledger' as const,
+    format: 'native-segwit' as const,
+  };
   const partial = fixture.psbt.clone();
   partial.signInput(0, required(fixture.children[0]));
   const partialResult = validateBhwiBoundPsbt(fixture.psbt.toBase64(), partial.toBase64(), fixture.wallet, association);

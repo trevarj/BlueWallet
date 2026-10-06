@@ -151,8 +151,11 @@ internal object BhwiUsb {
     }
 
     fun currentDevice(manager: UsbManager, candidate: UsbBhwiCandidate): UsbDevice? {
-        val device = manager.deviceList[candidate.device.deviceName] ?: return null
-        if (!sameDevice(device, candidate.device)) return null
+        val device = manager.deviceList[candidate.device.deviceName]
+        if (!sameDevice(device, candidate.device)) {
+            return null
+        }
+        if (device == null) return null
         val familyMatches = if (candidate.serial) {
             when (candidate.family) {
                 BhwiFamily.JADE -> (device.vendorId to device.productId) in jadeSerialIds
@@ -193,7 +196,9 @@ internal object BhwiUsb {
                             @Suppress("DEPRECATION")
                             intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
                         }
-                        if (!sameDevice(returned, device)) return
+                        if (!sameDevice(returned, device)) {
+                            return
+                        }
                         unregister()
                         if (continuation.isActive) {
                             continuation.resume(
@@ -210,7 +215,9 @@ internal object BhwiUsb {
                     IntentFilter(action),
                     ContextCompat.RECEIVER_NOT_EXPORTED,
                 )
-                continuation.invokeOnCancellation { unregister() }
+                continuation.invokeOnCancellation {
+                    unregister()
+                }
                 val flags = PendingIntent.FLAG_UPDATE_CURRENT or if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                     PendingIntent.FLAG_MUTABLE
                 } else {
@@ -326,7 +333,9 @@ internal object BhwiUsb {
                     @Suppress("DEPRECATION")
                     intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
                 }
-                if (sameDevice(detached, device)) onDetach()
+                if (sameDevice(detached, device)) {
+                    onDetach()
+                }
             }
         }
         ContextCompat.registerReceiver(
@@ -521,7 +530,9 @@ internal class UsbWalletSerialStream private constructor(
     }
 
     private fun requireOpen() {
-        if (closed.get() || !port.isOpen) throw TransportException.Disconnected()
+        if (closed.get() || !port.isOpen) {
+            throw TransportException.Disconnected()
+        }
         if (!isOwner()) throw TransportException.Cancelled()
     }
 
@@ -531,7 +542,9 @@ internal class UsbWalletSerialStream private constructor(
     }
 
     override fun close() {
-        if (closed.compareAndSet(false, true)) runCatching { port.close() }
+        if (closed.compareAndSet(false, true)) {
+            runCatching { port.close() }
+        }
     }
 
     companion object {

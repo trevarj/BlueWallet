@@ -558,6 +558,13 @@ const sameSelection = (a: BhwiSelection | null, b: BhwiSelection): boolean =>
 
 export const isBhwiAvailable = (): boolean => Platform.OS === 'android' && NativeBhwi !== null;
 
+export function addBhwiHostActiveListener(listener: (active: boolean) => void) {
+  if (!isBhwiAvailable() || NativeBhwi === null) return undefined;
+  const subscription = NativeBhwi.onHostActiveChange(listener);
+  listener(NativeBhwi.getHostActive());
+  return subscription;
+}
+
 export class BhwiSession {
   private closed = false;
   private readonly sessionId: string;

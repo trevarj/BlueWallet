@@ -1,8 +1,23 @@
+diff --git a/node_modules/react-native-notifications/lib/android/app/src/main/java/com/wix/reactnativenotifications/RNNotificationsModule.java b/node_modules/react-native-notifications/lib/android/app/src/main/java/com/wix/reactnativenotifications/RNNotificationsModule.java
+index 90969b2..619900f 100644
+--- a/node_modules/react-native-notifications/lib/android/app/src/main/java/com/wix/reactnativenotifications/RNNotificationsModule.java
++++ b/node_modules/react-native-notifications/lib/android/app/src/main/java/com/wix/reactnativenotifications/RNNotificationsModule.java
+@@ -144,6 +144,10 @@ public class RNNotificationsModule extends ReactContextBaseJavaModule implements
+ 
+     protected void startFcmIntentService(String extraFlag) {
+         final Context appContext = getReactApplicationContext().getApplicationContext();
++        final String packageName = appContext.getPackageName();
++        if ("io.bluewallet.bluewallet.bhwi".equals(packageName) || "io.bluewallet.bluewallet.bhwi.testnet4".equals(packageName)) {
++            return;
++        }
+         final Intent tokenFetchIntent = new Intent(appContext, FcmInstanceIdRefreshHandlerService.class);
+         tokenFetchIntent.putExtra(extraFlag, true);
+         FcmInstanceIdRefreshHandlerService.enqueueWork(appContext, tokenFetchIntent);
 diff --git a/node_modules/react-native-notifications/lib/android/app/src/main/java/com/wix/reactnativenotifications/fcm/FcmToken.java b/node_modules/react-native-notifications/lib/android/app/src/main/java/com/wix/reactnativenotifications/fcm/FcmToken.java
-index c7bf71c..08022ff 100644
+index fb1aba4..368f9a8 100644
 --- a/node_modules/react-native-notifications/lib/android/app/src/main/java/com/wix/reactnativenotifications/fcm/FcmToken.java
 +++ b/node_modules/react-native-notifications/lib/android/app/src/main/java/com/wix/reactnativenotifications/fcm/FcmToken.java
-@@ -88,15 +88,26 @@ public class FcmToken implements IFcmToken {
+@@ -88,12 +88,23 @@ public class FcmToken implements IFcmToken {
      }
  
      protected void sendTokenToJS() {
@@ -10,18 +25,17 @@ index c7bf71c..08022ff 100644
 -        ReactContext reactContext = instanceManager.getCurrentReactContext();
 +        final ReactApplication reactApplication = (ReactApplication) mAppContext;
 +        ReactContext reactContext = null;
- 
--        if (reactContext == null) {
--            // If the react context is not available, try to get the current context from the react host (RN0.76).
--            reactContext = ((ReactApplication) mAppContext).getReactHost().getCurrentReactContext();
++
 +        try {
 +            // Bridgeless/new architecture apps expose the current context from ReactHost.
 +            reactContext = reactApplication.getReactHost().getCurrentReactContext();
 +        } catch (Throwable ignored) {
 +            // Older React Native versions may not expose ReactHost.
 +        }
-+
-+        if (reactContext == null) {
+ 
+         if (reactContext == null) {
+-            // If the react context is not available, try to get the current context from the react host (RN0.76).
+-            reactContext = ((ReactApplication) mAppContext).getReactHost().getCurrentReactContext();
 +            try {
 +                final ReactInstanceManager instanceManager = reactApplication.getReactNativeHost().getReactInstanceManager();
 +                reactContext = instanceManager.getCurrentReactContext();
@@ -31,20 +45,3 @@ index c7bf71c..08022ff 100644
          }
          // Note: Cannot assume react-context exists cause this is an async dispatched service.
          if (reactContext != null && reactContext.hasActiveReactInstance()) {
-             Bundle tokenMap = new Bundle();
-             tokenMap.putString("deviceToken", sToken);
-             mJsIOHelper.sendEventToJS(TOKEN_RECEIVED_EVENT_NAME, tokenMap, reactContext);
-diff --git a/node_modules/react-native-notifications/lib/android/app/src/main/java/com/wix/reactnativenotifications/RNNotificationsModule.java b/node_modules/react-native-notifications/lib/android/app/src/main/java/com/wix/reactnativenotifications/RNNotificationsModule.java
---- a/node_modules/react-native-notifications/lib/android/app/src/main/java/com/wix/reactnativenotifications/RNNotificationsModule.java
-+++ b/node_modules/react-native-notifications/lib/android/app/src/main/java/com/wix/reactnativenotifications/RNNotificationsModule.java
-@@ -145,6 +145,10 @@ public class RNNotificationsModule extends ReactContextBaseJavaModule implements
-     protected void startFcmIntentService(String extraFlag) {
-         final Context appContext = getReactApplicationContext().getApplicationContext();
-+        final String packageName = appContext.getPackageName();
-+        if ("io.bluewallet.bluewallet.bhwi".equals(packageName) || "io.bluewallet.bluewallet.bhwi.testnet".equals(packageName)) {
-+            return;
-+        }
-         final Intent tokenFetchIntent = new Intent(appContext, FcmInstanceIdRefreshHandlerService.class);
-         tokenFetchIntent.putExtra(extraFlag, true);
-         FcmInstanceIdRefreshHandlerService.enqueueWork(appContext, tokenFetchIntent);
-     }

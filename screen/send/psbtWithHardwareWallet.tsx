@@ -6,7 +6,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, AppState, Linking, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import * as BlueElectrum from '../../blue_modules/BlueElectrum';
 import triggerHapticFeedback, { HapticFeedbackTypes } from '../../blue_modules/hapticFeedback';
-import { isBhwiAvailable } from '../../blue_modules/bhwi';
+import { addBhwiHostActiveListener, isBhwiAvailable } from '../../blue_modules/bhwi';
 import {
   BHWI_SIGNING_SESSION_EXPIRED,
   assertBhwiCpfpPackageTarget,
@@ -309,8 +309,7 @@ const PsbtWithHardwareWallet = () => {
           boundAttemptRef.current = undefined;
           stagedFileResultRef.current = undefined;
           setHasStagedFileResult(false);
-          const message = error instanceof Error ? error.message : loc.wallets.hardware_operation_failed;
-          setHardwareStatus(message);
+          setHardwareStatus(error instanceof Error ? error.message : loc.wallets.hardware_operation_failed);
         }
       } finally {
         if (attemptRef.current === generation && mountedRef.current) setIsLoading(false);
@@ -469,9 +468,9 @@ const PsbtWithHardwareWallet = () => {
       setHardwareRouteBound(true);
     }
     enableScreenProtect();
-    const appState = AppState.addEventListener('change', nextState => {
-      foregroundRef.current = nextState === 'active';
-      if (foregroundRef.current) {
+    const onHostActiveChange = (active: boolean) => {
+      foregroundRef.current = active;
+      if (active) {
         const resume = foregroundResumeRef.current;
         foregroundResumeRef.current = undefined;
         resume?.();
@@ -481,7 +480,11 @@ const PsbtWithHardwareWallet = () => {
         expireHardwareAttempt();
         setHardwareStatus(BHWI_SIGNING_SESSION_EXPIRED);
       }
-    });
+    };
+    // ponytail: native owns the distinction between USB permission pause and actual background.
+    const lifecycle =
+      (hardwareBoundFlow ? addBhwiHostActiveListener(onHostActiveChange) : undefined) ??
+      AppState.addEventListener('change', nextState => onHostActiveChange(nextState === 'active'));
     return () => {
       mountedRef.current = false;
       foregroundRef.current = false;
@@ -490,7 +493,7 @@ const PsbtWithHardwareWallet = () => {
       boundAttemptRef.current = undefined;
       verifiedAttemptRef.current = undefined;
       autoPreparationRef.current = '';
-      appState.remove();
+      lifecycle.remove();
       disableScreenProtect();
       stagedFileResultRef.current = undefined;
       const resume = foregroundResumeRef.current;

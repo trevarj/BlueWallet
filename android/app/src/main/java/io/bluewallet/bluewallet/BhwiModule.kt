@@ -190,7 +190,7 @@ internal fun bhwiErrorCode(error: Throwable): String = when (error) {
 
 internal fun bhwiNetwork(profile: String): Network = when (profile) {
     "bitcoin" -> Network.BITCOIN
-    "testnet" -> Network.TESTNET
+    "testnet4" -> Network.TESTNET
     else -> throw IllegalStateException("Invalid immutable Bitcoin network profile")
 }
 
@@ -458,7 +458,10 @@ class BhwiModule internal constructor(
     private val application = context.applicationContext as Application
     @Volatile private var owner: BhwiOwner? = null
     @Volatile private var invalidated = false
-    @Volatile private var hostResumed = context.lifecycleState == LifecycleState.RESUMED
+    @Volatile private var hostResumed =
+        context.lifecycleState == LifecycleState.RESUMED &&
+            context.currentActivity?.let { !it.isFinishing && !it.isDestroyed } == true
+    private var jsHostActive = hostResumed
     @Volatile private var resumedActivity: Activity? = if (hostResumed) context.currentActivity else null
     @Volatile private var transitionActivity: Activity? = null
     private val network = bhwiNetwork(BuildConfig.BITCOIN_NETWORK)
@@ -471,27 +474,33 @@ class BhwiModule internal constructor(
             if (activity === reactApplicationContext.currentActivity || activity === transitionActivity) {
                 resumedActivity = activity
                 hostResumed = true
+                publishHostActive(true)
             }
         }
 
         override fun onActivityPaused(activity: Activity) {
             if (activity === resumedActivity) {
                 hostResumed = false
-                if (platformTransitions.get() == 0) owner?.id?.let(::forceDisconnect)
+                if (platformTransitions.get() == 0) {
+                    publishHostActive(false)
+                    owner?.id?.let { forceDisconnect(it) }
+                }
             }
         }
 
         override fun onActivityStopped(activity: Activity) {
             if (activity === resumedActivity || activity === transitionActivity) {
                 hostResumed = false
-                owner?.id?.let(::forceDisconnect)
+                publishHostActive(false)
+                owner?.id?.let { forceDisconnect(it) }
             }
         }
 
         override fun onActivityDestroyed(activity: Activity) {
             if (activity === resumedActivity || activity === transitionActivity) {
                 hostResumed = false
-                owner?.id?.let(::forceDisconnect)
+                publishHostActive(false)
+                owner?.id?.let { forceDisconnect(it) }
             }
         }
     }
@@ -503,6 +512,9 @@ class BhwiModule internal constructor(
 
     override fun getName() = NAME
 
+    @Synchronized
+    override fun getHostActive(): Boolean = jsHostActive
+
     override fun discover(sessionId: String, transport: String, promise: Promise) {
         if (transport != "usb" && transport != "ble") {
             reject(promise, BhwiFailure(BHWI_INVALID_INPUT))
@@ -512,7 +524,8 @@ class BhwiModule internal constructor(
             val candidates: List<BhwiCandidate> = if (transport == "usb") {
                 val discovered = BhwiUsb.discover(reactApplicationContext)
                 val selectedSerial = discovered.serialAdapters.mapNotNull { adapter ->
-                    if (confirmSerialFamily(state.id, adapter)) {
+                    val approved = confirmSerialFamily(state.id, adapter)
+                    if (approved) {
                         UsbBhwiCandidate(adapter.device, adapter.proposedFamily, serial = true)
                     } else {
                         null
@@ -879,7 +892,10 @@ class BhwiModule internal constructor(
             return result
         } finally {
             val remaining = platformTransitions.decrementAndGet()
-            if (remaining == 0 && (!hostResumed || resumedActivity !== activity)) forceDisconnect(ownerId)
+            if (remaining == 0 && (!hostResumed || resumedActivity !== activity)) {
+                UiThreadUtil.runOnUiThread { publishHostActive(hostResumed || platformTransitions.get() != 0) }
+                forceDisconnect(ownerId)
+            }
             if (transitionActivity === activity) transitionActivity = null
         }
     }
@@ -1203,20 +1219,34 @@ class BhwiModule internal constructor(
         }
     }
 
+    @Synchronized
+    private fun publishHostActive(active: Boolean) {
+        if (jsHostActive == active) return
+        jsHostActive = active
+        if (!invalidated && mEventEmitterCallback != null && reactApplicationContext.hasActiveReactInstance()) {
+            emitOnHostActiveChange(active)
+        }
+    }
+
     override fun onHostResume() {
         val activity = reactApplicationContext.currentActivity
         resumedActivity = activity
         hostResumed = activity != null && !activity.isFinishing && !activity.isDestroyed
+        publishHostActive(hostResumed)
     }
 
     override fun onHostPause() {
         hostResumed = false
-        if (platformTransitions.get() == 0) owner?.id?.let(::forceDisconnect)
+        if (platformTransitions.get() == 0) {
+            publishHostActive(false)
+            owner?.id?.let { forceDisconnect(it) }
+        }
     }
 
     override fun onHostDestroy() {
         hostResumed = false
-        owner?.id?.let(::forceDisconnect)
+        publishHostActive(false)
+        owner?.id?.let { forceDisconnect(it) }
     }
 
     override fun invalidate() {
@@ -1224,7 +1254,7 @@ class BhwiModule internal constructor(
         reactApplicationContext.removeLifecycleEventListener(this)
         application.unregisterActivityLifecycleCallbacks(activityCallbacks)
         val current = owner
-        current?.id?.let(::forceDisconnect)
+        current?.id?.let { forceDisconnect(it) }
         if (current?.operation == null) {
             runCatching { current?.session?.disconnect() }
         } else {

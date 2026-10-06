@@ -44,7 +44,7 @@ import {
   hydrateBhwiPsbt,
 } from '../../blue_modules/bhwiPsbt';
 import type { BhwiHardwareMobilePolicy, BhwiPsbtAttemptSnapshot } from '../../blue_modules/bhwiPsbt';
-import { isBhwiAvailable } from '../../blue_modules/bhwi';
+import { addBhwiHostActiveListener, isBhwiAvailable } from '../../blue_modules/bhwi';
 import { validateBhwiPsbt, validateBhwiPsbtOriginal } from '../../blue_modules/validateBhwiPsbt';
 import { useScreenProtect } from '../../hooks/useScreenProtect';
 import { useSettings } from '../../hooks/context/useSettings';
@@ -593,16 +593,20 @@ const PsbtMultisig = () => {
     mountedRef.current = true;
     foregroundRef.current = AppState.currentState === 'active';
     enableScreenProtect();
-    const appState = AppState.addEventListener('change', nextState => {
-      foregroundRef.current = nextState === 'active';
-      if (foregroundRef.current) {
+    const onHostActiveChange = (active: boolean) => {
+      foregroundRef.current = active;
+      if (active) {
         const resume = foregroundResumeRef.current;
         foregroundResumeRef.current = undefined;
         resume?.();
         return;
       }
       if (hardwareBound) expireHardwareAttempt();
-    });
+    };
+    // ponytail: native owns the distinction between USB permission pause and actual background.
+    const lifecycle =
+      (hardwareBound ? addBhwiHostActiveListener(onHostActiveChange) : undefined) ??
+      AppState.addEventListener('change', nextState => onHostActiveChange(nextState === 'active'));
     return () => {
       mountedRef.current = false;
       foregroundRef.current = false;
@@ -615,7 +619,7 @@ const PsbtMultisig = () => {
       const resume = foregroundResumeRef.current;
       foregroundResumeRef.current = undefined;
       resume?.();
-      appState.remove();
+      lifecycle.remove();
       disableScreenProtect();
     };
   }, [disableScreenProtect, enableScreenProtect, expireHardwareAttempt, hardwareBound]);

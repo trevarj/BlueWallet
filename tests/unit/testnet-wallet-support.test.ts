@@ -1,4 +1,5 @@
 import { Platform } from 'react-native';
+import type { Account, DeviceInfo } from '../../codegen/NativeBhwi';
 
 jest.mock('react-native', () => {
   const actual = jest.requireActual('react-native');
@@ -17,7 +18,7 @@ jest.mock('../../codegen/NativeSettingsModule', () => ({
 }));
 
 const mockNativeModule = {
-  getConstants: () => ({ bitcoinNetwork: 'testnet' }),
+  getConstants: () => ({ bitcoinNetwork: 'testnet4' }),
 };
 function loadTestnetApp() {
   const bitcoin = require('bitcoinjs-lib');
@@ -41,6 +42,9 @@ function loadTestnetApp() {
     SegwitBech32Wallet: require('../../class/wallets/segwit-bech32-wallet').SegwitBech32Wallet,
     WatchOnlyWallet: require('../../class/wallets/watch-only-wallet').WatchOnlyWallet,
     ur: require('../../blue_modules/ur'),
+    bhwi: require('../../blue_modules/bhwi'),
+    bhwiPsbt: require('../../blue_modules/bhwiPsbt'),
+    validateBhwiPsbtOriginal: require('../../blue_modules/validateBhwiPsbt').validateBhwiPsbtOriginal,
     registry: require('@keystonehq/bc-ur-registry/dist'),
   };
 }
@@ -108,8 +112,8 @@ function decodeRegistryItem(item: { toUREncoder: (length: number) => { nextPart:
   return decoder.toString();
 }
 
-describe('fixed Testnet3 wallet profile', () => {
-  it('strictly converts selected-chain extended keys and rejects malformed or opposite-chain payloads', () => {
+describe('fixed Testnet4 wallet profile', () => {
+  it('strictly converts selected-family extended keys and rejects malformed or opposite-family payloads', () => {
     const { convertExtendedKey, decodeExtendedKey } = app.extendedKey;
     const root = app.bip32.fromSeed(seed, app.profile.network);
     const tpub = root.derivePath("m/84'/1'/0'").neutered().toBase58();
@@ -124,6 +128,7 @@ describe('fixed Testnet3 wallet profile', () => {
     expect(decodeExtendedKey(vpub, 'public')).toMatchObject({
       format: 'native',
       kind: 'public',
+      encoding: 'testnet',
     });
     expect(app.MultisigHDWallet.isXpubValid(tpub)).toBe(true);
     expect(app.MultisigHDWallet.isXpubValid(tprv)).toBe(false);
@@ -131,7 +136,7 @@ describe('fixed Testnet3 wallet profile', () => {
     expect(app.MultisigHDWallet.isXprvValid(tpub)).toBe(false);
 
     const mainnetXpub = app.bip32.fromSeed(seed, app.bitcoin.networks.bitcoin).neutered().toBase58();
-    expect(() => convertExtendedKey(mainnetXpub, 'native')).toThrow(/not valid for testnet/);
+    expect(() => convertExtendedKey(mainnetXpub, 'native')).toThrow(/not valid for testnet4/);
 
     const payload = app.b58.decode(tpub);
     expect(() => decodeExtendedKey(app.b58.encode(payload.slice(0, 77)))).toThrow(/78 bytes/);
@@ -167,7 +172,7 @@ describe('fixed Testnet3 wallet profile', () => {
     expect(() => new app.MultisigHDWallet().addCosigner(vpub, 'AABBCCDD', "m/48'/0'/0'/2'")).toThrow(/coin type 1/);
   });
 
-  it('derives Testnet3 addresses and WIFs, rejects mainnet imports, and preserves descriptor precedence', () => {
+  it('derives test-encoded addresses and WIFs, rejects mainnet imports, and preserves descriptor precedence', () => {
     const testKey = app.ECPair.fromPrivateKey(Buffer.alloc(32, 3), {
       network: app.profile.network,
     });
@@ -236,7 +241,7 @@ describe('fixed Testnet3 wallet profile', () => {
     expect(() => new app.WatchOnlyWallet().setSecret(`wpkh([d34db33f/84'/0'/0']${tpub})`)).toThrow(/coin type 1/);
   });
 
-  it('builds and signs a PSBT from a genuine Testnet3 parent transaction', () => {
+  it('builds and signs a PSBT from a locally constructed test-encoded parent transaction', () => {
     const source = new app.SegwitBech32Wallet();
     source.setSecret(
       app.ECPair.fromPrivateKey(Buffer.alloc(32, 4), {
@@ -283,6 +288,110 @@ describe('fixed Testnet3 wallet profile', () => {
     for (const output of result.tx.outs) {
       expect(app.bitcoin.address.fromOutputScript(output.script, app.profile.network)).toMatch(/^tb1q/);
     }
+  });
+
+  it('prepares a verified Testnet4 hardware wallet transaction from the real watch-only composer', async () => {
+    expect(app.profile.bitcoinNetwork).toBe('testnet4');
+    expect(app.profile.coinType).toBe(1);
+    expect(app.profile.network).toBe(app.bitcoin.networks.testnet);
+    expect(app.profile.genesisHash).toBe('00000000da84f2bafbbc53dee25a72ae507ff4914b867c565be350b0da8bf043');
+    const path = "m/84'/1'/0'";
+    const root = app.bip32.fromSeed(seed, app.profile.network);
+    const fingerprint = Buffer.from(root.fingerprint).toString('hex');
+    const xpub = accountNode(path).neutered().toBase58();
+    expect(Buffer.from(app.b58.decode(xpub)).readUInt32BE(0)).toBe(0x043587cf);
+    const info: DeviceInfo = {
+      family: 'jade',
+      fingerprint,
+      version: '1',
+      model: null,
+    };
+    const account: Account = {
+      family: 'jade',
+      fingerprint,
+      path,
+      xpub,
+      format: 'native-segwit',
+      // Fixed checksum for the public throwaway seed above, including the native account's complete origin and branches.
+      descriptor: `wpkh([${fingerprint}/84h/1h/0h]${xpub}/<0;1>/*)#kuj0z8zn`,
+    };
+    const wallet = app.WatchOnlyWallet.fromBhwiAccount(info, account, path, 'native-segwit');
+    const association = wallet.getHardwareWalletAssociation();
+    expect(association).toEqual({
+      family: 'jade',
+      fingerprint,
+      path,
+      xpub,
+      format: 'native-segwit',
+    });
+    expect(wallet.getDerivationPath()).toBe(path);
+    expect(Buffer.from(app.b58.decode(wallet.getSecret())).readUInt32BE(0)).toBe(0x045f1cf6);
+    const sourceAddress = wallet._getExternalAddressByIndex(3);
+    const changeAddress = wallet._getInternalAddressByIndex(2);
+    const destination = app.bitcoin.payments.p2wpkh({
+      pubkey: app.ECPair.fromPrivateKey(Buffer.alloc(32, 5), {
+        network: app.profile.network,
+      }).publicKey,
+      network: app.profile.network,
+    }).address;
+    expect([sourceAddress, changeAddress, destination].every(address => address.startsWith('tb1q'))).toBe(true);
+    const parent = new app.bitcoin.Transaction();
+    parent.addInput(Buffer.alloc(32, 1), 0);
+    parent.addOutput(app.bitcoin.address.toOutputScript(sourceAddress, app.profile.network), 100_000n);
+    const result = wallet.createTransaction(
+      [
+        {
+          txid: parent.getId(),
+          vout: 0,
+          value: 100_000,
+          address: sourceAddress,
+          txhex: parent.toHex(),
+        },
+      ],
+      [{ address: destination, value: 50_000 }],
+      1,
+      changeAddress,
+      0xfffffffd,
+      false,
+      0,
+    );
+    expect(result.tx).toBeUndefined();
+    expect(result.psbt.data.inputs[0].nonWitnessUtxo).toBeUndefined();
+    expect(result.psbt.data.inputs[0].bip32Derivation).toEqual([
+      {
+        masterFingerprint: new Uint8Array(Buffer.from(fingerprint, 'hex')),
+        path: `${path}/0/3`,
+        pubkey: accountNode(path).derive(0).derive(3).publicKey,
+      },
+    ]);
+    const originalBase64 = result.psbt.toBase64();
+    const fetchParents = jest.fn(async () => ({
+      [parent.getId()]: parent.toHex(),
+    }));
+    const hydrated = await app.bhwiPsbt.hydrateBhwiPsbt(result.psbt, fetchParents);
+    expect(fetchParents).toHaveBeenCalledTimes(1);
+    expect(fetchParents).toHaveBeenCalledWith([parent.getId()]);
+    expect(result.psbt.toBase64()).toBe(originalBase64);
+    expect(Buffer.from(hydrated.data.inputs[0].nonWitnessUtxo).toString('hex')).toBe(parent.toHex());
+    const validated = app.validateBhwiPsbtOriginal(hydrated.toBase64(), wallet, association);
+    expect(validated.toBase64()).toBe(hydrated.toBase64());
+    expect(app.bhwiPsbt.getBhwiPsbtReview(hydrated)).toEqual({
+      fee: BigInt(result.fee),
+      outputs: [
+        { destination, value: 50_000n },
+        { destination: changeAddress, value: 50_000n - BigInt(result.fee) },
+      ],
+    });
+
+    const wrongParent = app.bitcoin.Transaction.fromHex(parent.toHex());
+    wrongParent.version += 1;
+    await expect(
+      app.bhwiPsbt.hydrateBhwiPsbt(result.psbt, async () => ({
+        [parent.getId()]: wrongParent.toHex(),
+      })),
+    ).rejects.toMatchObject({
+      message: 'Unsupported hardware-wallet signing input',
+    });
   });
 
   it('round-trips coin info and origins through account, HD key, multi-account, and multisig output URs', () => {
@@ -348,10 +457,10 @@ describe('fixed Testnet3 wallet profile', () => {
     expect(() => decodeRegistryItem(new CryptoAccount(masterFingerprint, [output, output]))).toThrow(/multiple multisig policies/);
 
     const wrongNetworkKey = cryptoHDKey("m/84'/1'/0'", false, new app.registry.CryptoCoinInfo(0, 0));
-    expect(() => decodeRegistryItem(wrongNetworkKey)).toThrow(/not valid for testnet/);
+    expect(() => decodeRegistryItem(wrongNetworkKey)).toThrow(/not valid for testnet4/);
   });
 
-  it('encodes app-owned cosigner accounts with explicit Testnet3 coin info', () => {
+  it('binds app-owned cosigner accounts to Testnet4 while retaining UR test coin info', () => {
     const path = "m/48'/1'/7'/2'";
     const tpub = accountNode(path).neutered().toBase58();
     const cosigner = new app.MultisigCosigner(app.MultisigCosigner.exportToJson('D34DB33F', tpub, path));
@@ -359,6 +468,7 @@ describe('fixed Testnet3 wallet profile', () => {
     expect(cosigner.getXpub()).toMatch(/^Vpub/);
     const vpub = cosigner.getXpub();
     const json = app.MultisigCosigner.exportToJson('D34DB33F', tpub, path);
+    expect(JSON.parse(json).network).toBe('testnet4');
     const [encoded] = app.ur.encodeUR(json, 175, null, 'URv2');
     const decoder = new app.ur.BlueURDecoder();
     decoder.receivePart(encoded);
@@ -368,12 +478,45 @@ describe('fixed Testnet3 wallet profile', () => {
     expect(result.AccountKeyPath).toBe(path);
     expect(result.MasterFingerprint).toBe('D34DB33F');
     expect(result.UseInfo).toEqual({ type: 0, network: 1 });
-    const foreignBinding = JSON.stringify({
-      xfp: 'D34DB33F',
-      xpub: vpub,
-      network: 'bitcoin',
+    for (const network of ['bitcoin', 'testnet', 'testnet3']) {
+      const foreignBinding = JSON.stringify({
+        xfp: 'D34DB33F',
+        xpub: vpub,
+        network,
+        path,
+      });
+      expect(new app.MultisigCosigner(foreignBinding).isValid()).toBe(false);
+    }
+  });
+
+  it('binds hardware registrations and Ledger HMACs to the app chain, not test key versions', () => {
+    const path = "m/48'/1'/7'/2'";
+    const xpub = accountNode(path).neutered().toBase58();
+    const association = {
+      family: 'ledger',
+      fingerprint: 'd34db33f',
       path,
-    });
-    expect(new app.MultisigCosigner(foreignBinding).isValid()).toBe(false);
+      xpub,
+      format: 'multisig-native',
+    };
+    expect(
+      app.bhwi.parseHardwareWalletAssociation({
+        ...association,
+        fingerprint: 'D34DB33F',
+      }),
+    ).toBeUndefined();
+    const descriptor = `wsh(sortedmulti(1,[d34db33f/48'/1'/7'/2']${xpub}/0/*))`;
+    const registration = app.bhwi.createHardwareWalletRegistration(association, descriptor, 'complete');
+    expect(registration.network).toBe('testnet4');
+    expect(app.bhwi.parseHardwareWalletRegistration(registration)).toEqual(registration);
+    for (const network of ['bitcoin', 'testnet', 'testnet3']) {
+      expect(app.bhwi.parseHardwareWalletRegistration({ ...registration, network })).toBeUndefined();
+    }
+    expect(
+      app.bhwi.parseHardwareWalletRegistration({
+        ...registration,
+        hmacService: 'obsolete-chain-binding',
+      }),
+    ).toBeUndefined();
   });
 });

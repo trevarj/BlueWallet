@@ -58,7 +58,7 @@ const account: Account = {
   descriptor: `wpkh([${fingerprint}/84h/0h/0h]${xpub}/<0;1>/*)#mthwej8w`,
 };
 
-it('derives bounded mainnet and Testnet3 account paths for every supported import form', () => {
+it('derives bounded mainnet and Testnet4 account paths for every supported import form', () => {
   expect(getBhwiAccountPath('legacy', 0, 0)).toBe("m/44'/0'/0'");
   expect(getBhwiAccountPath('nested-segwit', 7, 1)).toBe("m/49'/1'/7'");
   expect(getBhwiAccountPath('native-segwit', BHWI_MAX_ACCOUNT_INDEX, 0)).toBe("m/84'/0'/2147483647'");

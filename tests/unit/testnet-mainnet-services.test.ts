@@ -34,7 +34,7 @@ jest.mock('react-native', () => {
 
 jest.mock('../../codegen/NativeSettingsModule', () => ({
   __esModule: true,
-  default: { getConstants: () => ({ bitcoinNetwork: 'testnet' }) },
+  default: { getConstants: () => ({ bitcoinNetwork: 'testnet4' }) },
 }));
 
 jest.mock('../../util/fetch', () => ({ fetch: jest.fn() }));
@@ -95,9 +95,9 @@ afterAll(() => {
   jest.restoreAllMocks();
 });
 
-it('labels Testnet3 and suppresses fiat formatting', () => {
+it('labels Testnet4 and suppresses fiat formatting', () => {
   expect(profile.mainnetServicesEnabled).toBe(false);
-  expect(profile.labelForNetwork('Confirm')).toBe('Confirm — Testnet3');
+  expect(profile.labelForNetwork('Confirm')).toBe('Confirm — Testnet4');
   expect(formatBalance(100_000_000, BitcoinUnit.BTC)).toBe('1 BTC');
   expect(formatBalance(100_000_000, BitcoinUnit.SATS)).toContain('sats');
   expect(formatBalance(100_000_000, BitcoinUnit.LOCAL_CURRENCY)).toBe('1 BTC');
@@ -229,15 +229,15 @@ it('rejects deep-linked mainnet-only services without navigating', () => {
 
   DeeplinkSchemaMatch.navigationRouteFor({ url: 'https://azte.co/redeem?code=1111222233334444' }, navigate);
   expect(navigate).not.toHaveBeenCalled();
-  expect(Alert.alert).toHaveBeenCalledWith(expect.any(String), expect.stringContaining('Testnet3'));
+  expect(Alert.alert).toHaveBeenCalledWith(expect.any(String), expect.stringContaining('Testnet4'));
   jest.mocked(Alert.alert).mockClear();
   const address = bitcoin.payments.p2wpkh({ hash: Buffer.alloc(20, 5), network: profile.network }).address!;
   DeeplinkSchemaMatch.navigationRouteFor({ url: `bitcoin:${address}?lightning=lnbc1unsupported` }, navigate);
   expect(navigate).not.toHaveBeenCalled();
-  expect(Alert.alert).toHaveBeenCalledWith(expect.any(String), expect.stringContaining('Testnet3'));
+  expect(Alert.alert).toHaveBeenCalledWith(expect.any(String), expect.stringContaining('Testnet4'));
 });
 
-it('keeps ordinary Testnet3 clipboard payments while suppressing mainnet-only intents', () => {
+it('keeps ordinary test-encoded clipboard payments while suppressing mainnet-only intents', () => {
   const address = bitcoin.payments.p2wpkh({ hash: Buffer.alloc(20, 4), network: profile.network }).address!;
 
   expect(clipboardPayment.classifyClipboardPayment(address)).toEqual({

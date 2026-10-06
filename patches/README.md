@@ -15,7 +15,7 @@ unchanged.
 
 **Why:** version 3.1.1 hardcodes `rejectUnauthorized: false` when constructing
 every TLS socket, ignoring its saved constructor options. The immutable
-Testnet3 profile must opt into the platform trust store rather than accepting
+Testnet4 profile must opt into the platform trust store rather than accepting
 an arbitrary server certificate.
 
 **Upstream:** [the pinned constructor and TLS socket implementation](https://github.com/BlueWallet/rn-electrum-client/blob/83420b861bac2c0ea343f1d8503104a49e9654a3/lib/client.js)
@@ -49,8 +49,8 @@ version/chain/tip handshake.
 hostname verification, and its upgrade path substitutes the resolved IP as
 the peer identity. It also permits writes to race an asynchronous upgrade and
 queues close behind the same bounded executor whose threads may be blocked in
-connect/TLS work. Testnet3 therefore could neither authenticate the requested
-Electrum host, prevent pre-verification plaintext, nor promptly cancel stalled
+connect/TLS work. The test-network profile therefore could not authenticate the
+requested Electrum host, prevent pre-verification plaintext, or promptly cancel stalled
 native work.
 
 **Upstream:** [hostname-verification issue #239](https://github.com/Rapsssito/react-native-tcp-socket/issues/239),
@@ -99,7 +99,7 @@ New-Architecture-safe token delivery, remove those token-delivery hunks
 but retain the experimental identity gate below.
 
 **BHWI identity isolation:** also gates `RNNotificationsModule.startFcmIntentService()`
-for exactly `io.bluewallet.bluewallet.bhwi` and `io.bluewallet.bluewallet.bhwi.testnet`.
+for exactly `io.bluewallet.bluewallet.bhwi` and `io.bluewallet.bluewallet.bhwi.testnet4`.
 Without a Firebase client for those experimental IDs, the native module's automatic
 app-init refresh would otherwise call `FirebaseMessaging.getInstance().getToken()`
 and crash before the JavaScript remote-push guard runs. Local notification posting,

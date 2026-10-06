@@ -34,7 +34,7 @@ it('binds address encoding, coin type and genesis to each immutable native profi
   const mainnetConstants = jest.fn(() => ({ bitcoinNetwork: 'bitcoin' }));
   const mainnet = loadProfile('android', { getConstants: mainnetConstants });
   const testnet = loadProfile('android', {
-    getConstants: jest.fn(() => ({ bitcoinNetwork: 'testnet' })),
+    getConstants: jest.fn(() => ({ bitcoinNetwork: 'testnet4' })),
   });
   const hash = Buffer.alloc(20, 1);
   const mainnetAddress = payments.p2wpkh({
@@ -57,17 +57,17 @@ it('binds address encoding, coin type and genesis to each immutable native profi
     '000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f',
   ]);
   expect([testnet.bitcoinNetwork, testnet.coinType, testnet.genesisHash]).toEqual([
-    'testnet',
+    'testnet4',
     1,
-    '000000000933ea01ad0ee984209779baaec3ced90fa3f408719526f8d77f4943',
+    '00000000da84f2bafbbc53dee25a72ae507ff4914b867c565be350b0da8bf043',
   ]);
   expect(mainnet.mainnetServicesEnabled).toBe(true);
   expect(mainnet.networkDisplayName).toBe('Bitcoin');
   expect(mainnet.labelForNetwork('Send')).toBe('Send');
   expect(() => mainnet.assertMainnetServicesEnabled()).not.toThrow();
   expect(testnet.mainnetServicesEnabled).toBe(false);
-  expect(testnet.networkDisplayName).toBe('Testnet3');
-  expect(testnet.labelForNetwork('Send')).toBe('Send — Testnet3');
+  expect(testnet.networkDisplayName).toBe('Testnet4');
+  expect(testnet.labelForNetwork('Send')).toBe('Send — Testnet4');
   expect(() => testnet.assertMainnetServicesEnabled()).toThrow(testnet.MAINNET_SERVICES_UNAVAILABLE);
 
   expect(mainnet.mapStandardAccountPath("m/84'/0'/7'")).toBe("m/84'/0'/7'");
@@ -81,7 +81,7 @@ it('binds address encoding, coin type and genesis to each immutable native profi
   expect(testnet.getMultisigPathFormat("m/48'/1'/7'/1'")).toBe('wrapped');
   expect(testnet.getMultisigPathFormat("m/45'")).toBe('legacy');
 
-  mainnetConstants.mockReturnValue({ bitcoinNetwork: 'testnet' });
+  mainnetConstants.mockReturnValue({ bitcoinNetwork: 'testnet4' });
   expect(payments.p2wpkh({ hash, network: mainnet.network }).address).toBe(mainnetAddress);
   expect(mainnet.bitcoinNetwork).toBe('bitcoin');
   expect(mainnetConstants).toHaveBeenCalledTimes(1);
@@ -104,7 +104,7 @@ it.each([
   { bitcoinNetwork: 'mainnet' },
   { bitcoinNetwork: 'testnet3' },
   { bitcoinNetwork: 'signet' },
-  { bitcoinNetwork: 'testnet4' },
+  { bitcoinNetwork: 'testnet' },
 ])('fails closed for invalid Android constants: %p', constants => {
   expect(() => loadProfile('android', { getConstants: () => constants })).toThrow(
     'Missing or invalid Android bitcoinNetwork build constant',

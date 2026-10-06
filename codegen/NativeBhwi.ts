@@ -1,5 +1,5 @@
 import { TurboModuleRegistry } from 'react-native';
-import type { TurboModule } from 'react-native';
+import type { CodegenTypes, TurboModule } from 'react-native';
 import type { Int32 } from 'react-native/Libraries/Types/CodegenTypes';
 
 export type BhwiFamily = 'bitbox02' | 'coldcard' | 'jade' | 'ledger' | 'keepkey' | 'specter' | 'trezor';
@@ -48,6 +48,8 @@ export type Policy = {
 };
 
 export interface Spec extends TurboModule {
+  readonly onHostActiveChange: CodegenTypes.EventEmitter<boolean>;
+  getHostActive(): boolean;
   discover(sessionId: string, transport: string): Promise<Device[]>;
   connect(sessionId: string, deviceId: string): Promise<DeviceInfo>;
   getAccount(sessionId: string, path: string, format: string): Promise<Account>;

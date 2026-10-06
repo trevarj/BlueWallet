@@ -7,8 +7,11 @@ import static org.junit.Assume.assumeFalse;
 
 import android.content.ComponentName;
 import android.content.Context;
+import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
+import android.content.pm.ProviderInfo;
+import android.net.Uri;
 
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
@@ -27,7 +30,7 @@ public class BitcoinNetworkWidgetProfileTest {
 
     @Test
     public void widgetComponentsFollowTheImmutableBuildProfile() throws Exception {
-        assertTrue(BuildConfig.BITCOIN_NETWORK.equals("bitcoin") || BuildConfig.BITCOIN_NETWORK.equals("testnet"));
+        assertTrue(BuildConfig.BITCOIN_NETWORK.equals("bitcoin") || BuildConfig.BITCOIN_NETWORK.equals("testnet4"));
         boolean mainnet = BuildConfig.BITCOIN_NETWORK.equals("bitcoin");
         PackageManager packageManager = context.getPackageManager();
         int flags = PackageManager.MATCH_DISABLED_COMPONENTS;
@@ -40,6 +43,31 @@ public class BitcoinNetworkWidgetProfileTest {
         assertEquals(mainnet, marketWidget.enabled);
         assertEquals(mainnet, marketConfiguration.enabled);
         assertEquals(mainnet, AppWidgetUtils.INSTANCE.isWidgetAvailable(context));
+    }
+
+    @Test
+    public void installedIdentityAndOwnedLinksFollowTheChainProfile() throws Exception {
+        boolean mainnet = BuildConfig.BITCOIN_NETWORK.equals("bitcoin");
+        String packageName = mainnet ? "io.bluewallet.bluewallet.bhwi" : "io.bluewallet.bluewallet.bhwi.testnet4";
+        String scheme = mainnet ? "bluewallet-bhwi" : "bluewallet-bhwi-testnet4";
+        String foreignScheme = mainnet ? "bluewallet-bhwi-testnet4" : "bluewallet-bhwi";
+        assertEquals(packageName, context.getPackageName());
+        PackageManager packageManager = context.getPackageManager();
+        String releaseLabel = mainnet ? "BHWI PoC" : "BHWI PoC Testnet4";
+        assertEquals(BuildConfig.DEBUG ? "Bluewallet (bhwi debug)" : releaseLabel,
+                packageManager.getApplicationLabel(context.getApplicationInfo()).toString());
+        assertEquals(mainnet ? "BHWI PoC Settings" : "BHWI PoC Testnet4 Settings", context.getString(R.string.app_settings_name));
+        ProviderInfo provider = packageManager.resolveContentProvider(packageName + ".provider", 0);
+        assertTrue(provider != null);
+        assertFalse(provider.exported);
+        Intent owned = new Intent(Intent.ACTION_VIEW, Uri.parse(scheme + ":setelectrumserver?server=profile.invalid:443:s"));
+        owned.setPackage(packageName);
+        assertFalse(packageManager.queryIntentActivities(owned, 0).isEmpty());
+        for (String foreign : new String[] {foreignScheme, "bluewallet-bhwi-testnet"}) {
+            Intent rejected = new Intent(Intent.ACTION_VIEW, Uri.parse(foreign + ":setelectrumserver?server=foreign.invalid:443:s"));
+            rejected.setPackage(packageName);
+            assertTrue(packageManager.queryIntentActivities(rejected, 0).isEmpty());
+        }
     }
 
     @Test

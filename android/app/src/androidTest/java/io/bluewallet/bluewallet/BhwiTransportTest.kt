@@ -258,18 +258,30 @@ class BhwiTransportTest {
     }
 
     @Test
-    fun jadeUrlBoundaryAllowsOnlyOfficialHttpsOrigin() {
-        assertEquals(
-            "https://jadepin.blockstream.com/get_pin",
-            trustedPinServerUrl("https://jadepin.blockstream.com/get_pin").toString(),
-        )
+    fun jadeUrlBoundaryAllowsOnlyOfficialHttpsOrigins() {
+        listOf("j8d.io", "jadepin.blockstream.com").forEach { host ->
+            listOf("get_pin", "set_pin").forEach { operation ->
+                listOf("", ":443").forEach { port ->
+                    val value = "https://$host$port/$operation"
+                    assertEquals(value, trustedPinServerUrl(value).toString())
+                }
+            }
+            listOf(
+                "http://$host/get_pin",
+                "https://${host.uppercase()}/get_pin",
+                "https://user@$host/get_pin",
+                "https://$host:444/get_pin",
+                "https://$host/get_pin#fragment",
+                "https://$host.evil.example/get_pin",
+                "https://evil.$host/get_pin",
+            ).forEach { value ->
+                assertThrows(PinServerPolicyException::class.java) { trustedPinServerUrl(value) }
+            }
+        }
         listOf(
-            "http://jadepin.blockstream.com/get_pin",
-            "https://JADEPIN.BLOCKSTREAM.COM/get_pin",
-            "https://user@jadepin.blockstream.com/get_pin",
-            "https://jadepin.blockstream.com:444/get_pin",
-            "https://jadepin.blockstream.com/get_pin#fragment",
+            "https://jadepin-staging.blockstream.com/get_pin",
             "https://example.com/get_pin",
+            "http://mrrxtq6tjpbnbm7vh5jt6mpjctn7ggyfy5wegvbeff3x7jrznqawlmid.onion/get_pin",
         ).forEach { value ->
             assertThrows(PinServerPolicyException::class.java) { trustedPinServerUrl(value) }
         }
@@ -517,7 +529,8 @@ class BhwiTransportTest {
     @Test
     fun immutableBuildProfilesMapOnlyToBitcoinAndTestnet() {
         assertEquals(Network.BITCOIN, bhwiNetwork("bitcoin"))
-        assertEquals(Network.TESTNET, bhwiNetwork("testnet"))
+        assertEquals(Network.TESTNET, bhwiNetwork("testnet4"))
+        assertThrows(IllegalStateException::class.java) { bhwiNetwork("testnet") }
         assertThrows(IllegalStateException::class.java) { bhwiNetwork("testnet3") }
     }
 
